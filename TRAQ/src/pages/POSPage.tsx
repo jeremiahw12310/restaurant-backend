@@ -1735,6 +1735,9 @@ export function POSPage() {
                   <label
                     key={category.id}
                     className="pos-modal-category-checkbox"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
                   >
                     <input
                       type="checkbox"
@@ -1805,6 +1808,9 @@ export function POSPage() {
                   <label
                     key={category.id}
                     className="pos-modal-category-checkbox"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
                   >
                     <input
                       type="checkbox"
@@ -1960,12 +1966,14 @@ export function POSPage() {
               className="pos-modal-checkbox-label"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
             >
               <input
                 type="checkbox"
                 checked={newCategorySingleSelect}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
               <span>Only allow one selection (single-select)</span>
@@ -2002,12 +2010,14 @@ export function POSPage() {
               className="pos-modal-checkbox-label"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
             >
               <input
                 type="checkbox"
                 checked={newCategorySingleSelect}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
               <span>Only allow one selection (single-select)</span>
