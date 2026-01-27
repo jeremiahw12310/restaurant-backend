@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  POSItem,
-  POSModifier,
-  POSCartItem,
-  POSOrder,
+  type POSItem,
+  type POSModifier,
+  type POSCartItem,
+  type POSOrder,
   subscribeToPOSConfig,
   subscribeToPOSOrders,
   savePOSItems,
