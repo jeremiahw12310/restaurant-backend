@@ -981,6 +981,13 @@
   margin-bottom: 12px;
 }
 
+.pos-order-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .pos-order-header-right {
   display: flex;
   align-items: center;
@@ -996,6 +1003,25 @@
 .pos-order-time {
   font-size: 16px;
   color: #6b7280;
+}
+
+.pos-order-type-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pos-order-type-badge-dineIn {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.pos-order-type-badge-togo {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .pos-order-items {
@@ -1063,6 +1089,81 @@
   justify-content: center;
   z-index: 1000;
   padding: 20px;
+}
+
+/* Order Type Selection Modal */
+.pos-order-type-backdrop {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.pos-order-type-modal {
+  background: white;
+  border-radius: 24px;
+  padding: 40px 32px;
+  width: 100%;
+  max-width: 500px;
+  text-align: center;
+}
+
+.pos-order-type-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1f2937;
+  margin: 0 0 32px 0;
+}
+
+.pos-order-type-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pos-order-type-btn {
+  width: 100%;
+  padding: 32px 24px;
+  border: none;
+  border-radius: 16px;
+  font-size: 24px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pos-order-type-btn:active {
+  transform: scale(0.98);
+}
+
+.pos-order-type-dinein {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.pos-order-type-dinein:hover {
+  background: #bbf7d0;
+}
+
+.pos-order-type-togo {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.pos-order-type-togo:hover {
+  background: #fde68a;
+}
+
+.pos-order-type-icon {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.pos-order-type-label {
+  font-size: 20px;
+  letter-spacing: 1px;
 }
 
 .pos-modal {
@@ -1700,6 +1801,34 @@
   }
 
   .pos-report-metric-value {
+    font-size: 24px;
+  }
+
+  /* Order Type Modal - iPad Landscape */
+  .pos-order-type-modal {
+    max-width: 600px;
+    padding: 48px 40px;
+  }
+
+  .pos-order-type-title {
+    font-size: 32px;
+    margin-bottom: 40px;
+  }
+
+  .pos-order-type-buttons {
+    gap: 20px;
+  }
+
+  .pos-order-type-btn {
+    padding: 40px 32px;
+    font-size: 28px;
+  }
+
+  .pos-order-type-icon {
+    font-size: 64px;
+  }
+
+  .pos-order-type-label {
     font-size: 24px;
   }
 }

@@ -74,6 +74,8 @@ export function POSPage() {
   const [showOpenKitchen, setShowOpenKitchen] = useState(false)
   const [openKitchenName, setOpenKitchenName] = useState('')
   const [openKitchenPrice, setOpenKitchenPrice] = useState('')
+  const [orderType, setOrderType] = useState<'dineIn' | 'toGo' | null>(null)
+  const [showOrderTypeModal, setShowOrderTypeModal] = useState(false)
 
   // Form state
   const [newItemName, setNewItemName] = useState('')
@@ -102,6 +104,22 @@ export function POSPage() {
       unsubConfig()
       unsubOrders()
     }
+  }, [])
+
+  // Show order type modal when cart is empty and orderType is not set
+  useEffect(() => {
+    if (cart.length === 0 && orderType === null && !showOrders && !showReports) {
+      setShowOrderTypeModal(true)
+    } else if (cart.length > 0 || orderType !== null) {
+      setShowOrderTypeModal(false)
+    }
+  }, [cart.length, orderType, showOrders, showReports])
+
+  // Reset orderType when cart is cleared
+  const clearCart = useCallback(() => {
+    setCart([])
+    setSelectedModifiers(new Set())
+    setOrderType(null)
   }, [])
 
   // Calculate cart totals
@@ -275,12 +293,6 @@ export function POSPage() {
     setCart((prev) => prev.filter((ci) => ci.id !== cartItemId))
   }, [])
 
-  // Clear cart
-  const clearCart = useCallback(() => {
-    setCart([])
-    setSelectedModifiers(new Set())
-  }, [])
-
   // Add open kitchen item to cart (one-off custom item)
   const addOpenKitchenItem = useCallback(() => {
     const name = openKitchenName.trim()
@@ -379,6 +391,13 @@ export function POSPage() {
   const completeOrder = useCallback(async () => {
     if (cart.length === 0) return
     
+    // Validate order type is set
+    if (!orderType) {
+      alert('Please select Dine In or To Go')
+      setShowOrderTypeModal(true)
+      return
+    }
+    
     // Recalculate totals to ensure accuracy at moment of completion
     const finalSubtotal = cart.reduce((sum, cartItem) => {
       const itemTotal = cartItem.item.price * cartItem.quantity
@@ -406,6 +425,7 @@ export function POSPage() {
       id: generateId(),
       orderNumber: nextOrderNumber,
       items: cart,
+      orderType,
       subtotal: finalSubtotal,
       tax: finalTax,
       total: finalTotal,
@@ -423,7 +443,7 @@ export function POSPage() {
       console.error('Failed to save order:', error)
       alert('Failed to save order')
     }
-  }, [cart, nextOrderNumber, cashTendered, clearCart])
+  }, [cart, nextOrderNumber, cashTendered, orderType, clearCart])
 
   // Category management functions
   const handleAddCategory = useCallback(async () => {
@@ -942,7 +962,14 @@ export function POSPage() {
             [...orders].reverse().map((order) => (
               <div key={order.id} className="pos-order-card">
                 <div className="pos-order-header">
-                  <span className="pos-order-number">ORDER #{order.orderNumber}</span>
+                  <div className="pos-order-header-left">
+                    <span className="pos-order-number">ORDER #{order.orderNumber}</span>
+                    {order.orderType && (
+                      <span className={`pos-order-type-badge pos-order-type-badge-${order.orderType}`}>
+                        {order.orderType === 'dineIn' ? 'DINE IN' : 'TO GO'}
+                      </span>
+                    )}
+                  </div>
                   <div className="pos-order-header-right">
                     <span className="pos-order-time">
                       {new Date(order.createdAt).toLocaleTimeString([], {
@@ -1408,6 +1435,37 @@ export function POSPage() {
                 onClick={addToCart}
               >
                 Add to Cart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Order Type Selection Modal */}
+      {showOrderTypeModal && (
+        <div className="pos-modal-backdrop pos-order-type-backdrop">
+          <div className="pos-order-type-modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="pos-order-type-title">Select Order Type</h2>
+            <div className="pos-order-type-buttons">
+              <button
+                className="pos-order-type-btn pos-order-type-dinein"
+                onClick={() => {
+                  setOrderType('dineIn')
+                  setShowOrderTypeModal(false)
+                }}
+              >
+                <span className="pos-order-type-icon">🍽️</span>
+                <span className="pos-order-type-label">DINE IN</span>
+              </button>
+              <button
+                className="pos-order-type-btn pos-order-type-togo"
+                onClick={() => {
+                  setOrderType('toGo')
+                  setShowOrderTypeModal(false)
+                }}
+              >
+                <span className="pos-order-type-icon">📦</span>
+                <span className="pos-order-type-label">TO GO</span>
               </button>
             </div>
           </div>
