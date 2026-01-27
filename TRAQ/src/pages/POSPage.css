@@ -623,30 +623,35 @@
   border-radius: 8px;
   border: 1px solid #e5e7eb;
   margin-bottom: 6px;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: pan-x pan-y;
+  transition: all 0.15s ease;
 }
 
-.pos-modifier-move-btn {
-  width: 32px;
-  height: 32px;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 16px;
-  cursor: pointer;
+.pos-category-modifier-item.dragging {
+  opacity: 0.5;
+  transform: scale(0.95);
+}
+
+.pos-category-modifier-item.drag-over {
+  border: 2px dashed #3b82f6;
+  background: #eff6ff;
+}
+
+.pos-modifier-drag-handle {
+  color: #9ca3af;
+  font-size: 14px;
+  cursor: grab;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  padding: 4px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s;
 }
 
-.pos-modifier-move-btn:hover:not(:disabled) {
-  background: #e5e7eb;
-}
-
-.pos-modifier-move-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.pos-modifier-drag-handle:active {
+  cursor: grabbing;
 }
 
 .pos-modifier-item-name {

@@ -68,6 +68,8 @@ export function POSPage() {
   const [cashTendered, setCashTendered] = useState(0) // in cents
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null)
   const [dragOverItemId, setDragOverItemId] = useState<string | null>(null)
+  const [draggedModifierId, setDraggedModifierId] = useState<string | null>(null)
+  const [dragOverModifierId, setDragOverModifierId] = useState<string | null>(null)
   const [showReports, setShowReports] = useState(false)
   const [reportStartDate, setReportStartDate] = useState(getTodayKey())
   const [reportEndDate, setReportEndDate] = useState(getTodayKey())
@@ -560,36 +562,6 @@ export function POSPage() {
   }, [categories])
 
   // Move modifier within its category
-  const handleMoveModifier = useCallback(async (modifierId: string, direction: 'up' | 'down') => {
-    const modifier = modifiers.find(m => m.id === modifierId)
-    if (!modifier) return
-
-    // Get modifiers in the same category, sorted by displayOrder
-    const categoryModifiers = modifiers
-      .filter(m => m.categoryId === modifier.categoryId)
-      .sort((a, b) => a.displayOrder - b.displayOrder)
-
-    const index = categoryModifiers.findIndex(m => m.id === modifierId)
-    if (index === -1) return
-
-    const newIndex = direction === 'up' ? index - 1 : index + 1
-    if (newIndex < 0 || newIndex >= categoryModifiers.length) return
-
-    // Swap displayOrder values
-    const targetModifier = categoryModifiers[newIndex]
-    const updatedModifiers = modifiers.map(m => {
-      if (m.id === modifierId) return { ...m, displayOrder: targetModifier.displayOrder }
-      if (m.id === targetModifier.id) return { ...m, displayOrder: modifier.displayOrder }
-      return m
-    })
-
-    try {
-      await savePOSModifiers(updatedModifiers)
-    } catch (error) {
-      console.error('Failed to reorder modifier:', error)
-      alert('Failed to reorder modifier')
-    }
-  }, [modifiers])
 
   // Add new item
   const handleAddItem = useCallback(async () => {
@@ -851,6 +823,84 @@ export function POSPage() {
     setDraggedItemId(null)
     setDragOverItemId(null)
   }, [editMode, draggedItemId, dragOverItemId, items])
+
+  // Handle modifier drag start (touch)
+  const handleModifierTouchStart = (_e: React.TouchEvent, modifierId: string) => {
+    if (!editMode) return
+    setDraggedModifierId(modifierId)
+  }
+
+  // Handle modifier touch move
+  const handleModifierTouchMove = (e: React.TouchEvent) => {
+    if (!editMode || !draggedModifierId) return
+    
+    const touch = e.touches[0]
+    const element = document.elementFromPoint(touch.clientX, touch.clientY)
+    const wrapper = element?.closest('.pos-category-modifier-item')
+    if (wrapper) {
+      const targetId = wrapper.getAttribute('data-modifier-id')
+      if (targetId && targetId !== draggedModifierId) {
+        // Only allow drag-over if modifiers are in the same category
+        const draggedModifier = modifiers.find(m => m.id === draggedModifierId)
+        const targetModifier = modifiers.find(m => m.id === targetId)
+        if (draggedModifier && targetModifier && draggedModifier.categoryId === targetModifier.categoryId) {
+          setDragOverModifierId(targetId)
+        } else {
+          setDragOverModifierId(null)
+        }
+      } else {
+        setDragOverModifierId(null)
+      }
+    }
+  }
+
+  // Handle modifier drag end and reorder
+  const handleModifierTouchEnd = useCallback(async () => {
+    if (!editMode || !draggedModifierId) {
+      setDraggedModifierId(null)
+      setDragOverModifierId(null)
+      return
+    }
+
+    if (dragOverModifierId && draggedModifierId !== dragOverModifierId) {
+      const draggedModifier = modifiers.find(m => m.id === draggedModifierId)
+      const targetModifier = modifiers.find(m => m.id === dragOverModifierId)
+      
+      // Ensure they're in the same category
+      if (draggedModifier && targetModifier && draggedModifier.categoryId === targetModifier.categoryId) {
+        // Get modifiers in the same category, sorted by displayOrder
+        const categoryModifiers = modifiers
+          .filter(m => m.categoryId === draggedModifier.categoryId)
+          .sort((a, b) => a.displayOrder - b.displayOrder)
+        
+        const draggedIndex = categoryModifiers.findIndex(m => m.id === draggedModifierId)
+        const targetIndex = categoryModifiers.findIndex(m => m.id === dragOverModifierId)
+        
+        if (draggedIndex !== -1 && targetIndex !== -1) {
+          // Create updated array with swapped displayOrder values
+          const updated = modifiers.map(m => {
+            if (m.id === draggedModifierId) {
+              return { ...m, displayOrder: categoryModifiers[targetIndex].displayOrder }
+            }
+            if (m.id === dragOverModifierId) {
+              return { ...m, displayOrder: categoryModifiers[draggedIndex].displayOrder }
+            }
+            return m
+          })
+          
+          try {
+            await savePOSModifiers(updated)
+          } catch (error) {
+            console.error('Failed to reorder modifier:', error)
+            alert('Failed to reorder modifier')
+          }
+        }
+      }
+    }
+    
+    setDraggedModifierId(null)
+    setDragOverModifierId(null)
+  }, [editMode, draggedModifierId, dragOverModifierId, modifiers])
 
   // Format cart item description
   const formatCartItem = (cartItem: POSCartItem): string => {
@@ -1244,34 +1294,36 @@ export function POSPage() {
                         {categoryModifiers.length === 0 ? (
                           <span className="pos-no-modifiers-in-category">No modifiers in this category</span>
                         ) : (
-                          categoryModifiers.map((mod, idx) => (
-                            <div key={mod.id} className="pos-category-modifier-item">
-                              <button
-                                className="pos-modifier-move-btn"
-                                onClick={() => handleMoveModifier(mod.id, 'up')}
-                                disabled={idx === 0}
-                              >
-                                ↑
-                              </button>
-                              <button
-                                className="pos-modifier-move-btn"
-                                onClick={() => handleMoveModifier(mod.id, 'down')}
-                                disabled={idx === categoryModifiers.length - 1}
-                              >
-                                ↓
-                              </button>
+                          categoryModifiers.map((mod) => (
+                            <div
+                              key={mod.id}
+                              data-modifier-id={mod.id}
+                              className={`pos-category-modifier-item ${draggedModifierId === mod.id ? 'dragging' : ''} ${dragOverModifierId === mod.id ? 'drag-over' : ''}`}
+                              onTouchStart={(e) => handleModifierTouchStart(e, mod.id)}
+                              onTouchMove={handleModifierTouchMove}
+                              onTouchEnd={handleModifierTouchEnd}
+                            >
+                              <div className="pos-modifier-drag-handle" title="Drag to reorder">
+                                ⋮⋮
+                              </div>
                               <span className="pos-modifier-item-name">
                                 {mod.name} {formatPriceAdjustment(mod.priceAdjustment)}
                               </span>
                               <button
                                 className="pos-modifier-edit-btn"
-                                onClick={() => openEditModifier(mod)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openEditModifier(mod)
+                                }}
                               >
                                 Edit
                               </button>
                               <button
                                 className="pos-modifier-delete-btn"
-                                onClick={() => handleDeleteModifier(mod.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleDeleteModifier(mod.id)
+                                }}
                               >
                                 ×
                               </button>
