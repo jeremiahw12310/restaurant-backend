@@ -76,6 +76,8 @@ export function POSPage() {
   const [openKitchenPrice, setOpenKitchenPrice] = useState('')
   const [orderType, setOrderType] = useState<'dineIn' | 'toGo' | null>(null)
   const [showOrderTypeModal, setShowOrderTypeModal] = useState(false)
+  const [discountPercent, setDiscountPercent] = useState(0)
+  const [customDiscountInput, setCustomDiscountInput] = useState('')
 
   // Form state
   const [newItemName, setNewItemName] = useState('')
@@ -115,11 +117,13 @@ export function POSPage() {
     }
   }, [cart.length, orderType, showOrders, showReports])
 
-  // Reset orderType when cart is cleared
+  // Reset orderType and discount when cart is cleared
   const clearCart = useCallback(() => {
     setCart([])
     setSelectedModifiers(new Set())
     setOrderType(null)
+    setDiscountPercent(0)
+    setCustomDiscountInput('')
   }, [])
 
   // Calculate cart totals
@@ -130,11 +134,15 @@ export function POSPage() {
     return sum + itemTotal + modifiersTotal
   }, 0)
 
-  // 10% tax, rounded to nearest cent
-  const tax = Math.round(subtotal * 0.1)
+  // Calculate discount amount
+  const discountAmount = Math.round(subtotal * discountPercent / 100)
+  const discountedSubtotal = subtotal - discountAmount
+
+  // 10% tax on discounted subtotal, rounded to nearest cent
+  const tax = Math.round(discountedSubtotal * 0.1)
   
-  // Total must be subtotal + tax (both in cents)
-  const total = subtotal + tax
+  // Total = discounted subtotal + tax
+  const total = discountedSubtotal + tax
   
   // Change due: cash tendered minus total (can be negative if insufficient)
   const changeDue = cashTendered - total
@@ -166,6 +174,7 @@ export function POSPage() {
     const changeGiven = filteredOrders.reduce((sum, order) => sum + (order.changeDue || 0), 0)
     const taxCollected = filteredOrders.reduce((sum, order) => sum + order.tax, 0)
     const netSales = filteredOrders.reduce((sum, order) => sum + order.subtotal, 0)
+    const totalDiscounts = filteredOrders.reduce((sum, order) => sum + (order.discountAmount || 0), 0)
 
     return {
       houseCash,
@@ -174,6 +183,7 @@ export function POSPage() {
       changeGiven,
       taxCollected,
       netSales,
+      totalDiscounts,
     }
   }, [orders, reportStartDate, reportEndDate])
 
@@ -405,8 +415,13 @@ export function POSPage() {
       return sum + itemTotal + modifiersTotal
     }, 0)
     
-    const finalTax = Math.round(finalSubtotal * 0.1)
-    const finalTotal = finalSubtotal + finalTax
+    // Calculate discount
+    const finalDiscountAmount = Math.round(finalSubtotal * discountPercent / 100)
+    const finalDiscountedSubtotal = finalSubtotal - finalDiscountAmount
+    
+    // Tax on discounted subtotal
+    const finalTax = Math.round(finalDiscountedSubtotal * 0.1)
+    const finalTotal = finalDiscountedSubtotal + finalTax
     const finalChangeDue = cashTendered - finalTotal
     
     // Validate sufficient cash
@@ -426,6 +441,8 @@ export function POSPage() {
       orderNumber: nextOrderNumber,
       items: cart,
       orderType,
+      discountPercent: discountPercent > 0 ? discountPercent : undefined,
+      discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
       subtotal: finalSubtotal,
       tax: finalTax,
       total: finalTotal,
@@ -443,7 +460,7 @@ export function POSPage() {
       console.error('Failed to save order:', error)
       alert('Failed to save order')
     }
-  }, [cart, nextOrderNumber, cashTendered, orderType, clearCart])
+  }, [cart, nextOrderNumber, cashTendered, orderType, discountPercent, clearCart])
 
   // Category management functions
   const handleAddCategory = useCallback(async () => {
@@ -541,6 +558,38 @@ export function POSPage() {
       alert('Failed to reorder category')
     }
   }, [categories])
+
+  // Move modifier within its category
+  const handleMoveModifier = useCallback(async (modifierId: string, direction: 'up' | 'down') => {
+    const modifier = modifiers.find(m => m.id === modifierId)
+    if (!modifier) return
+
+    // Get modifiers in the same category, sorted by displayOrder
+    const categoryModifiers = modifiers
+      .filter(m => m.categoryId === modifier.categoryId)
+      .sort((a, b) => a.displayOrder - b.displayOrder)
+
+    const index = categoryModifiers.findIndex(m => m.id === modifierId)
+    if (index === -1) return
+
+    const newIndex = direction === 'up' ? index - 1 : index + 1
+    if (newIndex < 0 || newIndex >= categoryModifiers.length) return
+
+    // Swap displayOrder values
+    const targetModifier = categoryModifiers[newIndex]
+    const updatedModifiers = modifiers.map(m => {
+      if (m.id === modifierId) return { ...m, displayOrder: targetModifier.displayOrder }
+      if (m.id === targetModifier.id) return { ...m, displayOrder: modifier.displayOrder }
+      return m
+    })
+
+    try {
+      await savePOSModifiers(updatedModifiers)
+    } catch (error) {
+      console.error('Failed to reorder modifier:', error)
+      alert('Failed to reorder modifier')
+    }
+  }, [modifiers])
 
   // Add new item
   const handleAddItem = useCallback(async () => {
@@ -900,6 +949,12 @@ export function POSPage() {
             <span className="pos-report-metric-label">Net Sales</span>
             <span className="pos-report-metric-value">{formatPrice(reportData.netSales)}</span>
           </div>
+          {reportData.totalDiscounts > 0 && (
+            <div className="pos-report-metric">
+              <span className="pos-report-metric-label">Total Discounts</span>
+              <span className="pos-report-metric-value pos-report-discount">-{formatPrice(reportData.totalDiscounts)}</span>
+            </div>
+          )}
           <div className="pos-report-metric">
             <span className="pos-report-metric-label">Tax Collected</span>
             <span className="pos-report-metric-value">{formatPrice(reportData.taxCollected)}</span>
@@ -996,6 +1051,11 @@ export function POSPage() {
                 </div>
                 <div className="pos-order-totals">
                   <span>Subtotal: {formatPrice(order.subtotal)}</span>
+                  {order.discountPercent && order.discountPercent > 0 && (
+                    <span className="pos-order-discount">
+                      Discount ({order.discountPercent}%): -{formatPrice(order.discountAmount || 0)}
+                    </span>
+                  )}
                   <span>Tax: {formatPrice(order.tax)}</span>
                 </div>
                 <div className="pos-order-payment">
@@ -1142,7 +1202,9 @@ export function POSPage() {
               </div>
               <div className="pos-categories-list">
                 {categories.map((category) => {
-                  const categoryModifiers = modifiers.filter(m => m.categoryId === category.id)
+                  const categoryModifiers = modifiers
+                    .filter(m => m.categoryId === category.id)
+                    .sort((a, b) => a.displayOrder - b.displayOrder)
                   return (
                     <div key={category.id} className="pos-category-item">
                       <div className="pos-category-header">
@@ -1182,10 +1244,38 @@ export function POSPage() {
                         {categoryModifiers.length === 0 ? (
                           <span className="pos-no-modifiers-in-category">No modifiers in this category</span>
                         ) : (
-                          categoryModifiers.map((mod) => (
-                            <span key={mod.id} className="pos-category-modifier">
-                              {mod.name} {formatPriceAdjustment(mod.priceAdjustment)}
-                            </span>
+                          categoryModifiers.map((mod, idx) => (
+                            <div key={mod.id} className="pos-category-modifier-item">
+                              <button
+                                className="pos-modifier-move-btn"
+                                onClick={() => handleMoveModifier(mod.id, 'up')}
+                                disabled={idx === 0}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                className="pos-modifier-move-btn"
+                                onClick={() => handleMoveModifier(mod.id, 'down')}
+                                disabled={idx === categoryModifiers.length - 1}
+                              >
+                                ↓
+                              </button>
+                              <span className="pos-modifier-item-name">
+                                {mod.name} {formatPriceAdjustment(mod.priceAdjustment)}
+                              </span>
+                              <button
+                                className="pos-modifier-edit-btn"
+                                onClick={() => openEditModifier(mod)}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                className="pos-modifier-delete-btn"
+                                onClick={() => handleDeleteModifier(mod.id)}
+                              >
+                                ×
+                              </button>
+                            </div>
                           ))
                         )}
                       </div>
@@ -1326,12 +1416,65 @@ export function POSPage() {
             </div>
           </section>
 
+          {/* Discount Section */}
+          <section className="pos-discount-section">
+            <div className="pos-discount-label">DISCOUNT</div>
+            <div className="pos-discount-presets">
+              {[5, 10, 15, 20].map((pct) => (
+                <button
+                  key={pct}
+                  className={`pos-discount-preset-btn ${discountPercent === pct ? 'active' : ''}`}
+                  onClick={() => {
+                    setDiscountPercent(pct)
+                    setCustomDiscountInput('')
+                  }}
+                >
+                  {pct}%
+                </button>
+              ))}
+            </div>
+            <div className="pos-discount-custom">
+              <input
+                type="number"
+                placeholder="Custom %"
+                value={customDiscountInput}
+                onChange={(e) => {
+                  setCustomDiscountInput(e.target.value)
+                  const val = parseFloat(e.target.value)
+                  if (!isNaN(val) && val >= 0 && val <= 100) {
+                    setDiscountPercent(val)
+                  } else if (e.target.value === '') {
+                    setDiscountPercent(0)
+                  }
+                }}
+                min="0"
+                max="100"
+                step="1"
+              />
+              <button
+                className="pos-discount-clear-btn"
+                onClick={() => {
+                  setDiscountPercent(0)
+                  setCustomDiscountInput('')
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </section>
+
           {/* Totals */}
           <section className="pos-totals-section">
             <div className="pos-totals-row">
               <span>Subtotal</span>
               <span>{formatPrice(subtotal)}</span>
             </div>
+            {discountPercent > 0 && (
+              <div className="pos-totals-row pos-discount-row">
+                <span>Discount ({discountPercent}%)</span>
+                <span>-{formatPrice(discountAmount)}</span>
+              </div>
+            )}
             <div className="pos-totals-row">
               <span>Tax (10%)</span>
               <span>{formatPrice(tax)}</span>
@@ -1591,7 +1734,11 @@ export function POSPage() {
               <label>Available Modifier Categories:</label>
               <div className="pos-modal-categories-list">
                 {categories.map((category) => (
-                  <label key={category.id} className="pos-modal-category-checkbox">
+                  <label
+                    key={category.id}
+                    className="pos-modal-category-checkbox"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <input
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
@@ -1653,7 +1800,11 @@ export function POSPage() {
               <label>Available Modifier Categories:</label>
               <div className="pos-modal-categories-list">
                 {categories.map((category) => (
-                  <label key={category.id} className="pos-modal-category-checkbox">
+                  <label
+                    key={category.id}
+                    className="pos-modal-category-checkbox"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <input
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}

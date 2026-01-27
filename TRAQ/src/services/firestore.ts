@@ -2449,9 +2449,11 @@ export interface POSOrder {
   orderNumber: number
   items: POSCartItem[]
   orderType?: 'dineIn' | 'toGo' // Optional for backward compatibility with existing orders
-  subtotal: number // in cents
-  tax: number // 10% tax in cents
-  total: number // subtotal + tax in cents
+  discountPercent?: number // e.g., 10 for 10%
+  discountAmount?: number // calculated discount in cents
+  subtotal: number // in cents (before discount)
+  tax: number // 10% tax on discounted subtotal in cents
+  total: number // (subtotal - discount) + tax in cents
   cashTendered: number // in cents
   changeDue: number // in cents
   createdAt: string // ISO timestamp
