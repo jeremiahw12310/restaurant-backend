@@ -1743,7 +1743,7 @@ export function POSPage() {
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
                       onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
                       onChange={(e) => {
                         const { checked } = e.target
                         setNewItemCategoryIds((prev) => {
@@ -1816,7 +1816,7 @@ export function POSPage() {
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
                       onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
                       onChange={(e) => {
                         const { checked } = e.target
                         setNewItemCategoryIds((prev) => {
@@ -1972,7 +1972,6 @@ export function POSPage() {
                 type="checkbox"
                 checked={newCategorySingleSelect}
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
@@ -2016,7 +2015,6 @@ export function POSPage() {
                 type="checkbox"
                 checked={newCategorySingleSelect}
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
