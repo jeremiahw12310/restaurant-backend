@@ -2412,16 +2412,27 @@ export const subscribeToSelectionLogs = (
 
 // ============ POS SYSTEM ============
 
+export interface POSModifierCategory {
+  id: string
+  name: string
+  singleSelect: boolean // true = only one modifier selectable, false = multiple allowed
+  displayOrder: number // for ordering categories
+}
+
 export interface POSItem {
   id: string
   name: string
   price: number // in cents
+  allowedCategoryIds: string[] // which categories can be used with this item
+  displayOrder: number // for drag-and-drop reordering
 }
 
 export interface POSModifier {
   id: string
   name: string
   priceAdjustment: number // in cents, can be 0 or positive
+  categoryId: string // which category this modifier belongs to
+  displayOrder: number // for ordering within category
 }
 
 export interface POSCartItem {
@@ -2429,6 +2440,8 @@ export interface POSCartItem {
   item: POSItem
   modifiers: POSModifier[]
   quantity: number
+  // Modifiers array can contain multiple from multi-select categories
+  // but only one from single-select categories
 }
 
 export interface POSOrder {
@@ -2444,6 +2457,7 @@ export interface POSOrder {
 }
 
 interface POSConfig {
+  categories: POSModifierCategory[]
   items: POSItem[]
   modifiers: POSModifier[]
 }
@@ -2451,7 +2465,7 @@ interface POSConfig {
 const POS_COLLECTION = 'pos'
 
 /**
- * Get POS config (items and modifiers)
+ * Get POS config (categories, items and modifiers)
  */
 export const getPOSConfig = async (): Promise<POSConfig> => {
   try {
@@ -2460,17 +2474,77 @@ export const getPOSConfig = async (): Promise<POSConfig> => {
     const docSnap = await getDoc(docRef)
 
     if (!docSnap.exists()) {
-      return { items: [], modifiers: [] }
+      return { categories: [], items: [], modifiers: [] }
     }
 
     const data = docSnap.data()
+    
+    // Migration: if categories don't exist, create empty array
+    let categories: POSModifierCategory[] = Array.isArray(data.categories) ? data.categories : []
+    
+    // Migration: if modifiers exist without categoryId, assign to "Uncategorized"
+    let modifiers: POSModifier[] = Array.isArray(data.modifiers) ? data.modifiers : []
+    const hasUncategorized = modifiers.some(m => !m.categoryId || m.categoryId === '')
+    
+    if (hasUncategorized) {
+      // Find or create "Uncategorized" category
+      let uncategorizedCategory = categories.find(c => c.name === 'Uncategorized')
+      
+      if (!uncategorizedCategory) {
+        const maxOrder = categories.length > 0 ? Math.max(...categories.map(c => c.displayOrder)) : -1
+        uncategorizedCategory = {
+          id: 'uncategorized-' + Date.now(),
+          name: 'Uncategorized',
+          singleSelect: false,
+          displayOrder: maxOrder + 1,
+        }
+        categories = [...categories, uncategorizedCategory]
+      }
+      
+      // Assign uncategorized modifiers to this category
+      modifiers = modifiers.map(m => ({
+        ...m,
+        categoryId: (m.categoryId && m.categoryId !== '') ? m.categoryId : uncategorizedCategory!.id,
+        displayOrder: m.displayOrder ?? 0,
+      }))
+      
+      // Save migrated data if we created a new category
+      if (!categories.find(c => c.id === uncategorizedCategory!.id && c.name === 'Uncategorized' && categories.length > 1)) {
+        await setDoc(docRef, { categories, modifiers }, { merge: true })
+      }
+    } else {
+      // Ensure all modifiers have categoryId and displayOrder (defensive)
+      modifiers = modifiers.map(m => ({
+        ...m,
+        categoryId: m.categoryId || '',
+        displayOrder: m.displayOrder ?? 0,
+      }))
+    }
+    
+    // Migration: ensure items have allowedCategoryIds and displayOrder
+    let items: POSItem[] = Array.isArray(data.items) ? data.items : []
+    items = items.map((item, index) => ({
+      ...item,
+      allowedCategoryIds: item.allowedCategoryIds || [],
+      displayOrder: item.displayOrder ?? index,
+    }))
+    
+    // Sort by displayOrder
+    items.sort((a, b) => a.displayOrder - b.displayOrder)
+    categories.sort((a, b) => a.displayOrder - b.displayOrder)
+    modifiers.sort((a, b) => {
+      if (a.categoryId !== b.categoryId) return a.categoryId.localeCompare(b.categoryId)
+      return a.displayOrder - b.displayOrder
+    })
+    
     return {
-      items: Array.isArray(data.items) ? data.items : [],
-      modifiers: Array.isArray(data.modifiers) ? data.modifiers : [],
+      categories,
+      items,
+      modifiers,
     }
   } catch (error) {
     console.warn('POS config load failed:', error)
-    return { items: [], modifiers: [] }
+    return { categories: [], items: [], modifiers: [] }
   }
 }
 
@@ -2484,6 +2558,20 @@ export const savePOSItems = async (items: POSItem[]): Promise<void> => {
     await setDoc(docRef, { items }, { merge: true })
   } catch (error) {
     console.error('POS items save failed:', error)
+    throw error
+  }
+}
+
+/**
+ * Save POS categories
+ */
+export const savePOSCategories = async (categories: POSModifierCategory[]): Promise<void> => {
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, POS_COLLECTION, 'config')
+    await setDoc(docRef, { categories }, { merge: true })
+  } catch (error) {
+    console.error('POS categories save failed:', error)
     throw error
   }
 }
@@ -2518,15 +2606,44 @@ export const subscribeToPOSConfig = (callback: (config: POSConfig) => void): (()
       await assertFirestoreReady()
       if (cancelled) return
       const docRef = doc(db, POS_COLLECTION, 'config')
-      unsubscribe = onSnapshot(docRef, (snap) => {
+      unsubscribe = onSnapshot(docRef, async (snap) => {
         if (snap.exists()) {
           const data = snap.data()
+          
+          // Migration: handle missing fields
+          let categories: POSModifierCategory[] = Array.isArray(data.categories) ? data.categories : []
+          let modifiers: POSModifier[] = Array.isArray(data.modifiers) ? data.modifiers : []
+          let items: POSItem[] = Array.isArray(data.items) ? data.items : []
+          
+          // Ensure modifiers have categoryId and displayOrder
+          modifiers = modifiers.map(m => ({
+            ...m,
+            categoryId: m.categoryId || '',
+            displayOrder: m.displayOrder ?? 0,
+          }))
+          
+          // Ensure items have allowedCategoryIds and displayOrder
+          items = items.map((item, index) => ({
+            ...item,
+            allowedCategoryIds: item.allowedCategoryIds || [],
+            displayOrder: item.displayOrder ?? index,
+          }))
+          
+          // Sort by displayOrder
+          items.sort((a, b) => a.displayOrder - b.displayOrder)
+          categories.sort((a, b) => a.displayOrder - b.displayOrder)
+          modifiers.sort((a, b) => {
+            if (a.categoryId !== b.categoryId) return a.categoryId.localeCompare(b.categoryId)
+            return a.displayOrder - b.displayOrder
+          })
+          
           callback({
-            items: Array.isArray(data.items) ? data.items : [],
-            modifiers: Array.isArray(data.modifiers) ? data.modifiers : [],
+            categories,
+            items,
+            modifiers,
           })
         } else {
-          callback({ items: [], modifiers: [] })
+          callback({ categories: [], items: [], modifiers: [] })
         }
       })
     } catch (error) {
@@ -2628,6 +2745,30 @@ export const subscribeToPOSOrders = (
   return () => {
     cancelled = true
     if (unsubscribe) unsubscribe()
+  }
+}
+
+/**
+ * Delete a single POS order
+ */
+export const deletePOSOrder = async (orderId: string): Promise<void> => {
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, POS_COLLECTION, 'orders')
+    const docSnap = await getDoc(docRef)
+
+    if (!docSnap.exists()) {
+      return
+    }
+
+    const data = docSnap.data()
+    const orders = Array.isArray(data.orders) ? data.orders : []
+    const filteredOrders = orders.filter((order: POSOrder) => order.id !== orderId)
+
+    await setDoc(docRef, { orders: filteredOrders, nextOrderNumber: data.nextOrderNumber || 1 })
+  } catch (error) {
+    console.error('POS order delete failed:', error)
+    throw error
   }
 }
 

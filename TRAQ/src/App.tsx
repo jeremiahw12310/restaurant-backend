@@ -10380,7 +10380,7 @@ function App() {
                 onClick={() => setShowMenu(false)}
               >
                 <span className="more-menu-btn-icon">💵</span>
-                <span className="more-menu-btn-label">Quick POS</span>
+                <span className="more-menu-btn-label">Cash Only POS</span>
                 <span className="more-menu-btn-arrow">›</span>
               </a>
 
