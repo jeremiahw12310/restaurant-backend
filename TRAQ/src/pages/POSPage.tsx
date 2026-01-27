@@ -439,11 +439,11 @@ export function POSPage() {
       return
     }
 
-    const order: POSOrder = {
+    const orderData: POSOrder = {
       id: generateId(),
       orderNumber: nextOrderNumber,
       items: cart,
-      orderType,
+      orderType: orderType as 'dineIn' | 'toGo',
       discountPercent: discountPercent > 0 ? discountPercent : undefined,
       discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
       subtotal: finalSubtotal,
@@ -454,6 +454,9 @@ export function POSPage() {
       createdAt: new Date().toISOString(),
     }
 
+    // Clean the order object by removing undefined values and ensuring valid JSON
+    const order: POSOrder = JSON.parse(JSON.stringify(orderData))
+
     try {
       await savePOSOrder(order)
       clearCart()
@@ -461,7 +464,8 @@ export function POSPage() {
       setShowCashPayment(false)
     } catch (error) {
       console.error('Failed to save order:', error)
-      alert('Failed to save order')
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      alert(`Failed to save order: ${errorMessage}`)
     }
   }, [cart, nextOrderNumber, cashTendered, orderType, discountPercent, clearCart])
 
@@ -1736,14 +1740,10 @@ export function POSPage() {
                     key={category.id}
                     className="pos-modal-category-checkbox"
                     onClick={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
                   >
                     <input
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onTouchStart={(e) => e.stopPropagation()}
                       onChange={(e) => {
                         const { checked } = e.target
                         setNewItemCategoryIds((prev) => {
@@ -1809,14 +1809,10 @@ export function POSPage() {
                     key={category.id}
                     className="pos-modal-category-checkbox"
                     onClick={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
                   >
                     <input
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onTouchStart={(e) => e.stopPropagation()}
                       onChange={(e) => {
                         const { checked } = e.target
                         setNewItemCategoryIds((prev) => {
@@ -1964,15 +1960,11 @@ export function POSPage() {
             />
             <label
               className="pos-modal-checkbox-label"
-              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
             >
               <input
                 type="checkbox"
                 checked={newCategorySingleSelect}
-                onPointerDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
               <span>Only allow one selection (single-select)</span>
@@ -2007,15 +1999,11 @@ export function POSPage() {
             />
             <label
               className="pos-modal-checkbox-label"
-              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
             >
               <input
                 type="checkbox"
                 checked={newCategorySingleSelect}
-                onPointerDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
               <span>Only allow one selection (single-select)</span>
