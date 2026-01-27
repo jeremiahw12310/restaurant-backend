@@ -522,6 +522,12 @@
   letter-spacing: 0.5px;
 }
 
+.pos-categories-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .pos-add-category-btn {
   background: #3b82f6;
   color: white;
@@ -648,6 +654,7 @@
   padding: 4px;
   display: flex;
   align-items: center;
+  touch-action: none;
 }
 
 .pos-modifier-drag-handle:active {
@@ -1492,6 +1499,8 @@
   border-radius: 8px;
   cursor: pointer;
   margin-bottom: 12px;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .pos-modal-checkbox-label input[type="checkbox"] {

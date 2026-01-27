@@ -70,6 +70,7 @@ export function POSPage() {
   const [dragOverItemId, setDragOverItemId] = useState<string | null>(null)
   const [draggedModifierId, setDraggedModifierId] = useState<string | null>(null)
   const [dragOverModifierId, setDragOverModifierId] = useState<string | null>(null)
+  const [isModifierDragging, setIsModifierDragging] = useState(false)
   const [showReports, setShowReports] = useState(false)
   const [reportStartDate, setReportStartDate] = useState(getTodayKey())
   const [reportEndDate, setReportEndDate] = useState(getTodayKey())
@@ -825,14 +826,17 @@ export function POSPage() {
   }, [editMode, draggedItemId, dragOverItemId, items])
 
   // Handle modifier drag start (touch)
-  const handleModifierTouchStart = (_e: React.TouchEvent, modifierId: string) => {
+  const handleModifierTouchStart = (e: React.TouchEvent, modifierId: string) => {
     if (!editMode) return
+    e.preventDefault()
     setDraggedModifierId(modifierId)
+    setIsModifierDragging(true)
   }
 
   // Handle modifier touch move
   const handleModifierTouchMove = (e: React.TouchEvent) => {
-    if (!editMode || !draggedModifierId) return
+    if (!editMode || !draggedModifierId || !isModifierDragging) return
+    e.preventDefault()
     
     const touch = e.touches[0]
     const element = document.elementFromPoint(touch.clientX, touch.clientY)
@@ -856,9 +860,10 @@ export function POSPage() {
 
   // Handle modifier drag end and reorder
   const handleModifierTouchEnd = useCallback(async () => {
-    if (!editMode || !draggedModifierId) {
+    if (!editMode || !draggedModifierId || !isModifierDragging) {
       setDraggedModifierId(null)
       setDragOverModifierId(null)
+      setIsModifierDragging(false)
       return
     }
 
@@ -900,7 +905,8 @@ export function POSPage() {
     
     setDraggedModifierId(null)
     setDragOverModifierId(null)
-  }, [editMode, draggedModifierId, dragOverModifierId, modifiers])
+    setIsModifierDragging(false)
+  }, [editMode, draggedModifierId, dragOverModifierId, modifiers, isModifierDragging])
 
   // Format cart item description
   const formatCartItem = (cartItem: POSCartItem): string => {
@@ -1239,16 +1245,29 @@ export function POSPage() {
             <section className="pos-categories-section">
               <div className="pos-categories-header">
                 <span>MODIFIER CATEGORIES</span>
-                <button
-                  className="pos-add-category-btn"
-                  onClick={() => {
-                    setNewCategoryName('')
-                    setNewCategorySingleSelect(false)
-                    setShowAddCategory(true)
-                  }}
-                >
-                  + Add Category
-                </button>
+                <div className="pos-categories-header-actions">
+                  <button
+                    className="pos-add-modifier-btn"
+                    onClick={() => {
+                      setNewModifierName('')
+                      setNewModifierPrice('')
+                      setNewModifierCategoryId('')
+                      setShowAddModifier(true)
+                    }}
+                  >
+                    + Add Modifier
+                  </button>
+                  <button
+                    className="pos-add-category-btn"
+                    onClick={() => {
+                      setNewCategoryName('')
+                      setNewCategorySingleSelect(false)
+                      setShowAddCategory(true)
+                    }}
+                  >
+                    + Add Category
+                  </button>
+                </div>
               </div>
               <div className="pos-categories-list">
                 {categories.map((category) => {
@@ -1299,11 +1318,14 @@ export function POSPage() {
                               key={mod.id}
                               data-modifier-id={mod.id}
                               className={`pos-category-modifier-item ${draggedModifierId === mod.id ? 'dragging' : ''} ${dragOverModifierId === mod.id ? 'drag-over' : ''}`}
-                              onTouchStart={(e) => handleModifierTouchStart(e, mod.id)}
                               onTouchMove={handleModifierTouchMove}
                               onTouchEnd={handleModifierTouchEnd}
                             >
-                              <div className="pos-modifier-drag-handle" title="Drag to reorder">
+                              <div
+                                className="pos-modifier-drag-handle"
+                                title="Drag to reorder"
+                                onTouchStart={(e) => handleModifierTouchStart(e, mod.id)}
+                              >
                                 ⋮⋮
                               </div>
                               <span className="pos-modifier-item-name">
@@ -1311,6 +1333,7 @@ export function POSPage() {
                               </span>
                               <button
                                 className="pos-modifier-edit-btn"
+                                onTouchStart={(e) => e.stopPropagation()}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   openEditModifier(mod)
@@ -1320,6 +1343,7 @@ export function POSPage() {
                               </button>
                               <button
                                 className="pos-modifier-delete-btn"
+                                onTouchStart={(e) => e.stopPropagation()}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   handleDeleteModifier(mod.id)
@@ -1345,91 +1369,9 @@ export function POSPage() {
           <section className="pos-modifiers-section">
             <div className="pos-modifiers-header">
               <span>MODIFIERS</span>
-              {editMode && (
-                <button
-                  className="pos-add-modifier-btn"
-                  onClick={() => {
-                    setNewModifierName('')
-                    setNewModifierPrice('')
-                    setNewModifierCategoryId('')
-                    setShowAddModifier(true)
-                  }}
-                >
-                  + Add
-                </button>
-              )}
             </div>
             <div className="pos-modifiers-list">
-              {editMode ? (
-                // Edit mode: show grouped by category
-                <>
-                  {categories.map((category) => {
-                    const categoryModifiers = modifiers
-                      .filter(m => m.categoryId === category.id)
-                      .sort((a, b) => a.displayOrder - b.displayOrder)
-                    
-                    if (categoryModifiers.length === 0) return null
-                    
-                    return (
-                      <div key={category.id} className="pos-modifier-category-group">
-                        <div className="pos-modifier-category-label">{category.name}</div>
-                        {categoryModifiers.map((mod) => (
-                          <button
-                            key={mod.id}
-                            className="pos-modifier-btn"
-                            onClick={() => openEditModifier(mod)}
-                          >
-                            {mod.name} {formatPriceAdjustment(mod.priceAdjustment)}
-                            <span
-                              className="pos-modifier-delete"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDeleteModifier(mod.id)
-                              }}
-                            >
-                              ×
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )
-                  })}
-                  {/* Show modifiers with invalid/missing categories */}
-                  {(() => {
-                    const invalidModifiers = modifiers.filter(m => {
-                      const catId = m.categoryId || ''
-                      return !catId || !categories.find(c => c.id === catId)
-                    })
-                    if (invalidModifiers.length === 0) return null
-                    return (
-                      <div className="pos-modifier-category-group">
-                        <div className="pos-modifier-category-label">Orphaned Modifiers</div>
-                        {invalidModifiers.map((mod) => (
-                          <button
-                            key={mod.id}
-                            className="pos-modifier-btn"
-                            onClick={() => openEditModifier(mod)}
-                          >
-                            {mod.name} {formatPriceAdjustment(mod.priceAdjustment)}
-                            <span
-                              className="pos-modifier-delete"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDeleteModifier(mod.id)
-                              }}
-                            >
-                              ×
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )
-                  })()}
-                </>
-              ) : (
-                // Normal mode: modifiers are selected via item modal, not shown here
-                <span className="pos-no-modifiers">Tap an item to select modifiers</span>
-              )}
+              <span className="pos-no-modifiers">Tap an item to select modifiers</span>
             </div>
           </section>
         </div>
@@ -1596,7 +1538,11 @@ export function POSPage() {
                           <button
                             key={mod.id}
                             className={`pos-modifier-selection-btn ${isSelected ? 'selected' : ''}`}
-                            onClick={() => toggleModifier(mod.id)}
+                            onPointerDown={(e) => {
+                              e.preventDefault()
+                              toggleModifier(mod.id)
+                            }}
+                            onClick={(e) => e.preventDefault()}
                           >
                             {category.singleSelect ? (
                               <span className="pos-modifier-radio">{isSelected ? '●' : '○'}</span>
@@ -1789,19 +1735,23 @@ export function POSPage() {
                   <label
                     key={category.id}
                     className="pos-modal-category-checkbox"
-                    onClick={(e) => e.stopPropagation()}
                   >
                     <input
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => {
-                        const next = new Set(newItemCategoryIds)
-                        if (e.target.checked) {
-                          next.add(category.id)
-                        } else {
-                          next.delete(category.id)
-                        }
-                        setNewItemCategoryIds(next)
+                        const { checked } = e.target
+                        setNewItemCategoryIds((prev) => {
+                          const next = new Set(prev)
+                          if (checked) {
+                            next.add(category.id)
+                          } else {
+                            next.delete(category.id)
+                          }
+                          return next
+                        })
                       }}
                     />
                     <span>{category.name}</span>
@@ -1855,19 +1805,23 @@ export function POSPage() {
                   <label
                     key={category.id}
                     className="pos-modal-category-checkbox"
-                    onClick={(e) => e.stopPropagation()}
                   >
                     <input
                       type="checkbox"
                       checked={newItemCategoryIds.has(category.id)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => {
-                        const next = new Set(newItemCategoryIds)
-                        if (e.target.checked) {
-                          next.add(category.id)
-                        } else {
-                          next.delete(category.id)
-                        }
-                        setNewItemCategoryIds(next)
+                        const { checked } = e.target
+                        setNewItemCategoryIds((prev) => {
+                          const next = new Set(prev)
+                          if (checked) {
+                            next.add(category.id)
+                          } else {
+                            next.delete(category.id)
+                          }
+                          return next
+                        })
                       }}
                     />
                     <span>{category.name}</span>
@@ -2002,10 +1956,16 @@ export function POSPage() {
               onChange={(e) => setNewCategoryName(e.target.value)}
               autoFocus
             />
-            <label className="pos-modal-checkbox-label">
+            <label
+              className="pos-modal-checkbox-label"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
               <input
                 type="checkbox"
                 checked={newCategorySingleSelect}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
               <span>Only allow one selection (single-select)</span>
@@ -2038,10 +1998,16 @@ export function POSPage() {
               onChange={(e) => setNewCategoryName(e.target.value)}
               autoFocus
             />
-            <label className="pos-modal-checkbox-label">
+            <label
+              className="pos-modal-checkbox-label"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
               <input
                 type="checkbox"
                 checked={newCategorySingleSelect}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
                 onChange={(e) => setNewCategorySingleSelect(e.target.checked)}
               />
               <span>Only allow one selection (single-select)</span>
