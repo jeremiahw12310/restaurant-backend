@@ -1,0 +1,264 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Optional: enable secure admin overrides by setting a custom claim { admin: true }
+    // on admin users (requires Firebase Auth).
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    // Public config reads (app bootstraps employees + task order from here).
+    match /config/{docId} {
+      allow read: if true;
+      // If you later add Firebase Auth + custom claims, change this to: if isAdmin()
+      allow write: if true;
+    }
+
+    // Music track metadata (unauthenticated app today; keep open like other admin features).
+    // If you later add Firebase Auth + admin claims, change writes to: if isAdmin()
+    match /musicTracks/{trackId} {
+      allow read: if true;
+
+      // Minimal schema checks to avoid totally malformed docs.
+      allow create, update: if request.resource.data.title is string
+        && request.resource.data.storagePath is string
+        && request.resource.data.enabled is bool;
+      allow delete: if true;
+    }
+
+    // Music control logs (play/pause/next/prev). Keep open like other unauthenticated features.
+    // If you later add Firebase Auth + admin claims, change writes to: if isAdmin()
+    match /musicLogs/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.ts is string
+        && request.resource.data.action is string;
+      allow update: if false;
+      allow delete: if true;
+    }
+
+    // Music sessions (browser tabs reporting playback state for remote control).
+    // Each session heartbeats its state every 5 seconds. Admin can write commands.
+    match /musicSessions/{sessionId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
+
+    // Remote command queue for music sessions.
+    // This is used by the admin UI to enqueue commands without overwriting a single field.
+    match /musicSessions/{sessionId}/commands/{commandId} {
+      allow read: if true;
+      // Minimal shape checks to avoid totally malformed docs.
+      allow create: if request.resource.data.action is string
+        && request.resource.data.issuedAt is string
+        && request.resource.data.issuedAtMs is int
+        && request.resource.data.status is string;
+      // Allow acknowledging commands and cleanup.
+      allow update, delete: if true;
+    }
+
+    // Legacy blob kept readable for migration / historical fallback.
+    match /taskState/{docId} {
+      allow read: if true;
+      // Lock legacy writes down; the app should no longer write here.
+      allow write: if false;
+    }
+
+    // New task completion docs: selecting == done
+    // Enforce "block second claim" at the database level:
+    // - Anyone may CREATE a completion doc if it doesn't exist.
+    // - No one may UPDATE/DELETE unless authenticated admin (optional).
+    match /days/{dateKey}/windows/{windowKey}/tasks/{taskId} {
+      allow read: if true;
+
+      // Only allow creating a completion if it doesn't already exist.
+      allow create: if !exists(/databases/$(database)/documents/days/$(dateKey)/windows/$(windowKey)/tasks/$(taskId))
+        && request.resource.data.status == 'done'
+        && request.resource.data.dateKey == dateKey
+        && request.resource.data.windowKey == windowKey
+        && request.resource.data.taskId == taskId
+        && request.resource.data.assignees is list
+        && request.resource.data.completedAt is string;
+
+      // Admin overrides (clear/edit) — this app does not use Firebase Auth today.
+      // Since "admin" is currently just a local PIN, Firestore cannot verify it.
+      // So we allow update/delete here to keep admin features working.
+      //
+      // NOTE: This is less secure. If you want this locked down, we need Firebase Auth + custom claims.
+      allow update: if request.resource.data.status == 'done'
+        && request.resource.data.dateKey == dateKey
+        && request.resource.data.windowKey == windowKey
+        && request.resource.data.taskId == taskId;
+      allow delete: if true;
+    }
+
+    // Break Selection (editable per-day plan used by the 11AM "Break Selection" task)
+    // Stored separately from task completions so it can be updated throughout the day.
+    match /days/{dateKey}/meta/breakSelection {
+      allow read: if true;
+      allow create, update: if request.resource.data.slots is list
+        && request.resource.data.updatedAt is string;
+      allow delete: if true;
+    }
+
+    // Daily Tasks - per-day run state (shared, one per dateKey doc id)
+    match /dailyTaskRuns/{dateKey} {
+      allow read: if true;
+      // Minimal shape checks; admin is local PIN so we keep writes open like other features.
+      allow create, update: if request.resource.data.dateKey is string
+        && request.resource.data.dateKey == dateKey
+        && request.resource.data.taskId is string
+        && request.resource.data.selectedAtMs is int;
+      allow delete: if true;
+    }
+
+    // Daily Tasks - weekly schedule docs (weekStartDateKey is Sunday dateKey)
+    match /dailyTaskWeeks/{weekStartDateKey} {
+      allow read: if true;
+      allow create, update: if request.resource.data.weekStartDateKey is string
+        && request.resource.data.weekStartDateKey == weekStartDateKey
+        && request.resource.data.days is map
+        && request.resource.data.generatedAtMs is int
+        && request.resource.data.generatorVersion is string;
+      allow delete: if true;
+    }
+
+    // Night Shift Reports (staff reports when night shift didn't complete their tasks)
+    // Admin can dismiss these reports.
+    match /nightShiftReports/{reportId} {
+      allow read: if true;
+      allow create: if request.resource.data.dateKey is string
+        && request.resource.data.taskId is string
+        && request.resource.data.taskName is string
+        && request.resource.data.reportedBy is list
+        && request.resource.data.reportedAt is string;
+      allow update: if true; // Admin dismissal
+      allow delete: if true;
+    }
+
+    // Stock Reports (OUT / LOW STOCK)
+    // Anyone can create; admin can mark finished (this app currently has no Firebase Auth).
+    match /stockReports/{reportId} {
+      allow read: if true;
+      allow create: if request.resource.data.kind is string
+        && request.resource.data.item is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      // Allow updates for finishing/editing status; keep minimal shape checks.
+      allow update: if request.resource.data.kind is string
+        && request.resource.data.item is string
+        && request.resource.data.status is string;
+      allow delete: if true;
+    }
+
+    // Management Reports (Notify Management)
+    match /managementReports/{reportId} {
+      allow read: if true;
+      allow create: if request.resource.data.kind is string
+        && request.resource.data.details is string
+        && request.resource.data.status == 'new'
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int
+        && request.resource.data.createdBy is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Time Off Requests (employees can request time off, admin approves/denies)
+    match /timeOffRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.employee is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.reason is string
+        && request.resource.data.createdAt is string
+        && request.resource.data.updatedAt is string
+        && request.resource.data.requestedShifts is list
+        && request.resource.data.requestKind is string;
+      allow update: if request.resource.data.employee is string
+        && request.resource.data.status is string
+        && request.resource.data.updatedAt is string;
+      allow delete: if true; // Admin can delete
+    }
+
+    // Notifications (admin sends notifications to employees)
+    match /notifications/{notificationId} {
+      allow read: if true;
+      allow create: if request.resource.data.to is string
+        && request.resource.data.message is string
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int
+        && request.resource.data.active is bool;
+      allow update: if true; // Allow dismissals and admin updates
+      allow delete: if true; // Admin can delete
+    }
+
+    // Admin Login Attempts (track login attempts to admin panel)
+    match /adminLoginAttempts/{attemptId} {
+      allow read: if true;
+      allow create: if request.resource.data.success is bool
+        && request.resource.data.ts is string
+        && request.resource.data.tsMs is int;
+      allow update: if false; // Login attempts are immutable
+      allow delete: if true; // Admin can clean up old attempts
+    }
+
+    // Selection Logs (task selections and clearings across all devices)
+    match /selectionLogs/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.ts is string
+        && request.resource.data.tsMs is int
+        && request.resource.data.action is string
+        && request.resource.data.taskId is string
+        && request.resource.data.taskName is string;
+      allow update: if false; // Selection logs are immutable
+      allow delete: if true; // Admin can clean up old logs
+    }
+
+    // Job Applications (Bonfire hiring portal)
+    // Anyone can submit an application; admin can read/update/delete via PIN-protected UI.
+    match /applications/{applicationId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'new'
+        && request.resource.data.name is string
+        && request.resource.data.email is string
+        && request.resource.data.birthDate is string
+        && request.resource.data.address is string
+        && request.resource.data.phone is string
+        && request.resource.data.availability is list
+        && request.resource.data.employmentHistory is string
+        && request.resource.data.felonyConviction is bool
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      allow update: if request.resource.data.status is string;
+      allow delete: if true;
+    }
+
+    // POS System (makeshift point of sale)
+    // Config: items and modifiers that can be used in orders
+    match /pos/config {
+      allow read: if true;
+      allow write: if true; // Anyone can add/edit items and modifiers
+    }
+
+    // POS Orders: completed orders with cash payment details
+    match /pos/orders {
+      allow read: if true;
+      allow write: if true; // Anyone can create orders (cash transactions)
+    }
+
+    // Default deny.
+    match /{document=**} {
+      // Keep reads open (the app is unauthenticated and relies on realtime listeners).
+      // Writes remain blocked by default unless explicitly allowed above.
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}
+
+

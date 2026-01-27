@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>TRAQ</title>
+    
+    <!-- Web App Manifest -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    
+    <!-- Apple iOS Web App Meta Tags - Enable fullscreen mode -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="TRAQ" />
+    
+    <!-- Apple Touch Icons with cache busting -->
+    <link rel="apple-touch-icon" href="/icons/icon-180.png?v=2" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png?v=2" />
+    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-180.png?v=2" />
+    <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-180.png?v=2" />
+    
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#d11a2a" />
+  </head>
+  <body>
+    <script>
+      // Detect iOS 9 and add class for optimizations
+      (function() {
+        var ua = navigator.userAgent;
+        if (/OS 9_/.test(ua)) {
+          document.documentElement.className += ' ios9-optimized';
+          
+          // iOS 9 Safari: reduce 300ms tap delay by disabling double-tap zoom.
+          // Keep this scoped to iOS 9 only to avoid impacting modern devices.
+          var meta = document.querySelector('meta[name=\"viewport\"]');
+          if (meta) {
+            var content = meta.getAttribute('content') || '';
+            // If it already has the settings, don't duplicate them.
+            if (content.indexOf('user-scalable=no') === -1) {
+              if (content.length && content.charAt(content.length - 1) !== ',') content += ',';
+              content += ' maximum-scale=1, user-scalable=no';
+              meta.setAttribute('content', content);
+            }
+          }
+        }
+      })();
+    </script>
+    <div id="root">
+      <!-- Fallback content shown while JavaScript loads -->
+      <div id="loading-fallback" style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1a1a1a;color:white;">
+        <div style="text-align:center;">
+          <div style="font-size:2rem;margin-bottom:1rem;">TRAQ</div>
+          <div id="load-status">Loading...</div>
+          <div id="error-log" style="font-size:0.75rem;color:#ff6b6b;margin-top:1rem;max-width:300px;word-wrap:break-word;"></div>
+        </div>
+      </div>
+    </div>
+    <noscript>
+      <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1a1a1a;color:white;">
+        <div style="text-align:center;padding:20px;">
+          <div style="font-size:2rem;margin-bottom:1rem;">TRAQ</div>
+          <div>JavaScript is required to use this app.</div>
+        </div>
+      </div>
+    </noscript>
+    <!-- Debug and error handler for JavaScript failures -->
+    <script>
+      (function() {
+        var logEl = document.getElementById('error-log');
+        var statusEl = document.getElementById('load-status');
+        var fallback = document.getElementById('loading-fallback');
+        var errors = [];
+        
+        function log(msg) {
+          errors.push(msg);
+          if (logEl) {
+            logEl.innerHTML = errors.join('<br>');
+          }
+        }
+        
+        function setStatus(msg) {
+          if (statusEl) statusEl.textContent = msg;
+        }
+        
+        window.onerror = function(msg, url, line, col, error) {
+          setStatus('Error occurred');
+          log('ERR: ' + String(msg).substring(0, 100));
+          if (url) log('URL: ' + url.split('/').pop());
+          if (line) log('Line: ' + line);
+          return false;
+        };
+        
+        // Track script loading
+        window.traqDebug = {
+          log: log,
+          setStatus: setStatus
+        };
+        
+        setStatus('Scripts loading...');
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
