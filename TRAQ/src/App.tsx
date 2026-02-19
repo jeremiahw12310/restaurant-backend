@@ -12903,6 +12903,10 @@ function App() {
                     const numPages = pdf.numPages
                     container.innerHTML = ''
                     const scale = 2
+
+                    // Render each PDF page to a temporary canvas, then convert to <img>
+                    // iOS Safari cannot print <canvas> bitmaps — only <img> elements work
+                    const images: HTMLImageElement[] = []
                     for (let i = 1; i <= numPages; i++) {
                       const page = await pdf.getPage(i)
                       const viewport = page.getViewport({ scale })
@@ -12912,27 +12916,38 @@ function App() {
                       const ctx = canvas.getContext('2d')
                       if (!ctx) continue
                       await page.render({ canvas, canvasContext: ctx, viewport }).promise
-                      container.appendChild(canvas)
+                      const img = document.createElement('img')
+                      img.src = canvas.toDataURL('image/png')
+                      img.style.width = '100%'
+                      img.style.height = 'auto'
+                      img.style.display = 'block'
+                      images.push(img)
                     }
-                    container.style.opacity = '1'
-                    container.style.zIndex = '100000'
-                    container.style.background = 'white'
-                    container.style.overflow = 'visible'
-                    container.style.height = 'auto'
+
+                    images.forEach((img) => container.appendChild(img))
+
+                    await Promise.all(images.map((img) =>
+                      img.decode ? img.decode() : new Promise<void>((r) => { img.onload = () => r() })
+                    ))
+
+                    document.body.classList.add('printing-pdf')
+
                     const onAfterPrint = () => {
                       window.removeEventListener('afterprint', onAfterPrint)
-                      container.style.opacity = ''
-                      container.style.zIndex = ''
-                      container.style.background = ''
-                      container.style.overflow = ''
-                      container.style.height = ''
+                      document.body.classList.remove('printing-pdf')
                       container.innerHTML = ''
                       setPrintRequestPrinted(true)
                     }
                     window.addEventListener('afterprint', onAfterPrint)
-                    window.print()
+
+                    requestAnimationFrame(() => {
+                      setTimeout(() => {
+                        window.print()
+                      }, 50)
+                    })
                   } catch (err) {
                     console.error('Print failed:', err)
+                    document.body.classList.remove('printing-pdf')
                     container.innerHTML = ''
                     setPrintRequestPrinted(true)
                   }

@@ -12465,15 +12465,53 @@ body.scroll-locked {
   overflow: auto;
 }
 
-.print-request-pdf-container canvas {
+.print-request-pdf-container img {
   display: block;
   width: 100%;
   height: auto;
   max-width: 100%;
-  page-break-after: always;
 }
 
-.print-request-pdf-container canvas:last-child {
-  page-break-after: auto;
+@media print {
+  body.printing-pdf * {
+    visibility: hidden !important;
+  }
+
+  body.printing-pdf #print-request-overlay-root {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+    display: block !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body.printing-pdf #print-request-pdf-container,
+  body.printing-pdf #print-request-pdf-container * {
+    visibility: visible !important;
+  }
+
+  body.printing-pdf #print-request-pdf-container {
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    opacity: 1 !important;
+    z-index: auto !important;
+    overflow: visible !important;
+    pointer-events: auto !important;
+  }
+
+  body.printing-pdf #print-request-pdf-container img {
+    width: 100% !important;
+    height: auto !important;
+    page-break-after: always;
+    display: block !important;
+  }
+
+  body.printing-pdf #print-request-pdf-container img:last-child {
+    page-break-after: auto;
+  }
 }
 
