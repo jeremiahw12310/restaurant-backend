@@ -12914,8 +12914,18 @@ function App() {
                       await page.render({ canvas, canvasContext: ctx, viewport }).promise
                       container.appendChild(canvas)
                     }
+                    container.style.opacity = '1'
+                    container.style.zIndex = '100000'
+                    container.style.background = 'white'
+                    container.style.overflow = 'visible'
+                    container.style.height = 'auto'
                     const onAfterPrint = () => {
                       window.removeEventListener('afterprint', onAfterPrint)
+                      container.style.opacity = ''
+                      container.style.zIndex = ''
+                      container.style.background = ''
+                      container.style.overflow = ''
+                      container.style.height = ''
                       container.innerHTML = ''
                       setPrintRequestPrinted(true)
                     }

@@ -12477,29 +12477,3 @@ body.scroll-locked {
   page-break-after: auto;
 }
 
-@media print {
-  body * {
-    visibility: hidden !important;
-  }
-  #print-request-pdf-container,
-  #print-request-pdf-container * {
-    visibility: visible !important;
-  }
-  #print-request-pdf-container {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: auto !important;
-    overflow: visible !important;
-    opacity: 1 !important;
-    z-index: 99999 !important;
-    background: white !important;
-  }
-  #print-request-pdf-container canvas {
-    max-width: 100% !important;
-    width: 100% !important;
-    height: auto !important;
-    page-break-after: always !important;
-  }
-}
