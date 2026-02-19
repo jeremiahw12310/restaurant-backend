@@ -12875,7 +12875,7 @@ function App() {
       {/* Print Request Overlay - admin sends document to iPad, non-dismissible until printed */}
       {printRequest && createPortal(
         <div className="print-request-overlay" id="print-request-overlay-root">
-          {/* Hidden container for PDF - shown only when printing via @media print */}
+          {/* Full-viewport iframe behind overlay - PDF needs space to render all pages */}
           <div className="print-request-pdf-container" id="print-request-pdf-container" aria-hidden="true" />
           <div className="print-request-overlay-card">
             <div className="print-request-overlay-icon">🖨️</div>
@@ -12906,13 +12906,20 @@ function App() {
                       URL.revokeObjectURL(blobUrl)
                     }
                     iframe.onload = () => {
+                      const w = iframe.contentWindow
+                      if (!w) { cleanup(); setPrintRequestPrinted(true); return }
                       const onAfterPrint = () => {
+                        w.removeEventListener('afterprint', onAfterPrint)
                         window.removeEventListener('afterprint', onAfterPrint)
                         cleanup()
                         setPrintRequestPrinted(true)
                       }
+                      w.addEventListener('afterprint', onAfterPrint)
                       window.addEventListener('afterprint', onAfterPrint)
-                      window.print()
+                      setTimeout(() => {
+                        w.focus()
+                        w.print()
+                      }, 400)
                     }
                   } catch (err) {
                     console.error('Print failed:', err)
