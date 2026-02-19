@@ -1,0 +1,24 @@
+# Firebase Functions deploy ignore rules.
+# If this file exists, Firebase uses it instead of `.gitignore` when packaging functions.
+
+# Ignore node_modules - Cloud Build will run npm install
+node_modules/
+
+# Ignore debug/error logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ignore TypeScript source files (we deploy compiled JS)
+src/
+tsconfig.json
+
+# Ignore git/editor files
+.git/
+.gitignore
+*.swp
+*.swo
+*~
+
+# DO NOT ignore lib/ - it contains our compiled code!
+# (By not listing lib/ here, it will be included in the deploy)

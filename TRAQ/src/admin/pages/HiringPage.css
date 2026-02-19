@@ -1,0 +1,402 @@
+/* HiringPage Styles */
+
+.hiring-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Stats Bar */
+.hiring-stats-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 16px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.hiring-stat-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px;
+  min-width: 70px;
+  border: 1px solid var(--admin-border, rgba(17, 17, 19, 0.12));
+  background: white;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.hiring-stat-btn:hover {
+  background: var(--n50, #f6f6f7);
+}
+
+.hiring-stat-btn.active {
+  border-color: var(--admin-accent, #d11a2a);
+  background: rgba(209, 26, 42, 0.05);
+}
+
+.hiring-stat-count {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--admin-text, #111113);
+}
+
+.hiring-stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.hiring-stat-new .hiring-stat-count { color: #eab308; }
+.hiring-stat-reviewed .hiring-stat-count { color: #3b82f6; }
+.hiring-stat-contacted .hiring-stat-count { color: #8b5cf6; }
+.hiring-stat-hired .hiring-stat-count { color: #22c55e; }
+.hiring-stat-rejected .hiring-stat-count { color: #ef4444; }
+
+/* List Card */
+.hiring-list-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.hiring-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Application Card */
+.hiring-card {
+  border-bottom: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+}
+
+.hiring-card:last-child {
+  border-bottom: none;
+}
+
+.hiring-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.hiring-card-header:hover {
+  background: var(--n25, #fbfbfc);
+}
+
+.hiring-card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.hiring-card-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--admin-text, #111113);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hiring-card-status {
+  display: inline-flex;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.hiring-status-new {
+  background: rgba(234, 179, 8, 0.15);
+  color: #ca8a04;
+}
+
+.hiring-status-reviewed {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+}
+
+.hiring-status-contacted {
+  background: rgba(139, 92, 246, 0.15);
+  color: #7c3aed;
+}
+
+.hiring-status-hired {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.hiring-status-rejected {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.hiring-card-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.hiring-card-date {
+  font-size: 13px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.hiring-card-chevron {
+  font-size: 10px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  transition: transform 0.2s ease;
+}
+
+.hiring-card-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+/* Card Details */
+.hiring-card-details {
+  padding: 0 20px 20px 20px;
+  border-top: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+  background: var(--n25, #fbfbfc);
+}
+
+.hiring-detail-section {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+}
+
+.hiring-detail-section:last-child {
+  border-bottom: none;
+}
+
+.hiring-detail-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  margin: 0 0 12px 0;
+}
+
+.hiring-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.hiring-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hiring-detail-item-full {
+  grid-column: 1 / -1;
+}
+
+.hiring-detail-label {
+  font-size: 12px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.hiring-detail-value {
+  font-size: 14px;
+  color: var(--admin-text, #111113);
+}
+
+.hiring-detail-link {
+  color: var(--admin-accent, #d11a2a);
+  text-decoration: none;
+}
+
+.hiring-detail-link:hover {
+  text-decoration: underline;
+}
+
+/* Availability */
+.hiring-availability-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hiring-availability-chip {
+  padding: 6px 12px;
+  font-size: 12px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+  border-radius: 6px;
+}
+
+.hiring-availability-other {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--admin-text, #111113);
+}
+
+/* Employment History */
+.hiring-employment-history {
+  font-size: 14px;
+  color: var(--admin-text, #111113);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  background: white;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+}
+
+/* Felony Indicator */
+.hiring-felony-indicator {
+  display: inline-flex;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+}
+
+.hiring-felony-no {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+.hiring-felony-yes {
+  background: rgba(234, 179, 8, 0.1);
+  color: #ca8a04;
+}
+
+/* Notes */
+.hiring-notes-input {
+  resize: vertical;
+  min-height: 80px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.hiring-save-notes-btn {
+  margin-top: 10px;
+}
+
+/* Status Buttons */
+.hiring-status-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hiring-status-btn {
+  border: 1px solid transparent !important;
+  opacity: 0.7;
+}
+
+.hiring-status-btn:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.hiring-status-btn.active {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--admin-text, #111113);
+}
+
+/* Delete Row */
+.hiring-delete-row {
+  padding-top: 16px;
+  margin-top: 8px;
+  border-top: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+}
+
+.hiring-delete-btn {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid transparent;
+}
+
+.hiring-delete-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .hiring-stats-bar {
+    justify-content: center;
+  }
+
+  .hiring-stat-btn {
+    min-width: 60px;
+    padding: 10px 12px;
+  }
+
+  .hiring-stat-count {
+    font-size: 18px;
+  }
+
+  .hiring-card-header {
+    padding: 14px 16px;
+    flex-wrap: wrap;
+  }
+
+  .hiring-card-header-left {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .hiring-card-details {
+    padding: 0 16px 16px 16px;
+  }
+
+  .hiring-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .hiring-stats-bar {
+    gap: 6px;
+    padding: 12px;
+  }
+
+  .hiring-stat-btn {
+    min-width: 50px;
+    padding: 8px;
+  }
+
+  .hiring-stat-count {
+    font-size: 16px;
+  }
+
+  .hiring-stat-label {
+    font-size: 10px;
+  }
+
+  .hiring-card-header-right {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+
+  .hiring-status-buttons {
+    flex-direction: column;
+  }
+
+  .hiring-status-buttons .admin-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

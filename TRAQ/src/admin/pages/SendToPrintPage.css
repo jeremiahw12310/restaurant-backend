@@ -1,0 +1,126 @@
+/* SendToPrintPage Styles */
+
+.send-to-print-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.send-print-form-card {
+  padding: 24px;
+}
+
+.send-print-form-card .admin-card-title {
+  margin-bottom: 20px;
+}
+
+.send-print-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.send-print-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.send-print-file-input {
+  padding: 12px;
+  border: 1px solid var(--admin-border, rgba(17, 17, 19, 0.12));
+  border-radius: 8px;
+  font-size: 14px;
+  background: white;
+}
+
+.send-print-file-name {
+  font-size: 13px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.send-print-message-input {
+  resize: vertical;
+  min-height: 80px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.send-print-hint {
+  font-size: 13px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  margin: 0;
+}
+
+.send-print-success {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.send-print-send-btn {
+  align-self: flex-start;
+}
+
+/* Pending Print */
+.send-print-pending-card,
+.send-print-recent-card {
+  padding: 24px;
+}
+
+.send-print-pending-content,
+.send-print-recent-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.send-print-pending-message,
+.send-print-recent-message {
+  font-size: 15px;
+  color: var(--admin-text, #111113);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.send-print-pending-meta,
+.send-print-recent-meta {
+  font-size: 13px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.send-print-cancel-btn {
+  align-self: flex-start;
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.send-print-cancel-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.send-print-recent-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  align-self: flex-start;
+}
+
+.send-print-status-pending {
+  background: rgba(234, 179, 8, 0.15);
+  color: #ca8a04;
+}
+
+.send-print-status-dismissed {
+  background: var(--n50, #f6f6f7);
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.send-print-empty {
+  font-size: 14px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}

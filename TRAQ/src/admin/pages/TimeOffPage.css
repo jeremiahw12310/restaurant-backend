@@ -1,0 +1,263 @@
+/* TimeOffPage Styles */
+
+.timeoff-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Filters */
+.timeoff-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.timeoff-filter-btns {
+  display: flex;
+  background: var(--n50, #f6f6f7);
+  border-radius: 10px;
+  padding: 4px;
+  flex-shrink: 0;
+}
+
+.timeoff-filter-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.timeoff-filter-btn:hover {
+  color: var(--admin-text, #111113);
+}
+
+.timeoff-filter-btn.active {
+  background: white;
+  color: var(--admin-text, #111113);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.timeoff-filter-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--n100, #efeff1);
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.timeoff-filter-count-warning {
+  background: rgba(234, 179, 8, 0.15);
+  color: #ca8a04;
+}
+
+.timeoff-filter-count-success {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.timeoff-filter-count-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.timeoff-search {
+  flex: 1;
+  min-width: 200px;
+  max-width: 300px;
+}
+
+/* List Card */
+.timeoff-list-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.timeoff-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Request Card */
+.timeoff-card {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+  transition: background 0.15s ease;
+}
+
+.timeoff-card:last-child {
+  border-bottom: none;
+}
+
+.timeoff-card:hover {
+  background: var(--n25, #fbfbfc);
+}
+
+.timeoff-card-pending {
+  border-left: 3px solid #eab308;
+}
+
+.timeoff-card-approved {
+  border-left: 3px solid #22c55e;
+}
+
+.timeoff-card-denied {
+  border-left: 3px solid var(--admin-accent, #d11a2a);
+}
+
+.timeoff-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.timeoff-employee {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--admin-text, #111113);
+}
+
+.timeoff-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.timeoff-dates {
+  font-size: 14px;
+  color: var(--admin-text, #111113);
+}
+
+.timeoff-dates strong {
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.timeoff-reason {
+  font-size: 14px;
+  color: var(--admin-text, #111113);
+  background: var(--n50, #f6f6f7);
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+
+.timeoff-reason strong {
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  display: block;
+  margin-bottom: 4px;
+}
+
+.timeoff-meta {
+  font-size: 12px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+/* Actions */
+.timeoff-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.timeoff-btn-approve {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+  border: 1px solid transparent;
+}
+
+.timeoff-btn-approve:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.timeoff-btn-deny {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid transparent;
+}
+
+.timeoff-btn-deny:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.timeoff-btn-delete {
+  background: var(--n50, #f6f6f7);
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  border: 1px solid var(--admin-border, rgba(17, 17, 19, 0.12));
+}
+
+.timeoff-btn-delete:hover:not(:disabled) {
+  background: var(--n100, #efeff1);
+  color: var(--admin-text, #111113);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .timeoff-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .timeoff-filter-btns {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .timeoff-filter-btn {
+    flex: 1;
+    justify-content: center;
+    white-space: nowrap;
+  }
+
+  .timeoff-search {
+    max-width: none;
+  }
+
+  .timeoff-card {
+    padding: 16px;
+  }
+
+  .timeoff-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .timeoff-employee {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .timeoff-card-actions {
+    flex-direction: column;
+  }
+
+  .timeoff-card-actions .admin-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .timeoff-filter-btn {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .timeoff-filter-count {
+    font-size: 10px;
+    padding: 1px 5px;
+  }
+}

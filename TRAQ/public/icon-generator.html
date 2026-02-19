@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>TRAQ Icon Generator</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #1a1a1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    canvas {
+      border: 2px solid #333;
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: crisp-edges;
+    }
+    button {
+      background: #d11a2a;
+      color: white;
+      border: none;
+      padding: 15px 30px;
+      font-size: 18px;
+      font-weight: bold;
+      cursor: pointer;
+      border-radius: 8px;
+    }
+    button:hover {
+      background: #a0121f;
+    }
+    .info {
+      color: white;
+      text-align: center;
+      max-width: 600px;
+    }
+  </style>
+</head>
+<body>
+  <div class="info">
+    <h1 style="color: #d11a2a;">TRAQ Icon Generator</h1>
+    <p>Right-click each canvas and "Save Image As..." to download the icons.</p>
+    <p>Save as: icon-180.png, icon-192.png, and icon-512.png</p>
+  </div>
+
+  <div>
+    <h3 style="color: white;">180x180 (iOS)</h3>
+    <canvas id="canvas180" width="180" height="180"></canvas>
+    <br>
+    <button onclick="download('canvas180', 'icon-180.png')">Download 180x180</button>
+  </div>
+
+  <div>
+    <h3 style="color: white;">192x192 (Android)</h3>
+    <canvas id="canvas192" width="192" height="192"></canvas>
+    <br>
+    <button onclick="download('canvas192', 'icon-192.png')">Download 192x192</button>
+  </div>
+
+  <div>
+    <h3 style="color: white;">512x512 (High-res)</h3>
+    <canvas id="canvas512" width="512" height="512"></canvas>
+    <br>
+    <button onclick="download('canvas512', 'icon-512.png')">Download 512x512</button>
+  </div>
+
+  <script>
+    function drawIcon(canvas) {
+      const ctx = canvas.getContext('2d');
+      const size = canvas.width;
+      
+      // Background
+      ctx.fillStyle = '#d11a2a';
+      ctx.fillRect(0, 0, size, size);
+      
+      // Text
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `900 ${size * 0.35}px -apple-system, BlinkMacSystemFont, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.letterSpacing = '-0.05em';
+      
+      // Draw TRAQ text centered
+      ctx.fillText('TRAQ', size / 2, size / 2);
+    }
+
+    function download(canvasId, filename) {
+      const canvas = document.getElementById(canvasId);
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+
+    // Draw all icons on page load
+    drawIcon(document.getElementById('canvas180'));
+    drawIcon(document.getElementById('canvas192'));
+    drawIcon(document.getElementById('canvas512'));
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+

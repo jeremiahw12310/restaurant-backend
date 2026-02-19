@@ -2187,6 +2187,166 @@ export const deleteNotification = async (notificationId: string): Promise<void> 
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Print Request - admin sends document to iPad for printing
+// ────────────────────────────────────────────────────────────────────────────
+
+export type PrintRequestDoc = {
+  fileUrl: string
+  message: string
+  createdAt: string
+  status: 'pending' | 'dismissed'
+  fileType: 'pdf' | 'docx' | 'doc'
+}
+
+/**
+ * Subscribe to the active print request
+ */
+export const subscribeToPrintRequest = (
+  callback: (request: PrintRequestDoc | null) => void
+): (() => void) => {
+  let unsubscribe: (() => void) | null = null
+  let cancelled = false
+
+  const setup = async () => {
+    await waitForFirebase()
+    if (cancelled) return
+    if (!isFirestoreSDKAvailable()) return
+
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const docRef = doc(db, 'config', 'printRequest')
+      unsubscribe = onSnapshot(
+        docRef,
+        (snap) => {
+          if (!snap.exists() || cancelled) {
+            callback(null)
+            return
+          }
+          const d = snap.data()
+          const status = (d.status as string) || 'pending'
+          if (status !== 'pending') {
+            callback(null)
+            return
+          }
+          callback({
+            fileUrl: (d.fileUrl as string) || '',
+            message: (d.message as string) || '',
+            createdAt: (d.createdAt as string) || '',
+            status: status as 'pending' | 'dismissed',
+            fileType: ((d.fileType as string) || 'pdf') as 'pdf' | 'docx' | 'doc',
+          })
+        },
+        (err) => {
+          console.error('Print request subscription error:', err)
+          callback(null)
+        }
+      )
+    } catch (error) {
+      console.error('Error subscribing to print request:', error)
+      callback(null)
+    }
+  }
+
+  setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+/**
+ * Create a print request (admin action)
+ */
+export const createPrintRequest = async (
+  fileUrl: string,
+  message: string,
+  fileType: 'pdf' | 'docx' | 'doc'
+): Promise<void> => {
+  await assertFirestoreReady()
+  const docRef = doc(db, 'config', 'printRequest')
+  const now = new Date()
+  await setDoc(docRef, {
+    fileUrl,
+    message,
+    createdAt: now.toISOString(),
+    status: 'pending',
+    fileType,
+  })
+}
+
+/**
+ * Dismiss the print request (iPad taps Done)
+ */
+export const dismissPrintRequest = async (): Promise<void> => {
+  await assertFirestoreReady()
+  const docRef = doc(db, 'config', 'printRequest')
+  await updateDoc(docRef, { status: 'dismissed' })
+}
+
+/**
+ * Cancel the print request (admin action - same effect as dismiss)
+ */
+export const cancelPrintRequest = async (): Promise<void> => {
+  await dismissPrintRequest()
+}
+
+/**
+ * Subscribe to the print request for admin view (returns doc regardless of status)
+ */
+export const subscribeToPrintRequestForAdmin = (
+  callback: (request: PrintRequestDoc | null) => void
+): (() => void) => {
+  let unsubscribe: (() => void) | null = null
+  let cancelled = false
+
+  const setup = async () => {
+    await waitForFirebase()
+    if (cancelled) return
+    if (!isFirestoreSDKAvailable()) return
+
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const docRef = doc(db, 'config', 'printRequest')
+      unsubscribe = onSnapshot(
+        docRef,
+        (snap) => {
+          if (!snap.exists() || cancelled) {
+            callback(null)
+            return
+          }
+          const d = snap.data()
+          const status = (d.status as string) || 'pending'
+          callback({
+            fileUrl: (d.fileUrl as string) || '',
+            message: (d.message as string) || '',
+            createdAt: (d.createdAt as string) || '',
+            status: status as 'pending' | 'dismissed',
+            fileType: ((d.fileType as string) || 'pdf') as 'pdf' | 'docx' | 'doc',
+          })
+        },
+        (err) => {
+          console.error('Print request admin subscription error:', err)
+          callback(null)
+        }
+      )
+    } catch (error) {
+      console.error('Error subscribing to print request for admin:', error)
+      callback(null)
+    }
+  }
+
+  setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Admin Login Attempts - track login attempts to the admin panel
 // ────────────────────────────────────────────────────────────────────────────
 

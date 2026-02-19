@@ -1,0 +1,23 @@
+<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="512" height="512" fill="#d11a2a"/>
+  
+  <!-- TRAQ Text -->
+  <text 
+    x="256" 
+    y="290" 
+    font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif" 
+    font-size="180" 
+    font-weight="900" 
+    fill="#ffffff" 
+    text-anchor="middle"
+    letter-spacing="-8">TRAQ</text>
+</svg>
+
+
+
+
+
+
+
+

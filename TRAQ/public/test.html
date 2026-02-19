@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TRAQ Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      padding: 20px;
+      background: #f0f0f0;
+    }
+    .box {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 10px 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .success { color: #4CAF50; font-weight: bold; }
+    .error { color: #d11a2a; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>TRAQ Compatibility Test</h1>
+    <p class="success">✓ Basic HTML & CSS loaded</p>
+    <p id="js-test" class="error">✗ JavaScript not running</p>
+  </div>
+  
+  <div class="box">
+    <h2>Browser Info:</h2>
+    <p id="info"></p>
+  </div>
+  
+  <div class="box">
+    <h2>Feature Detection:</h2>
+    <ul id="features"></ul>
+  </div>
+
+  <script>
+    (function() {
+      document.getElementById('js-test').innerHTML = '<span class="success">✓ JavaScript is running</span>';
+      
+      var info = 'User Agent: ' + navigator.userAgent;
+      document.getElementById('info').innerHTML = info;
+      
+      var features = document.getElementById('features');
+      var tests = [
+        { name: 'Promise', test: typeof Promise !== 'undefined' },
+        { name: 'Fetch API', test: typeof fetch !== 'undefined' },
+        { name: 'localStorage', test: typeof localStorage !== 'undefined' },
+        { name: 'Arrow Functions', test: function() { try { eval('() => {}'); return true; } catch(e) { return false; } }() },
+        { name: 'const/let', test: function() { try { eval('const x = 1'); return true; } catch(e) { return false; } }() },
+        { name: 'Spread operator', test: function() { try { eval('var x = [...[1,2]]'); return true; } catch(e) { return false; } }() }
+      ];
+      
+      tests.forEach(function(t) {
+        var li = document.createElement('li');
+        li.innerHTML = (t.test ? '<span class="success">✓</span>' : '<span class="error">✗</span>') + ' ' + t.name;
+        features.appendChild(li);
+      });
+    })();
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+

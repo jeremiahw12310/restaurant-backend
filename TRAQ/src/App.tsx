@@ -63,6 +63,8 @@ import {
   subscribeToNotifications,
   createNotification,
   dismissNotificationForEmployee,
+  subscribeToPrintRequest,
+  dismissPrintRequest,
   setNotificationActive,
   deleteNotification,
   getPendingNotificationsForEmployee,
@@ -88,6 +90,7 @@ import {
   type ManagementReport,
   type ManagementReportStatus,
   type NotificationDoc,
+  type PrintRequestDoc,
   type TaskCatalog,
   type TaskDef,
   type TaskOverrides,
@@ -2364,6 +2367,10 @@ function App() {
   const [pendingNotifEmployee, setPendingNotifEmployee] = useState<string | null>(null)
   const [pendingNotifQueue, setPendingNotifQueue] = useState<NotificationDoc[]>([])
   const [pendingNotifIndex, setPendingNotifIndex] = useState(0)
+
+  // Print request overlay (admin sends document to iPad)
+  const [printRequest, setPrintRequest] = useState<PrintRequestDoc | null>(null)
+  const [printRequestPrinted, setPrintRequestPrinted] = useState(false)
 
   // Admin: Management Reports
   const [managementReports, setManagementReports] = useState<ManagementReport[]>([])
@@ -4690,6 +4697,15 @@ function App() {
     return () => unsubscribe()
   }, [])
 
+  // Subscribe to print request (admin sends document to iPad)
+  useEffect(() => {
+    const unsubscribe = subscribeToPrintRequest((req) => {
+      setPrintRequest(req)
+      setPrintRequestPrinted(false)
+    })
+    return () => unsubscribe()
+  }, [])
+
   // Admin-only: subscribe to management reports while viewing that tab
   useEffect(() => {
     const shouldSubscribe = isAdmin && showAdminPanel && adminView === 'managementReports'
@@ -5182,7 +5198,8 @@ function App() {
     showStockReports ||
     showNotifyManagement ||
     showDailyTaskModal ||
-    Boolean(activeTask)
+    Boolean(activeTask) ||
+    Boolean(printRequest)
   // Capture scroll position at the moment we *intend* to open a modal (click/tap handler),
   // because iOS Safari can transiently report 0 during the render/lock transition.
   const pendingLockScrollYRef = useRef<number | null>(null)
@@ -12853,6 +12870,81 @@ function App() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Print Request Overlay - admin sends document to iPad, non-dismissible until printed */}
+      {printRequest && createPortal(
+        <div className="print-request-overlay">
+          <div className="print-request-overlay-card">
+            <div className="print-request-overlay-icon">🖨️</div>
+            <div className="print-request-overlay-message">{printRequest.message}</div>
+            <button
+              type="button"
+              className="print-request-print-btn"
+              onClick={async () => {
+                if (!printRequest) return
+                const { fileUrl, fileType } = printRequest
+                if (fileType === 'docx' || fileType === 'doc') {
+                  window.open(fileUrl, '_blank')
+                  setPrintRequestPrinted(true)
+                  return
+                }
+                try {
+                  const res = await fetch(fileUrl, { mode: 'cors' })
+                  const blob = await res.blob()
+                  const blobUrl = URL.createObjectURL(blob)
+                  const iframe = document.createElement('iframe')
+                  iframe.style.position = 'fixed'
+                  iframe.style.left = '-9999px'
+                  iframe.style.width = '0'
+                  iframe.style.height = '0'
+                  iframe.style.border = 'none'
+                  document.body.appendChild(iframe)
+                  const cleanup = () => {
+                    URL.revokeObjectURL(blobUrl)
+                    iframe.remove()
+                  }
+                  iframe.onload = () => {
+                    const w = iframe.contentWindow
+                    if (!w) { cleanup(); setPrintRequestPrinted(true); return }
+                    const onAfterPrint = () => {
+                      w.removeEventListener('afterprint', onAfterPrint)
+                      cleanup()
+                      setPrintRequestPrinted(true)
+                    }
+                    w.addEventListener('afterprint', onAfterPrint)
+                    w.focus()
+                    w.print()
+                  }
+                  iframe.src = blobUrl
+                } catch (err) {
+                  console.error('Print failed:', err)
+                  setPrintRequestPrinted(true)
+                }
+              }}
+            >
+              Print
+            </button>
+            {printRequestPrinted && (
+              <button
+                type="button"
+                className="print-request-done-btn"
+                onClick={async () => {
+                  try {
+                    await dismissPrintRequest()
+                  } catch (err) {
+                    console.error('Failed to dismiss print request:', err)
+                  }
+                  setPrintRequest(null)
+                  setPrintRequestPrinted(false)
+                }}
+              >
+                Done
+              </button>
+            )}
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* Notification Overlay - portal to ensure full screen coverage on iOS */}

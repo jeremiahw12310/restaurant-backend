@@ -17,6 +17,7 @@ import { TimeOffPage } from './admin/pages/TimeOffPage.tsx'
 // Chunk 3 - Reports & Utilities
 import { ReportsPage } from './admin/pages/ReportsPage.tsx'
 import { NotificationsPage } from './admin/pages/NotificationsPage.tsx'
+import { SendToPrintPage } from './admin/pages/SendToPrintPage.tsx'
 import { LogsPage } from './admin/pages/LogsPage.tsx'
 import { MusicPage } from './admin/pages/MusicPage.tsx'
 import { HiringPage } from './admin/pages/HiringPage.tsx'
@@ -49,6 +50,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="logs" element={<LogsPage />} />
           <Route path="music" element={<MusicPage />} />
           <Route path="notify" element={<NotificationsPage />} />
+          <Route path="send-print" element={<SendToPrintPage />} />
           <Route path="hiring" element={<HiringPage />} />
           {/* Analytics */}
           <Route path="analytics" element={<AnalyticsPage />} />

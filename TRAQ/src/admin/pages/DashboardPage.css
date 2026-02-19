@@ -1,0 +1,237 @@
+/* DashboardPage Styles */
+
+.dashboard-page {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* Stats Section */
+.dashboard-stats {
+  margin-bottom: 4px;
+}
+
+/* Main Grid Layout */
+.dashboard-main-grid {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 24px;
+  align-items: start;
+}
+
+/* Notifications takes prominent space */
+.dashboard-notifications {
+  min-width: 0;
+}
+
+/* Sidebar */
+.dashboard-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Quick Actions */
+.dashboard-quick-actions {
+  padding: 20px;
+}
+
+.dashboard-quick-actions .admin-card-title {
+  margin-bottom: 16px;
+}
+
+.quick-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.quick-action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 8px;
+  background: var(--n50, #f6f6f7);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.quick-action-btn:hover {
+  background: var(--n100, #efeff1);
+  border-color: var(--admin-border, rgba(17, 17, 19, 0.12));
+  transform: translateY(-1px);
+}
+
+.quick-action-btn:active {
+  transform: translateY(0);
+}
+
+.quick-action-icon {
+  font-size: 24px;
+}
+
+.quick-action-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  text-align: center;
+  line-height: 1.2;
+}
+
+/* Week Overview */
+.dashboard-week-overview {
+  padding: 20px;
+}
+
+.dashboard-week-overview .admin-card-title {
+  margin-bottom: 16px;
+}
+
+.week-stats {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.week-stat {
+  flex: 1;
+  text-align: center;
+  padding: 12px;
+  background: var(--n50, #f6f6f7);
+  border-radius: 10px;
+}
+
+.week-stat-value {
+  display: block;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--admin-text, #111113);
+  line-height: 1.2;
+}
+
+.week-stat-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 4px;
+}
+
+.week-progress {
+  margin-top: 16px;
+}
+
+.week-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.week-progress-header span:first-child {
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.week-progress-header span:last-child {
+  font-weight: 600;
+  color: var(--admin-text, #111113);
+}
+
+.week-progress-bar {
+  height: 8px;
+  background: var(--n100, #efeff1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.week-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--admin-accent, #d11a2a) 0%, var(--accent-light, #ff2a3d) 100%);
+  border-radius: 4px;
+  transition: width 0.5s ease;
+}
+
+/* Active Alerts */
+.dashboard-active-alerts {
+  padding: 20px;
+  background: linear-gradient(135deg, rgba(209, 26, 42, 0.04) 0%, rgba(160, 18, 31, 0.02) 100%);
+  border: 1px solid rgba(209, 26, 42, 0.1);
+}
+
+.dashboard-active-alerts .admin-card-title {
+  margin-bottom: 12px;
+}
+
+.alert-count {
+  font-size: 14px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  margin: 0 0 16px;
+}
+
+.dashboard-active-alerts .admin-btn {
+  width: 100%;
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+  .dashboard-main-grid {
+    grid-template-columns: 1fr 320px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .dashboard-main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-sidebar {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+
+  .dashboard-active-alerts {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-page {
+    gap: 20px;
+  }
+
+  .dashboard-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-active-alerts {
+    grid-column: span 1;
+  }
+
+  .quick-actions-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .quick-actions-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .quick-action-btn {
+    padding: 12px 6px;
+  }
+
+  .quick-action-icon {
+    font-size: 20px;
+  }
+
+  .quick-action-label {
+    font-size: 10px;
+  }
+}

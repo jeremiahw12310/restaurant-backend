@@ -1,0 +1,45 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Music uploads (unauthenticated app today; keep open like other admin features).
+    // If you later add Firebase Auth + admin claims, change writes to admin-only.
+    match /music/{fileName} {
+      allow read: if true;
+      // Basic guardrails: mp3-ish content type + 2GB cap.
+      allow write: if request.resource != null
+        && request.resource.size < 2147483648
+        && request.resource.contentType.matches('audio/.*');
+    }
+
+    // Daily Task images (unauthenticated app today; keep open like other admin features).
+    // If you later add Firebase Auth + admin claims, change writes to admin-only.
+    match /dailyTasks/{allPaths=**} {
+      allow read: if true;
+      // Guardrails: images only + size cap (~20MB).
+      allow write: if request.resource != null
+        && request.resource.size < 20971520
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // Print documents (admin sends PDF/Word to iPad for printing).
+    match /printDocs/{fileName} {
+      allow read: if true;
+      allow write: if request.resource != null
+        && request.resource.size < 52428800
+        && (request.resource.contentType == 'application/pdf'
+            || request.resource.contentType.matches('application/vnd.openxmlformats.*')
+            || request.resource.contentType == 'application/msword');
+    }
+
+    match /{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}
+
+
+
+
+
+

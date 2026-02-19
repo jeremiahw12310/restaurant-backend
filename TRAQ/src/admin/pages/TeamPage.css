@@ -1,0 +1,265 @@
+/* TeamPage Styles */
+
+.team-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Add Employee Card */
+.team-add-card {
+  padding: 24px;
+}
+
+.team-add-card .admin-card-title {
+  margin-bottom: 16px;
+}
+
+.team-add-form {
+  display: flex;
+  gap: 12px;
+}
+
+.team-add-form .admin-input {
+  flex: 1;
+}
+
+/* Search Bar */
+.team-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.team-search-bar .admin-input {
+  flex: 1;
+  max-width: 400px;
+}
+
+.team-count {
+  font-size: 14px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  font-weight: 500;
+}
+
+/* Team List Card */
+.team-list-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.team-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Team Member Card */
+.team-member-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+  position: relative;
+  transition: background 0.15s ease;
+}
+
+.team-member-card:last-child {
+  border-bottom: none;
+}
+
+.team-member-card:hover {
+  background: var(--n25, #fbfbfc);
+}
+
+.team-member-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Color Button */
+.team-color-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 2px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  flex-shrink: 0;
+}
+
+.team-color-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.team-color-empty {
+  font-size: 18px;
+  color: #9ca3af;
+}
+
+.team-member-name {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--admin-text, #111113);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-edit-input {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--admin-text, #111113);
+  padding: 6px 12px;
+  border: 2px solid var(--admin-accent, #d11a2a);
+  border-radius: 8px;
+  background: white;
+  outline: none;
+  min-width: 150px;
+}
+
+/* Actions */
+.team-member-actions {
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.team-member-card:hover .team-member-actions {
+  opacity: 1;
+}
+
+.team-action-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: none;
+  background: var(--n50, #f6f6f7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.team-action-btn:hover {
+  background: var(--n100, #efeff1);
+  transform: scale(1.05);
+}
+
+.team-action-delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Color Picker */
+.team-color-picker {
+  position: absolute;
+  left: 24px;
+  top: 100%;
+  z-index: 100;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  padding: 16px;
+  margin-top: 8px;
+  animation: colorPickerIn 0.15s ease;
+}
+
+@keyframes colorPickerIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.team-color-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.team-color-option {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.team-color-option:hover {
+  transform: scale(1.1);
+}
+
+.team-color-option.selected {
+  border-color: var(--admin-text, #111113);
+  box-shadow: 0 0 0 2px white inset;
+}
+
+.team-color-remove {
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: 1px solid var(--admin-border, rgba(17, 17, 19, 0.12));
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.team-color-remove:hover {
+  background: var(--n50, #f6f6f7);
+  color: var(--admin-text, #111113);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .team-add-form {
+    flex-direction: column;
+  }
+
+  .team-add-form .admin-btn {
+    width: 100%;
+  }
+
+  .team-search-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .team-search-bar .admin-input {
+    max-width: none;
+  }
+
+  .team-count {
+    text-align: center;
+  }
+
+  .team-member-card {
+    padding: 14px 16px;
+  }
+
+  .team-member-actions {
+    opacity: 1;
+  }
+
+  .team-color-picker {
+    left: 16px;
+    right: 16px;
+  }
+}

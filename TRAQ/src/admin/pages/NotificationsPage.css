@@ -1,0 +1,226 @@
+/* NotificationsPage Styles */
+
+.notifications-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Form Card */
+.notif-form-card {
+  padding: 24px;
+}
+
+.notif-form-card .admin-card-title {
+  margin-bottom: 20px;
+}
+
+.notif-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.notif-form-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.notif-form-row .admin-label {
+  margin: 0;
+  min-width: 40px;
+}
+
+.notif-target-select {
+  flex: 1;
+  max-width: 300px;
+}
+
+.notif-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notif-message-input {
+  resize: vertical;
+  min-height: 80px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.notif-error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* Card Title with Count */
+.notif-count {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--admin-accent, #d11a2a);
+  color: white;
+  margin-left: 8px;
+}
+
+.notif-count-muted {
+  background: var(--n100, #efeff1);
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+/* Notification List */
+.notif-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.notif-list-inactive {
+  opacity: 0.8;
+}
+
+/* Notification Card */
+.notif-card {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--admin-border, rgba(17, 17, 19, 0.08));
+}
+
+.notif-card:last-child {
+  border-bottom: none;
+}
+
+.notif-card-active {
+  background: rgba(34, 197, 94, 0.02);
+  border-left: 3px solid #22c55e;
+}
+
+.notif-card-inactive {
+  background: var(--n25, #fbfbfc);
+  border-left: 3px solid var(--n200, #e4e5e8);
+}
+
+.notif-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.notif-card-target {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--admin-text, #111113);
+}
+
+.notif-card-time {
+  font-size: 12px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.notif-card-message {
+  font-size: 14px;
+  color: var(--admin-text, #111113);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin-bottom: 12px;
+}
+
+.notif-card-seen {
+  font-size: 12px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  background: var(--n50, #f6f6f7);
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.notif-seen-label {
+  font-weight: 600;
+}
+
+.notif-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.notif-btn-deactivate {
+  background: rgba(234, 179, 8, 0.1);
+  color: #ca8a04;
+  border: 1px solid transparent;
+}
+
+.notif-btn-deactivate:hover:not(:disabled) {
+  background: rgba(234, 179, 8, 0.15);
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.notif-btn-reactivate {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+  border: 1px solid transparent;
+}
+
+.notif-btn-reactivate:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.notif-btn-delete {
+  background: var(--n50, #f6f6f7);
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  border: 1px solid var(--admin-border, rgba(17, 17, 19, 0.12));
+  padding: 8px 12px;
+}
+
+.notif-btn-delete:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.05);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .notif-form-card {
+    padding: 16px;
+  }
+
+  .notif-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .notif-form-row .admin-label {
+    min-width: auto;
+  }
+
+  .notif-target-select {
+    max-width: none;
+  }
+
+  .notif-card {
+    padding: 14px 16px;
+  }
+
+  .notif-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 480px) {
+  .notif-card-actions {
+    flex-direction: column;
+  }
+
+  .notif-card-actions .admin-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}

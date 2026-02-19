@@ -1,0 +1,113 @@
+/* StatCard Component Styles */
+
+.stat-card {
+  background: var(--admin-surface, #ffffff);
+  border-radius: var(--admin-radius, 16px);
+  box-shadow: var(--admin-shadow, 0 4px 24px rgba(0, 0, 0, 0.08));
+  padding: 20px 24px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stat-card-clickable {
+  cursor: pointer;
+}
+
+.stat-card-clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.stat-card-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  background: var(--n50, #f6f6f7);
+  flex-shrink: 0;
+}
+
+.stat-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stat-card-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-card-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--admin-text, #111113);
+  line-height: 1.2;
+}
+
+.stat-card-subtitle {
+  font-size: 13px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+}
+
+.stat-card-trend {
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.stat-card-trend.positive {
+  color: #16a34a;
+}
+
+.stat-card-trend.negative {
+  color: var(--admin-accent, #d11a2a);
+}
+
+/* Color Variants */
+.stat-card-accent .stat-card-icon {
+  background: rgba(209, 26, 42, 0.1);
+  color: var(--admin-accent, #d11a2a);
+}
+
+.stat-card-success .stat-card-icon {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+.stat-card-warning .stat-card-icon {
+  background: rgba(234, 179, 8, 0.1);
+  color: #ca8a04;
+}
+
+.stat-card-info .stat-card-icon {
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .stat-card {
+    padding: 16px 20px;
+    gap: 12px;
+  }
+
+  .stat-card-icon {
+    width: 44px;
+    height: 44px;
+    font-size: 22px;
+  }
+
+  .stat-card-value {
+    font-size: 24px;
+  }
+}
