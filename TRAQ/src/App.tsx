@@ -12874,58 +12874,56 @@ function App() {
 
       {/* Print Request Overlay - admin sends document to iPad, non-dismissible until printed */}
       {printRequest && createPortal(
-        <div className="print-request-overlay">
+        <div className="print-request-overlay" id="print-request-overlay-root">
+          {/* Hidden container for PDF - shown only when printing via @media print */}
+          <div className="print-request-pdf-container" id="print-request-pdf-container" aria-hidden="true" />
           <div className="print-request-overlay-card">
             <div className="print-request-overlay-icon">🖨️</div>
             <div className="print-request-overlay-message">{printRequest.message}</div>
-            <button
-              type="button"
-              className="print-request-print-btn"
-              onClick={async () => {
-                if (!printRequest) return
-                const { fileUrl, fileType } = printRequest
-                if (fileType === 'docx' || fileType === 'doc') {
-                  window.open(fileUrl, '_blank')
-                  setPrintRequestPrinted(true)
-                  return
-                }
-                try {
-                  const res = await fetch(fileUrl, { mode: 'cors' })
-                  const blob = await res.blob()
-                  const blobUrl = URL.createObjectURL(blob)
-                  const iframe = document.createElement('iframe')
-                  iframe.style.position = 'fixed'
-                  iframe.style.left = '-9999px'
-                  iframe.style.width = '0'
-                  iframe.style.height = '0'
-                  iframe.style.border = 'none'
-                  document.body.appendChild(iframe)
-                  const cleanup = () => {
-                    URL.revokeObjectURL(blobUrl)
-                    iframe.remove()
-                  }
-                  iframe.onload = () => {
-                    const w = iframe.contentWindow
-                    if (!w) { cleanup(); setPrintRequestPrinted(true); return }
-                    const onAfterPrint = () => {
-                      w.removeEventListener('afterprint', onAfterPrint)
-                      cleanup()
-                      setPrintRequestPrinted(true)
+            {(printRequest.fileType === 'docx' || printRequest.fileType === 'doc') ? (
+              <div className="print-request-pdf-only-notice">
+                PDF only. Please ask admin to send a PDF for printing.
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="print-request-print-btn"
+                onClick={async () => {
+                  if (!printRequest || printRequest.fileType !== 'pdf') return
+                  const { fileUrl } = printRequest
+                  try {
+                    const res = await fetch(fileUrl, { mode: 'cors' })
+                    const blob = await res.blob()
+                    const blobUrl = URL.createObjectURL(blob)
+                    const container = document.getElementById('print-request-pdf-container')
+                    if (!container) { URL.revokeObjectURL(blobUrl); setPrintRequestPrinted(true); return }
+                    const iframe = document.createElement('iframe')
+                    iframe.src = blobUrl
+                    iframe.title = 'Print'
+                    container.appendChild(iframe)
+                    const cleanup = () => {
+                      container.innerHTML = ''
+                      URL.revokeObjectURL(blobUrl)
                     }
-                    w.addEventListener('afterprint', onAfterPrint)
-                    w.focus()
-                    w.print()
+                    iframe.onload = () => {
+                      const onAfterPrint = () => {
+                        window.removeEventListener('afterprint', onAfterPrint)
+                        cleanup()
+                        setPrintRequestPrinted(true)
+                      }
+                      window.addEventListener('afterprint', onAfterPrint)
+                      window.print()
+                    }
+                  } catch (err) {
+                    console.error('Print failed:', err)
+                    setPrintRequestPrinted(true)
                   }
-                  iframe.src = blobUrl
-                } catch (err) {
-                  console.error('Print failed:', err)
-                  setPrintRequestPrinted(true)
-                }
-              }}
-            >
-              Print
-            </button>
-            {printRequestPrinted && (
+                }}
+              >
+                Print
+              </button>
+            )}
+            {((printRequest.fileType === 'docx' || printRequest.fileType === 'doc') || printRequestPrinted) && (
               <button
                 type="button"
                 className="print-request-done-btn"
