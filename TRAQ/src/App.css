@@ -12452,7 +12452,7 @@ body.scroll-locked {
   text-align: center;
 }
 
-/* Full-viewport iframe behind overlay - PDF needs space to render all pages. */
+/* PDF.js canvas container - hidden until print */
 .print-request-pdf-container {
   position: fixed;
   top: 0;
@@ -12462,10 +12462,44 @@ body.scroll-locked {
   z-index: -1;
   opacity: 0;
   pointer-events: none;
+  overflow: auto;
 }
 
-.print-request-pdf-container iframe {
+.print-request-pdf-container canvas {
+  display: block;
   width: 100%;
-  height: 100%;
-  border: none;
+  height: auto;
+  max-width: 100%;
+  page-break-after: always;
+}
+
+.print-request-pdf-container canvas:last-child {
+  page-break-after: auto;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #print-request-pdf-container,
+  #print-request-pdf-container * {
+    visibility: visible !important;
+  }
+  #print-request-pdf-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    opacity: 1 !important;
+    z-index: 99999 !important;
+    background: white !important;
+  }
+  #print-request-pdf-container canvas {
+    max-width: 100% !important;
+    width: 100% !important;
+    height: auto !important;
+    page-break-after: always !important;
+  }
 }

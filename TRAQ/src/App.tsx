@@ -135,7 +135,10 @@ import {
   DAILY_TASK_POINTS_EFFECTIVE_MS,
 } from './utils/taskScoring'
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage'
+import * as pdfjsLib from 'pdfjs-dist'
 import { MusicPlayer } from './components/MusicPlayer.tsx'
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
 import { HeaderClock } from './components/HeaderClock'
 import { CalculatorOverlay } from './components/CalculatorOverlay.tsx'
 import { OrderReportOverlay } from './components/OrderReportOverlay.tsx'
@@ -12875,7 +12878,7 @@ function App() {
       {/* Print Request Overlay - admin sends document to iPad, non-dismissible until printed */}
       {printRequest && createPortal(
         <div className="print-request-overlay" id="print-request-overlay-root">
-          {/* Full-viewport iframe behind overlay - PDF needs space to render all pages */}
+          {/* PDF.js canvas container - renders all pages for print */}
           <div className="print-request-pdf-container" id="print-request-pdf-container" aria-hidden="true" />
           <div className="print-request-overlay-card">
             <div className="print-request-overlay-icon">🖨️</div>
@@ -12891,38 +12894,36 @@ function App() {
                 onClick={async () => {
                   if (!printRequest || printRequest.fileType !== 'pdf') return
                   const { fileUrl } = printRequest
+                  const container = document.getElementById('print-request-pdf-container')
+                  if (!container) { setPrintRequestPrinted(true); return }
                   try {
                     const res = await fetch(fileUrl, { mode: 'cors' })
-                    const blob = await res.blob()
-                    const blobUrl = URL.createObjectURL(blob)
-                    const container = document.getElementById('print-request-pdf-container')
-                    if (!container) { URL.revokeObjectURL(blobUrl); setPrintRequestPrinted(true); return }
-                    const iframe = document.createElement('iframe')
-                    iframe.src = blobUrl
-                    iframe.title = 'Print'
-                    container.appendChild(iframe)
-                    const cleanup = () => {
+                    const data = await res.arrayBuffer()
+                    const pdf = await pdfjsLib.getDocument({ data }).promise
+                    const numPages = pdf.numPages
+                    container.innerHTML = ''
+                    const scale = 2
+                    for (let i = 1; i <= numPages; i++) {
+                      const page = await pdf.getPage(i)
+                      const viewport = page.getViewport({ scale })
+                      const canvas = document.createElement('canvas')
+                      canvas.width = viewport.width
+                      canvas.height = viewport.height
+                      const ctx = canvas.getContext('2d')
+                      if (!ctx) continue
+                      await page.render({ canvas, canvasContext: ctx, viewport }).promise
+                      container.appendChild(canvas)
+                    }
+                    const onAfterPrint = () => {
+                      window.removeEventListener('afterprint', onAfterPrint)
                       container.innerHTML = ''
-                      URL.revokeObjectURL(blobUrl)
+                      setPrintRequestPrinted(true)
                     }
-                    iframe.onload = () => {
-                      const w = iframe.contentWindow
-                      if (!w) { cleanup(); setPrintRequestPrinted(true); return }
-                      const onAfterPrint = () => {
-                        w.removeEventListener('afterprint', onAfterPrint)
-                        window.removeEventListener('afterprint', onAfterPrint)
-                        cleanup()
-                        setPrintRequestPrinted(true)
-                      }
-                      w.addEventListener('afterprint', onAfterPrint)
-                      window.addEventListener('afterprint', onAfterPrint)
-                      setTimeout(() => {
-                        w.focus()
-                        w.print()
-                      }, 400)
-                    }
+                    window.addEventListener('afterprint', onAfterPrint)
+                    window.print()
                   } catch (err) {
                     console.error('Print failed:', err)
+                    container.innerHTML = ''
                     setPrintRequestPrinted(true)
                   }
                 }}
