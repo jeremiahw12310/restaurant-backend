@@ -6,6 +6,7 @@ export type Task = {
   icon: string
   requirements: string[]
   windows: WindowKey[]
+  imagePath?: string // Firebase Storage path, e.g. tasks/{taskId}/image.jpg
   requiresChecklist?: number // Number of requirements that need to be checked off
   weight?: number // Scoring weight (defaults to 1). Used for labor-heavy tasks.
   askNightShiftComplete?: boolean // Show "Was this completed by night shift?" prompt

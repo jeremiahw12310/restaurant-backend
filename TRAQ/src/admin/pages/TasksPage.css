@@ -84,6 +84,23 @@
   line-height: 1.5;
 }
 
+.tasks-image-preview {
+  font-size: 13px;
+  color: var(--admin-text-muted, #666);
+}
+
+.tasks-upload-progress {
+  font-size: 12px;
+  color: var(--admin-accent, #d11a2a);
+  font-weight: 500;
+}
+
+.tasks-image-current {
+  font-size: 13px;
+  color: var(--admin-text-muted, #666);
+  margin: 0 0 8px 0;
+}
+
 /* Toolbar */
 .tasks-toolbar {
   display: flex;

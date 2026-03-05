@@ -2159,6 +2159,7 @@ function App() {
   const [dailyTaskBusy, setDailyTaskBusy] = useState(false)
   const [dailyTaskError, setDailyTaskError] = useState<string | null>(null)
   const [dailyTaskImageUrlByPath, setDailyTaskImageUrlByPath] = useState<Record<string, string>>({})
+  const [taskImageUrlByPath, setTaskImageUrlByPath] = useState<Record<string, string>>({})
   const [showDailyTaskModal, setShowDailyTaskModal] = useState(false)
   const [dailyTaskRevealing, setDailyTaskRevealing] = useState(false)
   const [showDailyTaskEmployeeSelector, setShowDailyTaskEmployeeSelector] = useState(false)
@@ -2409,6 +2410,9 @@ function App() {
         next.requirements = ov.requirements
         next.requirementsUpdatedAtMs = typeof ov.updatedAtMs === 'number' ? ov.updatedAtMs : undefined
         next.requirementsOverridden = true
+      }
+      if (ov.imagePath !== undefined) {
+        next.imagePath = (ov.imagePath && ov.imagePath.trim()) || undefined
       }
       byId[taskId] = next
     })
@@ -6258,6 +6262,31 @@ function App() {
     if (a) void resolveDailyTaskImageUrl(a)
     if (b) void resolveDailyTaskImageUrl(b)
   }, [activeDailyTaskDef, resolveDailyTaskImageUrl])
+
+  const resolveTaskImageUrl = useCallback(
+    async (path: string): Promise<string> => {
+      const p = String(path || '').trim()
+      if (!p) return ''
+      const cached = taskImageUrlByPath[p]
+      if (cached) return cached
+      try {
+        const url = await getDownloadURL(storageRef(storage, p))
+        setTaskImageUrlByPath((prev) => ({ ...prev, [p]: url }))
+        return url
+      } catch (e) {
+        console.warn('Failed to load task image URL:', p, e)
+        return ''
+      }
+    },
+    [taskImageUrlByPath]
+  )
+
+  // Preload task image when active task has imagePath (activeTask is defined later; use allTasks + activeTaskId)
+  useEffect(() => {
+    if (!activeTaskId) return
+    const t = allTasks.find((a) => a.id === activeTaskId)
+    if (t?.imagePath) void resolveTaskImageUrl(t.imagePath)
+  }, [activeTaskId, allTasks, resolveTaskImageUrl])
 
   const ensureDemoDailyTaskRunLocal = useCallback(
     (dateKey: string): DailyTaskRun | null => {
@@ -12005,6 +12034,19 @@ function App() {
                 </div>
               ) : (
                 <div ref={requirementsScrollRef} className="modal-requirements-scroll" aria-label="Task requirements">
+                  {activeTask.imagePath ? (
+                    <div className="daily-task-image-shell">
+                      {taskImageUrlByPath[activeTask.imagePath] ? (
+                        <img
+                          className="daily-task-image"
+                          src={taskImageUrlByPath[activeTask.imagePath]}
+                          alt="Task reference"
+                        />
+                      ) : (
+                        <div className="daily-task-image-placeholder">Loading image…</div>
+                      )}
+                    </div>
+                  ) : null}
                   <div className="requirements">
                     {isTodaySelected &&
                     !activeCompletion &&
@@ -12930,10 +12972,48 @@ function App() {
                       img.decode ? img.decode() : new Promise<void>((r) => { img.onload = () => r() })
                     ))
 
+                    const overlayCard = container.parentElement?.querySelector('.print-request-overlay-card') as HTMLElement | null
+                    const overlay = container.parentElement as HTMLElement | null
+
+                    if (overlayCard) overlayCard.style.display = 'none'
+                    if (overlay) {
+                      overlay.style.position = 'static'
+                      overlay.style.overflow = 'visible'
+                      overlay.style.display = 'block'
+                      overlay.style.background = 'white'
+                      overlay.style.height = 'auto'
+                      overlay.style.padding = '0'
+                      overlay.style.transform = 'none'
+                      overlay.style.webkitTransform = 'none'
+                    }
+                    container.style.position = 'static'
+                    container.style.opacity = '1'
+                    container.style.zIndex = 'auto'
+                    container.style.overflow = 'visible'
+                    container.style.height = 'auto'
+                    container.style.pointerEvents = 'auto'
+
                     document.body.classList.add('printing-pdf')
 
                     const onAfterPrint = () => {
                       window.removeEventListener('afterprint', onAfterPrint)
+                      if (overlayCard) overlayCard.style.display = ''
+                      if (overlay) {
+                        overlay.style.position = ''
+                        overlay.style.overflow = ''
+                        overlay.style.display = ''
+                        overlay.style.background = ''
+                        overlay.style.height = ''
+                        overlay.style.padding = ''
+                        overlay.style.transform = ''
+                        overlay.style.webkitTransform = ''
+                      }
+                      container.style.position = ''
+                      container.style.opacity = ''
+                      container.style.zIndex = ''
+                      container.style.overflow = ''
+                      container.style.height = ''
+                      container.style.pointerEvents = ''
                       document.body.classList.remove('printing-pdf')
                       container.innerHTML = ''
                       setPrintRequestPrinted(true)
@@ -12941,9 +13021,7 @@ function App() {
                     window.addEventListener('afterprint', onAfterPrint)
 
                     requestAnimationFrame(() => {
-                      setTimeout(() => {
-                        window.print()
-                      }, 50)
+                      setTimeout(() => { window.print() }, 200)
                     })
                   } catch (err) {
                     console.error('Print failed:', err)

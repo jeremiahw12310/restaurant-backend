@@ -450,6 +450,7 @@ export type TaskDef = {
   askNightShiftComplete?: boolean
   createdAtMs: number
   disabledAtMs?: number
+  imagePath?: string
 }
 
 export type TaskCatalog = {
@@ -461,6 +462,9 @@ export type TaskOverride = {
   requirements?: string[]
   updatedAtMs?: number
   updatedBy?: string
+
+  // Image override (optional) - does not trigger "updated requirements" badge
+  imagePath?: string
 
   // Name override (optional)
   name?: string

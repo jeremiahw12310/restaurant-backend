@@ -21,6 +21,14 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
     }
 
+    // Shift task images (admin-managed task reference photos).
+    match /tasks/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.resource != null
+        && request.resource.size < 20971520
+        && request.resource.contentType.matches('image/.*');
+    }
+
     // Print documents (admin sends PDF/Word to iPad for printing).
     match /printDocs/{fileName} {
       allow read: if true;

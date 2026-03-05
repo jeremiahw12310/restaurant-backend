@@ -12,6 +12,8 @@ import {
 } from '../../services/firestore'
 import { TASKS } from '../../constants/tasks'
 import type { Task } from '../../types/task'
+import { storage } from '../../firebase'
+import { ref as storageRef, uploadBytesResumable } from 'firebase/storage'
 
 // Extended task type for display purposes
 type DisplayTask = Task & { source: 'builtin' | 'admin' }
@@ -44,6 +46,8 @@ export function TasksPage() {
   })
   const [newTaskWeight, setNewTaskWeight] = useState('1')
   const [newTaskRequirements, setNewTaskRequirements] = useState('')
+  const [newTaskImageFile, setNewTaskImageFile] = useState<File | null>(null)
+  const [newTaskImageUploadPct, setNewTaskImageUploadPct] = useState(0)
   const [taskError, setTaskError] = useState<string | null>(null)
   
   // Search and filter
@@ -52,7 +56,7 @@ export function TasksPage() {
   
   // Edit modals
   const [editingTask, setEditingTask] = useState<DisplayTask | null>(null)
-  const [editMode, setEditMode] = useState<'name' | 'windows' | 'weight' | 'requirements' | null>(null)
+  const [editMode, setEditMode] = useState<'name' | 'windows' | 'weight' | 'requirements' | 'image' | null>(null)
   const [editValue, setEditValue] = useState('')
   const [editWindows, setEditWindows] = useState<Record<WindowKey, boolean>>({
     '11': false,
@@ -61,8 +65,32 @@ export function TasksPage() {
   })
   const [editEffectiveDate, setEditEffectiveDate] = useState('')
   const [editError, setEditError] = useState<string | null>(null)
+  const [editImageFile, setEditImageFile] = useState<File | null>(null)
+  const [editImageRemove, setEditImageRemove] = useState(false)
+  const [editImageUploadPct, setEditImageUploadPct] = useState(0)
   
   const [saving, setSaving] = useState(false)
+
+  const uploadTaskImage = useCallback(
+    async (taskId: string, file: File, setPct: (n: number) => void): Promise<string> => {
+      if (!storage) throw new Error('Storage not available')
+      const path = `tasks/${taskId}/image_${Date.now()}.jpg`
+      const ref = storageRef(storage, path)
+      const uploadTask = uploadBytesResumable(ref, file)
+      return new Promise((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          (snapshot) => {
+            const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)
+            setPct(pct)
+          },
+          reject,
+          () => resolve(path)
+        )
+      })
+    },
+    []
+  )
 
   // Subscribe to data
   useEffect(() => {
@@ -94,11 +122,13 @@ export function TasksPage() {
       byId[t.id] = { ...t, source: 'admin' }
     })
     
-    // Apply name overrides
+    // Apply overrides (name, imagePath)
     if (taskOverrides?.overrides) {
       Object.entries(taskOverrides.overrides).forEach(([id, ov]) => {
-        if (byId[id] && ov.name) {
-          byId[id] = { ...byId[id], name: ov.name }
+        if (!byId[id] || !ov) return
+        if (ov.name) byId[id] = { ...byId[id], name: ov.name }
+        if (ov.imagePath !== undefined) {
+          byId[id] = { ...byId[id], imagePath: (ov.imagePath && ov.imagePath.trim()) || undefined }
         }
       })
     }
@@ -159,7 +189,12 @@ export function TasksPage() {
     }
     
     setSaving(true)
+    setNewTaskImageUploadPct(0)
     try {
+      let imagePath: string | undefined
+      if (newTaskImageFile) {
+        imagePath = await uploadTaskImage(id, newTaskImageFile, setNewTaskImageUploadPct)
+      }
       const newTask: TaskDef = {
         id,
         name,
@@ -168,6 +203,7 @@ export function TasksPage() {
         weight,
         requirements: requirements.length > 0 ? requirements : [],
         createdAtMs: Date.now(),
+        ...(imagePath && { imagePath }),
       }
       
       const updated: TaskCatalog = {
@@ -183,16 +219,17 @@ export function TasksPage() {
       setNewTaskWindows({ '11': false, '17': true, '21': false })
       setNewTaskWeight('1')
       setNewTaskRequirements('')
+      setNewTaskImageFile(null)
     } catch (err) {
       console.error('Failed to add task:', err)
       setTaskError('Failed to save task. Check connection and try again.')
     } finally {
       setSaving(false)
     }
-  }, [newTaskName, newTaskIcon, newTaskWindows, newTaskWeight, newTaskRequirements, taskCatalog, allTasks])
+  }, [newTaskName, newTaskIcon, newTaskWindows, newTaskWeight, newTaskRequirements, newTaskImageFile, taskCatalog, allTasks, uploadTaskImage])
 
   // Start editing
-  const startEdit = (task: DisplayTask, mode: 'name' | 'windows' | 'weight' | 'requirements') => {
+  const startEdit = (task: DisplayTask, mode: 'name' | 'windows' | 'weight' | 'requirements' | 'image') => {
     setEditingTask(task)
     setEditMode(mode)
     setEditError(null)
@@ -227,6 +264,11 @@ export function TasksPage() {
       case 'requirements':
         const reqs = override?.requirements || task.requirements || []
         setEditValue(reqs.join('\n'))
+        break
+      case 'image':
+        setEditImageFile(null)
+        setEditImageRemove(false)
+        setEditImageUploadPct(0)
         break
     }
   }
@@ -296,6 +338,21 @@ export function TasksPage() {
         newOverride.updatedBy = 'admin'
         break
       }
+      case 'image': {
+        if (editImageRemove) {
+          newOverride.imagePath = ''
+        } else if (editImageFile) {
+          setEditImageUploadPct(0)
+          const path = await uploadTaskImage(taskId, editImageFile, setEditImageUploadPct)
+          newOverride.imagePath = path
+        } else {
+          // No change
+          setEditingTask(null)
+          setEditMode(null)
+          return
+        }
+        break
+      }
     }
     
     setSaving(true)
@@ -317,10 +374,10 @@ export function TasksPage() {
     } finally {
       setSaving(false)
     }
-  }, [editingTask, editMode, editValue, editWindows, editEffectiveDate, taskOverrides])
+  }, [editingTask, editMode, editValue, editWindows, editEffectiveDate, editImageFile, editImageRemove, taskOverrides, uploadTaskImage])
 
   // Reset override
-  const resetOverride = useCallback(async (taskId: string, field: 'name' | 'windows' | 'weight' | 'requirements') => {
+  const resetOverride = useCallback(async (taskId: string, field: 'name' | 'windows' | 'weight' | 'requirements' | 'image') => {
     if (!taskOverrides?.overrides?.[taskId]) return
     
     const confirmed = confirm(`Reset ${field} for this task to default?`)
@@ -350,6 +407,9 @@ export function TasksPage() {
           delete currentOverride.requirements
           delete currentOverride.updatedAtMs
           delete currentOverride.updatedBy
+          break
+        case 'image':
+          delete currentOverride.imagePath
           break
       }
       
@@ -461,6 +521,22 @@ export function TasksPage() {
             />
           </div>
           
+          <div className="tasks-form-field">
+            <label className="admin-label">Image (optional)</label>
+            <input
+              type="file"
+              accept="image/*"
+              className="admin-input"
+              onChange={(e) => setNewTaskImageFile(e.target.files?.[0] ?? null)}
+            />
+            {newTaskImageFile && (
+              <span className="tasks-image-preview">📷 {newTaskImageFile.name}</span>
+            )}
+            {typeof newTaskImageUploadPct === 'number' && newTaskImageUploadPct > 0 && (
+              <div className="tasks-upload-progress">Upload: {newTaskImageUploadPct}%</div>
+            )}
+          </div>
+          
           <button
             className="admin-btn admin-btn-primary"
             onClick={handleAddTask}
@@ -513,6 +589,7 @@ export function TasksPage() {
               const hasWindowsOverride = !!(override?.windows)
               const hasWeightOverride = typeof override?.weight === 'number'
               const hasReqOverride = !!(override?.requirements?.length)
+              const hasImageOverride = override && 'imagePath' in override
               
               const displayWindows = override?.windows || task.windows || []
               const displayWeight = override?.weight ?? task.weight ?? 1
@@ -613,6 +690,20 @@ export function TasksPage() {
                         Reset
                       </button>
                     )}
+                    <button
+                      className="task-action-btn"
+                      onClick={() => startEdit(task, 'image')}
+                    >
+                      Edit Image
+                    </button>
+                    {hasImageOverride && (
+                      <button
+                        className="task-action-btn task-action-reset"
+                        onClick={() => resetOverride(task.id, 'image')}
+                      >
+                        Reset
+                      </button>
+                    )}
                   </div>
                 </div>
               )
@@ -627,7 +718,7 @@ export function TasksPage() {
           <div className="tasks-modal" onClick={(e) => e.stopPropagation()}>
             <div className="tasks-modal-header">
               <h3>
-                Edit {editMode === 'name' ? 'Name' : editMode === 'windows' ? 'Windows' : editMode === 'weight' ? 'Weight' : 'Requirements'}
+                Edit {editMode === 'name' ? 'Name' : editMode === 'windows' ? 'Windows' : editMode === 'weight' ? 'Weight' : editMode === 'image' ? 'Image' : 'Requirements'}
               </h3>
               <button className="tasks-modal-close" onClick={closeModal}>✕</button>
             </div>
@@ -720,6 +811,44 @@ export function TasksPage() {
                     rows={6}
                     autoFocus
                   />
+                </div>
+              )}
+              
+              {editMode === 'image' && (
+                <div className="tasks-form-field">
+                  <label className="admin-label">Task image (optional)</label>
+                  {editingTask.imagePath && !editImageRemove && (
+                    <p className="tasks-image-current">Current image is set.</p>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="admin-input"
+                    onChange={(e) => {
+                      setEditImageFile(e.target.files?.[0] ?? null)
+                      setEditImageRemove(false)
+                    }}
+                    disabled={editImageRemove}
+                  />
+                  {editImageFile && (
+                    <span className="tasks-image-preview">📷 {editImageFile.name}</span>
+                  )}
+                  {editingTask.imagePath && (
+                    <label className="tasks-checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={editImageRemove}
+                        onChange={(e) => {
+                          setEditImageRemove(e.target.checked)
+                          if (e.target.checked) setEditImageFile(null)
+                        }}
+                      />
+                      <span>Remove image</span>
+                    </label>
+                  )}
+                  {typeof editImageUploadPct === 'number' && editImageUploadPct > 0 && (
+                    <div className="tasks-upload-progress">Upload: {editImageUploadPct}%</div>
+                  )}
                 </div>
               )}
             </div>
