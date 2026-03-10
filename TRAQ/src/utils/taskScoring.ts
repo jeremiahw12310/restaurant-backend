@@ -235,6 +235,30 @@ export const computeShiftLeadersForState = (
         return
       }
 
+      // Split Towels (Dining/Bar + Bowl Station): credit each side as half the total weight.
+      // Towels count for shift participation (unlike ice).
+      if (
+        (taskId === 'towels-5pm' || taskId === 'towels-close') &&
+        completion.towelSides &&
+        typeof completion.towelSides.diningBar === 'string' &&
+        typeof completion.towelSides.bowlStation === 'string'
+      ) {
+        const a = String(completion.towelSides.diningBar || '').trim()
+        const b = String(completion.towelSides.bowlStation || '').trim()
+        if (!a || !b) return
+        const perSide = taskWeight / 2
+        ;[a, b].forEach((name) => {
+          if (!name) return
+          creditsAll[name] = (creditsAll[name] || 0) + perSide
+          if (!completion.autoAssigned) {
+            creditsParticipation[name] = (creditsParticipation[name] || 0) + perSide
+            if (!tasksByPerson[name]) tasksByPerson[name] = new Set()
+            tasksByPerson[name].add(taskId)
+          }
+        })
+        return
+      }
+
       // Order Report: split proportional to entered order counts (2-person task).
       if (
         (taskId === 'order-report-5pm' || taskId === 'order-report-close') &&

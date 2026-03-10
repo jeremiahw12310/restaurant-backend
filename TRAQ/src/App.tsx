@@ -1736,9 +1736,21 @@ const effectiveStatus = (
   taskDate: Date,
   windowKey: WindowKey,
   completion: TaskCompletion | undefined,
-  now: Date
+  now: Date,
+  taskId?: string
 ): EffectiveStatus => {
-  if (completion?.status === 'done') return 'done'
+  if (completion?.status === 'done') {
+    // Ice/Towel split tasks: partial completion (one side filled) is not "done" - fall through for late/missing
+    const isPartialIce =
+      (taskId === 'ice-5pm' || taskId === 'ice-close') &&
+      completion.iceSides &&
+      (!String(completion.iceSides.left || '').trim() || !String(completion.iceSides.right || '').trim())
+    const isPartialTowel =
+      (taskId === 'towels-5pm' || taskId === 'towels-close') &&
+      completion.towelSides &&
+      (!String(completion.towelSides.diningBar || '').trim() || !String(completion.towelSides.bowlStation || '').trim())
+    if (!isPartialIce && !isPartialTowel) return 'done'
+  }
   const dayValue = startOfDay(taskDate).getTime()
   const todayValue = startOfDay(now).getTime()
   if (dayValue < todayValue) return 'missing'
@@ -2096,6 +2108,18 @@ function App() {
   >([])
   const iceLeftTileRef = useRef<HTMLButtonElement | null>(null)
   const iceRightTileRef = useRef<HTMLButtonElement | null>(null)
+  // Towel split (Dining/Bar + Bowl Station) state
+  type TowelSidesDraft = { diningBar: string | null; bowlStation: string | null }
+  const [towelSidesDraftByKey, setTowelSidesDraftByKey] = useState<Record<string, TowelSidesDraft>>({})
+  const [towelSidesDraftDirtyByKey, setTowelSidesDraftDirtyByKey] = useState<Record<string, boolean>>({})
+  const [towelSidesDraft, setTowelSidesDraft] = useState<TowelSidesDraft>(() => ({ diningBar: null, bowlStation: null }))
+  const [pendingTowelSide, setPendingTowelSide] = useState<'diningBar' | 'bowlStation' | null>(null)
+  const [towelFillAnim, setTowelFillAnim] = useState<null | { side: 'diningBar' | 'bowlStation'; key: number }>(null)
+  const [towelPageEmojis, setTowelPageEmojis] = useState<
+    Array<{ id: string; x: number; y: number; dx: number; dy: number; delayMs: number; durMs: number; sizePx: number }>
+  >([])
+  const towelDiningTileRef = useRef<HTMLButtonElement | null>(null)
+  const towelBowlTileRef = useRef<HTMLButtonElement | null>(null)
   // Separate ref for the task-init effect to detect task changes (without conflicting with break-selection effect's ref).
   const prevTaskIdForInitRef = useRef<string | null>(null)
   const [showChecklistModal, setShowChecklistModal] = useState(false)
@@ -2137,7 +2161,7 @@ function App() {
   }, [employeeColors])
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [pendingColorEmployee, setPendingColorEmployee] = useState<string | null>(null)
-  const [pendingColorAction, setPendingColorAction] = useState<'task' | 'break' | 'ice' | 'noop' | null>(null)
+  const [pendingColorAction, setPendingColorAction] = useState<'task' | 'break' | 'ice' | 'towel' | 'noop' | null>(null)
   const [pendingBreakWizardIdx, setPendingBreakWizardIdx] = useState<0 | 1 | null>(null)
   const [taskOrder, setTaskOrder] = useState<Record<WindowKey, string[]>>(() =>
     readCache<Record<WindowKey, string[]>>('traq-task-order-v1', {} as Record<WindowKey, string[]>)
@@ -3359,7 +3383,7 @@ function App() {
         }
       })
 
-      const next: TaskOverrides = { overrides: nextOverrides as any }
+      const next: TaskOverrides = { ...taskOverrides, overrides: nextOverrides as any }
       await saveTaskOverrides(next)
     } catch (e) {
       console.error('Failed to apply Ice Combine overrides:', e)
@@ -3367,7 +3391,23 @@ function App() {
     } finally {
       setAdminApplyingIceCombine(false)
     }
-  }, [adminApplyingIceCombine, isAdmin, taskOverrides?.overrides])
+  }, [adminApplyingIceCombine, isAdmin, taskOverrides])
+
+  const [adminApplyingTowelsSplit, setAdminApplyingTowelsSplit] = useState(false)
+  const applyTowelsSplitNow = useCallback(async () => {
+    if (!isAdmin) return
+    if (adminApplyingTowelsSplit) return
+    setAdminApplyingTowelsSplit(true)
+    try {
+      const next: TaskOverrides = { ...taskOverrides, towelsSplitEffectiveAtMs: Date.now() }
+      await saveTaskOverrides(next)
+    } catch (e) {
+      console.error('Failed to apply Towels Split:', e)
+      alert('Failed to apply Towels Split. Check connection and try again.')
+    } finally {
+      setAdminApplyingTowelsSplit(false)
+    }
+  }, [adminApplyingTowelsSplit, isAdmin, taskOverrides])
 
   const saveEditedRequirements = useCallback(async () => {
     if (!isAdmin) return
@@ -5030,12 +5070,32 @@ function App() {
       setSaveError(null)
       setPendingIceSide(null)
       setIceSidesDraft({ left: null, right: null })
+      setPendingTowelSide(null)
+      setTowelSidesDraft({ diningBar: null, bowlStation: null })
       setShowUnsplitOptions(false)
       return
     }
     const existing = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
     setAssignees(existing?.assignees ?? [])
     const isCombinedIce = activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close'
+    const effectiveAt = taskOverrides?.towelsSplitEffectiveAtMs
+    const isTowelsSplitEffectiveHere =
+      (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+      typeof effectiveAt === 'number' &&
+      effectiveAt > 0 &&
+      (() => {
+        const baseDate = new Date(`${selectedDateKey}T00:00:00`)
+        const nextWindowKey: WindowKey | null = selectedWindow === '11' ? '17' : selectedWindow === '17' ? '21' : null
+        if (nextWindowKey) {
+          const nextW = WINDOWS.find((x) => x.key === nextWindowKey)
+          const nextStart = nextW?.start || '24:00'
+          return combineDateTime(baseDate, nextStart).getTime() >= effectiveAt
+        }
+        const nextDay = new Date(baseDate)
+        nextDay.setDate(nextDay.getDate() + 1)
+        nextDay.setHours(0, 0, 0, 0)
+        return nextDay.getTime() >= effectiveAt
+      })()
     if (isCombinedIce) {
       const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
       const dirty = !!iceSidesDraftDirtyByKey[key]
@@ -5068,11 +5128,41 @@ function App() {
         setSplitMode(false)
         setShowUnsplitOptions(false)
       }
+    } else if (isTowelsSplitEffectiveHere) {
+      const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+      const dirty = !!towelSidesDraftDirtyByKey[key]
+      const cached = towelSidesDraftByKey[key]
+      if (dirty && cached) {
+        setTowelSidesDraft(cached)
+      } else if (taskChanged) {
+        const existingSides = existing?.towelSides
+        setTowelSidesDraft({
+          diningBar:
+            (existingSides?.diningBar && String(existingSides.diningBar).trim()) ||
+            (existing?.assignees?.[0] ? String(existing.assignees[0]).trim() : '') ||
+            null,
+          bowlStation:
+            (existingSides?.bowlStation && String(existingSides.bowlStation).trim()) ||
+            (existing?.assignees?.[1] ? String(existing.assignees[1]).trim() : '') ||
+            null,
+        })
+        setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
+        setTowelSidesDraftByKey((prev) => {
+          if (!prev[key]) return prev
+          const { [key]: _, ...rest } = prev
+          return rest
+        })
+      }
+      if (taskChanged) {
+        setPendingTowelSide(null)
+      }
     } else {
       if (taskChanged) {
         setSplitMode((existing?.assignees?.length ?? 1) > 1)
         setPendingIceSide(null)
         setIceSidesDraft({ left: null, right: null })
+        setPendingTowelSide(null)
+        setTowelSidesDraft({ diningBar: null, bowlStation: null })
         setShowUnsplitOptions(false)
       }
     }
@@ -5082,7 +5172,7 @@ function App() {
       setCheckedItems(new Set())
       setSaveError(null)
     }
-  }, [activeTaskId, iceSidesDraftByKey, iceSidesDraftDirtyByKey, selectedDateKey, selectedWindow, taskState])
+  }, [activeTaskId, iceSidesDraftByKey, iceSidesDraftDirtyByKey, selectedDateKey, selectedWindow, taskState, taskOverrides?.towelsSplitEffectiveAtMs, towelSidesDraftByKey, towelSidesDraftDirtyByKey])
 
   // Auto-scroll requirements slowly if they overflow (starts after opening a task).
   useEffect(() => {
@@ -5375,6 +5465,16 @@ function App() {
     nextDay.setHours(0, 0, 0, 0)
     return nextDay.getTime()
   }, [])
+
+  const isTowelsSplitEffectiveForDateKey = useCallback(
+    (dateKey: string, windowKey: WindowKey): boolean => {
+      const effectiveAt = taskOverrides?.towelsSplitEffectiveAtMs
+      if (typeof effectiveAt !== 'number' || effectiveAt <= 0) return false
+      const closeMs = windowCloseMsForDateKey(dateKey, windowKey)
+      return closeMs >= effectiveAt
+    },
+    [taskOverrides?.towelsSplitEffectiveAtMs, windowCloseMsForDateKey]
+  )
 
   const getEffectiveTasksByWindowForDateKey = useCallback((dateKey: string): Record<WindowKey, Task[]> => {
     return getEffectiveTasksByWindowForDateKeyShared({
@@ -6487,7 +6587,7 @@ function App() {
     currentTasks.forEach((task) => {
       const completion = taskState[selectedDateKey]?.[selectedWindow]?.[task.id]
       map[task.id] = {
-        status: effectiveStatus(selectedDate, selectedWindow, completion, now),
+        status: effectiveStatus(selectedDate, selectedWindow, completion, now, task.id),
         completion,
       }
     })
@@ -6601,7 +6701,7 @@ function App() {
       }
       if (foundCompleted) {
         const completion = updatedState[selectedDateKey]?.[selectedWindow]?.[task.id]
-        const status = effectiveStatus(selectedDate, selectedWindow, completion, now)
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
         if (status !== 'done') {
           setPulseTaskId(task.id)
           return
@@ -6612,7 +6712,7 @@ function App() {
     for (const task of currentTasks) {
       if (task.id === completedTaskId) break
       const completion = updatedState[selectedDateKey]?.[selectedWindow]?.[task.id]
-      const status = effectiveStatus(selectedDate, selectedWindow, completion, now)
+      const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
       if (status !== 'done') {
         setPulseTaskId(task.id)
         return
@@ -6644,7 +6744,7 @@ function App() {
       for (let i = 0; i < currentTasks.length; i++) {
         const task = currentTasks[i]
         const completion = state[selectedDateKey]?.[selectedWindow]?.[task.id]
-        const status = effectiveStatus(selectedDate, selectedWindow, completion, now)
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
         if (status === 'done') resolved++
       }
       return Math.round((resolved / total) * 100)
@@ -6658,7 +6758,7 @@ function App() {
       for (let i = 0; i < currentTasks.length; i++) {
         const task = currentTasks[i]
         const completion = state[selectedDateKey]?.[selectedWindow]?.[task.id]
-        const status = effectiveStatus(selectedDate, selectedWindow, completion, now)
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
         if (status !== 'done') continue
         const assignees = completion?.assignees || []
         for (let ai = 0; ai < assignees.length; ai++) {
@@ -7707,6 +7807,95 @@ function App() {
     }
   }
 
+  const persistPartialIceTask = async (sides: { left: string | null; right: string | null }) => {
+    if (!activeTaskId) return
+    if (activeTaskId !== 'ice-5pm' && activeTaskId !== 'ice-close') return
+
+    const left = String(sides.left || '').trim()
+    const right = String(sides.right || '').trim()
+    if (!left && !right) return
+
+    const newAssignees = [left, right].filter(Boolean)
+    const existingCompletion = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    const isCreating = !existingCompletion
+    let isLate = false
+    if (isCreating) {
+      const cutoff = getLateCutoffForWindow(selectedDate, selectedWindow)
+      isLate = now >= cutoff
+    }
+
+    const updatedState = await new Promise<TaskState>((resolve) => {
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        windowMap[activeTaskId] = existingCompletion
+          ? {
+              ...existingCompletion,
+              assignees: newAssignees,
+              iceSides: { left, right },
+              assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+            }
+          : {
+              status: 'done',
+              assignees: newAssignees,
+              completedAt: new Date().toISOString(),
+              assignedByAdmin: false,
+              completedLate: isLate,
+              completedEarly: false,
+              iceSides: { left, right },
+            }
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        resolve(next)
+        return next
+      })
+    })
+
+    setIsSaving(true)
+    setSaveError(null)
+    const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    const persist = isCreating
+      ? persistCompleteTaskIfAvailableOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: activeTaskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? newAssignees,
+            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+            assignedByAdmin: false,
+            completedLate: isLate,
+            lateForgiven: false,
+            completedEarly: false,
+            iceSides: { left, right },
+          },
+        })
+      : persistAdminSetTaskCompletionOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: activeTaskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? newAssignees,
+            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+            assignedByAdmin: completionToPersist?.assignedByAdmin,
+            completedLate: completionToPersist?.completedLate,
+            lateForgiven: completionToPersist?.lateForgiven,
+            completedEarly: completionToPersist?.completedEarly,
+            iceSides: { left, right },
+          },
+        })
+
+    Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 200))])
+      .then(() => {
+        if (import.meta.env.DEV) console.log('Partial ice completion saved')
+        setIsSaving(false)
+      })
+      .catch((error) => {
+        console.error('Failed to save partial ice completion:', error)
+        setIsSaving(false)
+      })
+  }
+
   const completeCombinedIceTask = async (sides: { left: string; right: string }) => {
     if (!activeTaskId) return
     if (activeTaskId !== 'ice-5pm' && activeTaskId !== 'ice-close') return
@@ -8070,6 +8259,378 @@ function App() {
     taskState,
   ])
 
+  const persistPartialTowelTask = async (sides: { diningBar: string | null; bowlStation: string | null }) => {
+    if (!activeTaskId) return
+    if (activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+
+    const diningBar = String(sides.diningBar || '').trim()
+    const bowlStation = String(sides.bowlStation || '').trim()
+    if (!diningBar && !bowlStation) return
+
+    const newAssignees = [diningBar, bowlStation].filter(Boolean)
+    const existingCompletion = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    const isCreating = !existingCompletion
+    let isLate = false
+    if (isCreating) {
+      const cutoff = getLateCutoffForWindow(selectedDate, selectedWindow)
+      isLate = now >= cutoff
+    }
+
+    const updatedState = await new Promise<TaskState>((resolve) => {
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        windowMap[activeTaskId] = existingCompletion
+          ? {
+              ...existingCompletion,
+              assignees: newAssignees,
+              towelSides: { diningBar, bowlStation },
+              assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+            }
+          : {
+              status: 'done',
+              assignees: newAssignees,
+              completedAt: new Date().toISOString(),
+              assignedByAdmin: false,
+              completedLate: isLate,
+              lateForgiven: false,
+              towelSides: { diningBar, bowlStation },
+            }
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        resolve(next)
+        return next
+      })
+    })
+
+    setIsSaving(true)
+    setSaveError(null)
+    const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    const persist = isCreating
+      ? persistCompleteTaskIfAvailableOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: activeTaskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? newAssignees,
+            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+            assignedByAdmin: false,
+            completedLate: isLate,
+            lateForgiven: false,
+            completedEarly: false,
+            towelSides: { diningBar, bowlStation },
+          },
+        })
+      : persistAdminSetTaskCompletionOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: activeTaskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? newAssignees,
+            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+            assignedByAdmin: completionToPersist?.assignedByAdmin,
+            completedLate: completionToPersist?.completedLate,
+            lateForgiven: completionToPersist?.lateForgiven,
+            completedEarly: completionToPersist?.completedEarly,
+            towelSides: { diningBar, bowlStation },
+          },
+        })
+
+    Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 200))])
+      .then(() => {
+        if (import.meta.env.DEV) console.log('Partial towel completion saved')
+        setIsSaving(false)
+      })
+      .catch((error) => {
+        console.error('Failed to save partial towel completion:', error)
+        setIsSaving(false)
+      })
+  }
+
+  const completeCombinedTowelTask = async (sides: { diningBar: string; bowlStation: string }) => {
+    if (!activeTaskId) return
+    if (activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+
+    const diningBar = String(sides.diningBar || '').trim()
+    const bowlStation = String(sides.bowlStation || '').trim()
+    if (!diningBar || !bowlStation) return
+
+    const newAssignees = [diningBar, bowlStation]
+    const beforeCompletionSnapshot = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    const beforeAssigneesSnapshot = beforeCompletionSnapshot?.assignees ?? []
+    const existingCompletion = activeCompletion
+    let isLate = false
+    if (!existingCompletion) {
+      const cutoff = getLateCutoffForWindow(selectedDate, selectedWindow)
+      isLate = now >= cutoff
+    }
+    const canSameDayEdit =
+      !!existingCompletion &&
+      !isAdmin &&
+      !existingCompletion.assignedByAdmin &&
+      (() => {
+        const dayStart = new Date(selectedDateKey + 'T00:00:00')
+        if (!Number.isFinite(dayStart.getTime())) return false
+        const dayEnd = new Date(dayStart)
+        dayEnd.setHours(23, 59, 59, 999)
+        return Date.now() <= dayEnd.getTime()
+      })()
+
+    if (existingCompletion && !isAdmin && !canSameDayEdit) {
+      setSaveError('Already completed. Ask an admin to change.')
+      return
+    }
+    if (existingCompletion?.assignedByAdmin && !isAdmin) {
+      setSaveError('Already completed. Only admin can change.')
+      return
+    }
+
+    appendSelectionLog({
+      action: 'selected',
+      taskId: activeTaskId,
+      taskName: activeTask?.name ?? activeTaskId,
+      window: selectedWindow,
+      dateKey: selectedDateKey,
+      assignees: newAssignees,
+      byAdmin: isAdmin,
+    })
+
+    const updatedState = await new Promise<TaskState>((resolve) => {
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        windowMap[activeTaskId] = existingCompletion
+          ? {
+              ...existingCompletion,
+              assignees: newAssignees,
+              towelSides: { diningBar, bowlStation },
+              assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+            }
+          : {
+              status: 'done',
+              assignees: newAssignees,
+              completedAt: new Date().toISOString(),
+              assignedByAdmin: false,
+              completedLate: isLate,
+              lateForgiven: false,
+              towelSides: { diningBar, bowlStation },
+            }
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        resolve(next)
+        return next
+      })
+    })
+
+    const willHitHundredPercent = computeWindowTaskPercent(updatedState) >= 100
+    const rewardName = newAssignees[newAssignees.length - 1]
+    const isNewCompletion = beforeAssigneesSnapshot.length === 0 && newAssignees.length > 0
+    const isNewAssignee = rewardName && !beforeAssigneesSnapshot.includes(rewardName)
+    const shouldCelebrate = (isTodaySelected || isDemoDaySelected) && (isNewCompletion || isNewAssignee)
+    let pendingNormalCelebration: { slot: 'p1' | 'p2' | null; beforeScore: number; afterScore: number } | null = null
+    try {
+      if (shouldCelebrate) {
+        const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
+        const beforeRows = computeShiftLeadersForState(taskState, selectedDateKey, selectedShift, SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
+        const afterRows = computeShiftLeadersForState(updatedState, selectedDateKey, selectedShift, SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
+        const beforeScore = beforeRows.find((r) => r.name === rewardName)?.score ?? 0
+        const afterScore = afterRows.find((r) => r.name === rewardName)?.score ?? 0
+        const afterPlayed = afterRows.filter((r) => r.score > 0)
+        const afterP1 = afterPlayed[0]
+        const afterP2 = afterPlayed[1]
+        const slot: 'p1' | 'p2' | null = afterP1?.name === rewardName ? 'p1' : afterP2?.name === rewardName ? 'p2' : null
+        pendingNormalCelebration = { slot, beforeScore, afterScore }
+      }
+    } catch { /* ignore */ }
+
+    if (!existingCompletion) triggerNextTaskPulse(activeTaskId, updatedState)
+    setRewardStars([])
+    window.setTimeout(() => { window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' }) }, 100)
+
+    if (pendingNormalCelebration) {
+      const { slot, beforeScore, afterScore } = pendingNormalCelebration
+      const starDelay = prefersReducedMotion ? 150 : 650
+      window.setTimeout(() => {
+        setCelebrateShake(true)
+        window.setTimeout(() => setCelebrateShake(false), 500)
+        if (slot === 'p1' && p1ScoreRef.current) {
+          setP1ScoreOverride(beforeScore)
+          setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
+          rewardTargetRef.current = p1ScoreRef.current
+          spawnRewardStars(p1ScoreRef.current)
+          return
+        }
+        if (slot === 'p2' && p2ScoreRef.current) {
+          setP2ScoreOverride(beforeScore)
+          setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
+          rewardTargetRef.current = p2ScoreRef.current
+          spawnRewardStars(p2ScoreRef.current)
+          return
+        }
+        setShiftHudPulse(true)
+        const target = shiftHudExtraRef.current || shiftHudHeaderRef.current
+        rewardTargetRef.current = target
+        spawnRewardStars(target)
+      }, starDelay)
+    }
+
+    if (willHitHundredPercent) {
+      const participants = computeCurrentWindowParticipants(updatedState)
+      const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+      scheduleWindowCompleteCelebrationAfterScroll({ windowLabel, participants, waitForStars: !!pendingNormalCelebration })
+    }
+
+    setActiveTaskId(null)
+    setShowEmployeeSelector(false)
+    setPendingTowelSide(null)
+    setTowelSidesDraft({ diningBar: null, bowlStation: null })
+    {
+      const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+      setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
+      setTowelSidesDraftByKey((prev) => {
+        if (!prev[key]) return prev
+        const { [key]: _, ...rest } = prev
+        return rest
+      })
+    }
+
+    setIsSaving(true)
+    setSaveError(null)
+    const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    const persist = existingCompletion
+      ? persistAdminSetTaskCompletionOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: activeTaskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? newAssignees,
+            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+            assignedByAdmin: completionToPersist?.assignedByAdmin,
+            completedLate: completionToPersist?.completedLate,
+            lateForgiven: completionToPersist?.lateForgiven,
+            completedEarly: completionToPersist?.completedEarly,
+            towelSides: completionToPersist?.towelSides,
+          },
+        })
+      : persistCompleteTaskIfAvailableOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: activeTaskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? newAssignees,
+            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+            assignedByAdmin: completionToPersist?.assignedByAdmin,
+            completedLate: completionToPersist?.completedLate,
+            lateForgiven: completionToPersist?.lateForgiven,
+            completedEarly: completionToPersist?.completedEarly,
+            towelSides: completionToPersist?.towelSides,
+          },
+        })
+
+    Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
+      .then(() => {
+        if (import.meta.env.DEV) console.log('Completed task state saved successfully')
+        setIsSaving(false)
+        setCelebrateShake(true)
+        setTimeout(() => setCelebrateShake(false), 500)
+      })
+      .catch((error) => {
+        console.error('Failed to save completion:', error)
+        if (error instanceof Error && error.message === 'already-completed') {
+          setTaskState((prev) => {
+            const next: TaskState = { ...prev }
+            const day = { ...(next[selectedDateKey] ?? {}) }
+            const w = { ...(day[selectedWindow] ?? {}) }
+            if (beforeCompletionSnapshot) {
+              w[activeTaskId] = beforeCompletionSnapshot
+              day[selectedWindow] = w
+              next[selectedDateKey] = day
+            } else {
+              delete w[activeTaskId]
+              day[selectedWindow] = w
+              next[selectedDateKey] = day
+            }
+            return next
+          })
+          setSaveError('Already completed by someone else.')
+        } else {
+          setSaveError(error instanceof Error && error.message === 'timeout' ? 'Save timed out. Check connection.' : 'Failed to save. Try again.')
+        }
+        setIsSaving(false)
+      })
+  }
+
+  const clearCombinedTowelTask = useCallback(async () => {
+    if (!activeTaskId) return
+    if (activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+
+    const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+    setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
+    setTowelSidesDraftByKey((prev) => {
+      if (!prev[key]) return prev
+      const { [key]: _, ...rest } = prev
+      return rest
+    })
+    setPendingTowelSide(null)
+    setTowelSidesDraft({ diningBar: null, bowlStation: null })
+    setAssignees([])
+    setTowelFillAnim(null)
+    setTowelPageEmojis([])
+    setSaveError(null)
+
+    const beforeCompletionSnapshot = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+    if (!beforeCompletionSnapshot) return
+
+    appendSelectionLog({
+      action: 'cleared',
+      taskId: activeTaskId,
+      taskName: activeTask?.name ?? activeTaskId,
+      window: selectedWindow,
+      dateKey: selectedDateKey,
+      assignees: beforeCompletionSnapshot.assignees ?? [],
+      byAdmin: isAdmin,
+    })
+
+    await new Promise<void>((resolve) => {
+      setTaskState((prevState) => {
+        const next: TaskState = { ...prevState }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        delete windowMap[activeTaskId]
+        if (Object.keys(windowMap).length === 0) delete dateMap[selectedWindow]
+        else dateMap[selectedWindow] = windowMap
+        if (Object.keys(dateMap).length === 0) delete next[selectedDateKey]
+        else next[selectedDateKey] = dateMap
+        resolve()
+        return next
+      })
+    })
+
+    setIsSaving(true)
+    try {
+      await Promise.all([
+        withTimeout(persistAdminClearTaskCompletionOrNoop(selectedDateKey, selectedWindow, activeTaskId), 8000),
+        new Promise((r) => setTimeout(r, 350)),
+      ])
+      setIsSaving(false)
+    } catch (error) {
+      console.error('Failed to clear combined towel completion:', error)
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const day = { ...(next[selectedDateKey] ?? {}) }
+        const w = { ...(day[selectedWindow] ?? {}) }
+        w[activeTaskId] = beforeCompletionSnapshot
+        day[selectedWindow] = w
+        next[selectedDateKey] = day
+        return next
+      })
+      setSaveError(error instanceof Error && error.message === 'timeout' ? 'Clear timed out. Check connection.' : 'Failed to clear. Try again.')
+      setIsSaving(false)
+    }
+  }, [activeTask?.name, activeTaskId, appendSelectionLog, isAdmin, persistAdminClearTaskCompletionOrNoop, selectedDateKey, selectedWindow, taskState])
+
   const triggerIceFillAnim = useCallback((side: 'left' | 'right') => {
     if (prefersReducedMotion) return
     const key = Date.now()
@@ -8108,6 +8669,44 @@ function App() {
       window.setTimeout(() => {
         setIceFillAnim(null)
         setIcePageEmojis([])
+      }, maxMs)
+    }, 0)
+  }, [prefersReducedMotion])
+
+  const triggerTowelFillAnim = useCallback((side: 'diningBar' | 'bowlStation') => {
+    if (prefersReducedMotion) return
+    const key = Date.now()
+    const count = 6
+    const tileEl = side === 'diningBar' ? towelDiningTileRef.current : towelBowlTileRef.current
+    if (!tileEl) return
+    const rect = tileEl.getBoundingClientRect()
+    const startY = -56
+    const emojis = Array.from({ length: count }).map((_, i) => {
+      const x0 = rect.left + Math.random() * rect.width
+      const x1 = rect.left + rect.width * (0.2 + Math.random() * 0.6)
+      const y1 = rect.top + rect.height * (0.22 + Math.random() * 0.55)
+      const delayMs = i * 70
+      const durMs = 700 + Math.floor(Math.random() * 260)
+      const sizePx = 34 + Math.floor(Math.random() * 14)
+      return {
+        id: `${key}-${side}-${i}-${Math.random().toString(16).slice(2)}`,
+        x: x0,
+        y: startY,
+        dx: x1 - x0,
+        dy: y1 - startY,
+        delayMs,
+        durMs,
+        sizePx,
+      }
+    })
+    setTowelFillAnim(null)
+    window.setTimeout(() => {
+      setTowelFillAnim({ side, key })
+      setTowelPageEmojis(emojis)
+      const maxMs = emojis.reduce((m, e) => Math.max(m, e.delayMs + e.durMs), 0) + 100
+      window.setTimeout(() => {
+        setTowelFillAnim(null)
+        setTowelPageEmojis([])
       }, maxMs)
     }, 0)
   }, [prefersReducedMotion])
@@ -9350,6 +9949,29 @@ function App() {
         </div>
       )}
 
+      {/* Towel split: big falling 🧼 from top of screen into the selected tile */}
+      {towelPageEmojis.length > 0 && (
+        <div className="towel-page-emoji-layer" aria-hidden="true">
+          {towelPageEmojis.map((e) => (
+            <span
+              key={e.id}
+              className="towel-page-emoji"
+              style={{
+                left: `${e.x}px`,
+                top: `${e.y}px`,
+                ['--dx' as any]: `${e.dx}px`,
+                ['--dy' as any]: `${e.dy}px`,
+                animationDelay: `${e.delayMs}ms`,
+                animationDuration: `${e.durMs}ms`,
+                fontSize: `${e.sizePx}px`,
+              }}
+            >
+              🧼
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Window completion full-screen celebration (post-scroll) */}
       {windowCompleteOverlay && (
         <div
@@ -10074,6 +10696,12 @@ function App() {
               (task.id === 'ice-5pm' || task.id === 'ice-close') && !completion
                 ? iceSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
                 : undefined
+            const towelDraftPreview =
+              (task.id === 'towels-5pm' || task.id === 'towels-close') &&
+              !completion &&
+              isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
+                ? towelSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
+                : undefined
             return (
               <TaskCard
                 key={task.id}
@@ -10086,6 +10714,7 @@ function App() {
                 deferredBadgeAt={deferredBadgeAt}
                 previewAssignees={previewAssignees}
                 iceDraftPreview={iceDraftPreview}
+                towelDraftPreview={towelDraftPreview}
                 interactionLocked={interactionLocked}
                 isAdmin={isAdmin}
                 draggedTaskId={draggedTaskId}
@@ -12032,6 +12661,96 @@ function App() {
                     )
                   })()}
                 </div>
+              ) : (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) ? (
+                <div ref={requirementsScrollRef} className="modal-requirements-scroll" aria-label="Towel selection">
+                  {(() => {
+                    const locked =
+                      isInitialSyncing ||
+                      (!(isTodaySelected || isDemoDaySelected) && !isAdmin) ||
+                      (windowLocked && !isAdmin) ||
+                      (!!activeCompletion?.assignedByAdmin && !isAdmin)
+                    return (
+                      <div className="towel-combined">
+                        <div className="ice-combined-title">Tap to select who did each area</div>
+                        <div className="towel-sides-grid">
+                          <button
+                            type="button"
+                            className={`towel-side-tile towel-dining-bar ${towelSidesDraft.diningBar ? 'filled' : ''} ${towelFillAnim?.side === 'diningBar' ? 'towel-filling' : ''} ${locked ? 'locked' : ''}`}
+                            disabled={locked}
+                            ref={towelDiningTileRef}
+                            onTouchStart={beginTap}
+                            onTouchMove={moveTap}
+                            onTouchEnd={(e) =>
+                              endTap(() => {
+                                setPendingTowelSide('diningBar')
+                                setShowEmployeeSelector(true)
+                              }, e)
+                            }
+                            onClick={() => {
+                              if (shouldIgnoreClick()) return
+                              setPendingTowelSide('diningBar')
+                              setShowEmployeeSelector(true)
+                            }}
+                          >
+                            <div className="towel-side-label">Dining/Bar Towel</div>
+                            <div className="towel-side-value">{towelSidesDraft.diningBar || 'Tap to select'}</div>
+                          </button>
+
+                          <button
+                            type="button"
+                            className={`towel-side-tile towel-bowl-station ${towelSidesDraft.bowlStation ? 'filled' : ''} ${towelFillAnim?.side === 'bowlStation' ? 'towel-filling' : ''} ${locked ? 'locked' : ''}`}
+                            disabled={locked}
+                            ref={towelBowlTileRef}
+                            onTouchStart={beginTap}
+                            onTouchMove={moveTap}
+                            onTouchEnd={(e) =>
+                              endTap(() => {
+                                setPendingTowelSide('bowlStation')
+                                setShowEmployeeSelector(true)
+                              }, e)
+                            }
+                            onClick={() => {
+                              if (shouldIgnoreClick()) return
+                              setPendingTowelSide('bowlStation')
+                              setShowEmployeeSelector(true)
+                            }}
+                          >
+                            <div className="towel-side-label">Bowl Station Towel</div>
+                            <div className="towel-side-value">{towelSidesDraft.bowlStation || 'Tap to select'}</div>
+                          </button>
+                        </div>
+
+                        {(activeCompletion || towelSidesDraft.diningBar || towelSidesDraft.bowlStation) ? (
+                          <div className="ice-actions">
+                            <div className="break-action-buttons">
+                              <button
+                                className="break-clear-btn"
+                                type="button"
+                                disabled={locked}
+                                onTouchStart={beginTap}
+                                onTouchMove={moveTap}
+                                onTouchEnd={(e) => endTap(() => void clearCombinedTowelTask(), e)}
+                                onClick={() => {
+                                  if (shouldIgnoreClick()) return
+                                  void clearCombinedTowelTask()
+                                }}
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {!(isTodaySelected || isDemoDaySelected) && !isAdmin ? (
+                          <div className="note">Viewing {displayDate(selectedDate)}. Assignment locked.</div>
+                        ) : locked ? (
+                          <div className="note">🔒 Locked</div>
+                        ) : null}
+                      </div>
+                    )
+                  })()}
+                </div>
               ) : (
                 <div ref={requirementsScrollRef} className="modal-requirements-scroll" aria-label="Task requirements">
                   {activeTask.imagePath ? (
@@ -12136,17 +12855,24 @@ function App() {
 
                     {(isTodaySelected || isAdmin) && (
                       <>
-                        {(activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') ? null : (
+                        {(activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') ||
+                        ((activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                          isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow))
+                          ? null
+                          : (
                           <div className="completed-by-label">Completed by:</div>
                         )}
 
                         {(() => {
                           const isCombinedIce = activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close'
+                          const isCombinedTowelModal =
+                            (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                            isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
                           const allowEarlyYumYum =
                             !isAdmin && activeTaskId === 'yum-yum-close' && (selectedWindow === '17' || selectedWindow === '21')
                           const musicSelectionLocked = activeTaskId === 'turn-on-music' && !musicIsActuallyPlaying
                           const selectionLocked = (windowLocked && !isAdmin && !allowEarlyYumYum) || musicSelectionLocked
-                          if (isCombinedIce) {
+                          if (isCombinedIce || isCombinedTowelModal) {
                             return null
                           }
                           return (
@@ -12587,6 +13313,10 @@ function App() {
               <>
                 {((activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') && pendingIceSide) ? (
                   <h3>Select {pendingIceSide === 'left' ? 'Left Ice' : 'Right Ice'} Employee</h3>
+                ) : ((activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                  isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
+                  pendingTowelSide) ? (
+                  <h3>Select {pendingTowelSide === 'diningBar' ? 'Dining/Bar Towel' : 'Bowl Station Towel'} Employee</h3>
                 ) : (
                   <>
                     <h3>Select {splitMode ? 'Two Employees' : 'Employee'}</h3>
@@ -12612,7 +13342,11 @@ function App() {
                   className={`employee-option ${
                     ((activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') && pendingIceSide)
                       ? ((pendingIceSide === 'left' ? iceSidesDraft.left : iceSidesDraft.right) === user ? 'selected' : '')
-                      : (assignees.includes(user) ? 'selected' : '')
+                      : ((activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                          isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
+                          pendingTowelSide)
+                        ? ((pendingTowelSide === 'diningBar' ? towelSidesDraft.diningBar : towelSidesDraft.bowlStation) === user ? 'selected' : '')
+                        : (assignees.includes(user) ? 'selected' : '')
                   }`}
                   disabled={
                     (activeTaskId === 'turn-on-music' && !musicIsActuallyPlaying)
@@ -12654,6 +13388,37 @@ function App() {
                         setPendingIceSide(null)
                         if (nextSides.left && nextSides.right) {
                           void completeCombinedIceTask({ left: nextSides.left, right: nextSides.right })
+                        } else {
+                          void persistPartialIceTask(nextSides)
+                        }
+                        return
+                      }
+                      const isTowelSidePick =
+                        (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                        isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
+                        !!pendingTowelSide
+                      if (isTowelSidePick) {
+                        const side = pendingTowelSide
+                        if (!side) return
+                        const current = side === 'diningBar' ? towelSidesDraft.diningBar : towelSidesDraft.bowlStation
+                        if (current !== user && !employeeColors[user]) {
+                          setPendingColorEmployee(user)
+                          setPendingColorAction('towel')
+                          setShowColorPicker(true)
+                          return
+                        }
+                        triggerTowelFillAnim(side)
+                        const nextSides = { ...towelSidesDraft, [side]: user }
+                        setTowelSidesDraft(nextSides)
+                        const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+                        setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: true }))
+                        setTowelSidesDraftByKey((prev) => ({ ...prev, [key]: nextSides }))
+                        setShowEmployeeSelector(false)
+                        setPendingTowelSide(null)
+                        if (nextSides.diningBar && nextSides.bowlStation) {
+                          void completeCombinedTowelTask({ diningBar: nextSides.diningBar, bowlStation: nextSides.bowlStation })
+                        } else {
+                          void persistPartialTowelTask(nextSides)
                         }
                         return
                       }
@@ -12702,6 +13467,37 @@ function App() {
                       setPendingIceSide(null)
                       if (nextSides.left && nextSides.right) {
                         void completeCombinedIceTask({ left: nextSides.left, right: nextSides.right })
+                      } else {
+                        void persistPartialIceTask(nextSides)
+                      }
+                      return
+                    }
+                    const isTowelSidePickOnClick =
+                      (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                      isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
+                      !!pendingTowelSide
+                    if (isTowelSidePickOnClick) {
+                      const side = pendingTowelSide
+                      if (!side) return
+                      const current = side === 'diningBar' ? towelSidesDraft.diningBar : towelSidesDraft.bowlStation
+                      if (current !== user && !employeeColors[user]) {
+                        setPendingColorEmployee(user)
+                        setPendingColorAction('towel')
+                        setShowColorPicker(true)
+                        return
+                      }
+                      triggerTowelFillAnim(side)
+                      const nextSides = { ...towelSidesDraft, [side]: user }
+                      setTowelSidesDraft(nextSides)
+                      const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+                      setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: true }))
+                      setTowelSidesDraftByKey((prev) => ({ ...prev, [key]: nextSides }))
+                      setShowEmployeeSelector(false)
+                      setPendingTowelSide(null)
+                      if (nextSides.diningBar && nextSides.bowlStation) {
+                        void completeCombinedTowelTask({ diningBar: nextSides.diningBar, bowlStation: nextSides.bowlStation })
+                      } else {
+                        void persistPartialTowelTask(nextSides)
                       }
                       return
                     }
@@ -12829,6 +13625,28 @@ function App() {
                             setPendingIceSide(null)
                             if (nextSides.left && nextSides.right) {
                               void completeCombinedIceTask({ left: nextSides.left, right: nextSides.right })
+                            } else {
+                              void persistPartialIceTask(nextSides)
+                            }
+                          }
+                      } else if (action === 'towel') {
+                          const isCombinedTowel =
+                            (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                            isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
+                          const side = pendingTowelSide
+                          if (isCombinedTowel && (side === 'diningBar' || side === 'bowlStation')) {
+                            triggerTowelFillAnim(side)
+                            const nextSides = { ...towelSidesDraft, [side]: emp }
+                            setTowelSidesDraft(nextSides)
+                            const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+                            setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: true }))
+                            setTowelSidesDraftByKey((prev) => ({ ...prev, [key]: nextSides }))
+                            setShowEmployeeSelector(false)
+                            setPendingTowelSide(null)
+                            if (nextSides.diningBar && nextSides.bowlStation) {
+                              void completeCombinedTowelTask({ diningBar: nextSides.diningBar, bowlStation: nextSides.bowlStation })
+                            } else {
+                              void persistPartialTowelTask(nextSides)
                             }
                           }
                       } else if (action === 'task') {
@@ -12876,6 +13694,28 @@ function App() {
                           setPendingIceSide(null)
                           if (nextSides.left && nextSides.right) {
                             void completeCombinedIceTask({ left: nextSides.left, right: nextSides.right })
+                          } else {
+                            void persistPartialIceTask(nextSides)
+                          }
+                        }
+                      } else if (action === 'towel') {
+                        const isCombinedTowel =
+                          (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                          isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
+                        const side = pendingTowelSide
+                        if (isCombinedTowel && (side === 'diningBar' || side === 'bowlStation')) {
+                          triggerTowelFillAnim(side)
+                          const nextSides = { ...towelSidesDraft, [side]: emp }
+                          setTowelSidesDraft(nextSides)
+                          const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
+                          setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: true }))
+                          setTowelSidesDraftByKey((prev) => ({ ...prev, [key]: nextSides }))
+                          setShowEmployeeSelector(false)
+                          setPendingTowelSide(null)
+                          if (nextSides.diningBar && nextSides.bowlStation) {
+                            void completeCombinedTowelTask({ diningBar: nextSides.diningBar, bowlStation: nextSides.bowlStation })
+                          } else {
+                            void persistPartialTowelTask(nextSides)
                           }
                         }
                       } else if (action === 'task') {
@@ -13705,6 +14545,25 @@ function App() {
                     title="Hide legacy Left/Right Ice tasks for future windows without changing history."
                   >
                     {adminApplyingIceCombine ? 'Applying Ice Combine…' : 'Apply Ice Combine (5PM + Close)'}
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-header-btn"
+                    disabled={!isAdmin || adminApplyingTowelsSplit}
+                    onClick={() => {
+                      if (!isAdmin) return
+                      if (adminApplyingTowelsSplit) return
+                      if (
+                        confirm(
+                          'Apply Towels Split now?\n\nTowels (5PM + Close) will use the split UI (Dining/Bar + Bowl Station) going forward. Past completions are preserved.'
+                        )
+                      ) {
+                        void applyTowelsSplitNow()
+                      }
+                    }}
+                    title="Enable split Towels UI for future windows without changing history."
+                  >
+                    {adminApplyingTowelsSplit ? 'Applying Towels Split…' : 'Apply Towels Split (5PM + Close)'}
                   </button>
                 </div>
 

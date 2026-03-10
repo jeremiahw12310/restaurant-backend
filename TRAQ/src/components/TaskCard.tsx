@@ -12,6 +12,7 @@ export type TaskCardProps = {
   deferredBadgeAt?: string | null
   previewAssignees?: string[]
   iceDraftPreview?: { left: string | null; right: string | null }
+  towelDraftPreview?: { diningBar: string | null; bowlStation: string | null }
   interactionLocked?: boolean
   cardRef?: (el: HTMLDivElement | null) => void
   isAdmin: boolean
@@ -43,6 +44,7 @@ export const TaskCard = memo(({
   deferredBadgeAt,
   previewAssignees,
   iceDraftPreview,
+  towelDraftPreview,
   interactionLocked,
   cardRef,
   isAdmin,
@@ -71,6 +73,13 @@ export const TaskCard = memo(({
     if ((task.id === 'ice-5pm' || task.id === 'ice-close') && completion?.iceSides) {
       const a = String(completion.iceSides.left || '').trim()
       const b = String(completion.iceSides.right || '').trim()
+      if (a && b && a === b) return [a]
+      return [a, b].filter(Boolean)
+    }
+    // Split Towels: Dining/Bar + Bowl Station
+    if ((task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) {
+      const a = String(completion.towelSides.diningBar || '').trim()
+      const b = String(completion.towelSides.bowlStation || '').trim()
       if (a && b && a === b) return [a]
       return [a, b].filter(Boolean)
     }
@@ -166,9 +175,29 @@ export const TaskCard = memo(({
         </div>
       </div>
       {((displayAssignees && displayAssignees.length > 0) ||
-        (previewAssignees && previewAssignees.length > 0)) && (
+        (previewAssignees && previewAssignees.length > 0)) &&
+        !((task.id === 'ice-5pm' || task.id === 'ice-close') && completion?.iceSides) &&
+        !((task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) && (
         <div className="completed-names">
           {(displayAssignees && displayAssignees.length > 0 ? displayAssignees : previewAssignees || []).join(' & ')}
+        </div>
+      )}
+      {/* Ice completion: show split format (Left/Right) on card */}
+      {(task.id === 'ice-5pm' || task.id === 'ice-close') &&
+        completion?.iceSides &&
+        (completion.iceSides.left || completion.iceSides.right) && (
+        <div className="ice-preview-names">
+          <div>Left: {completion.iceSides.left || 'Open'}</div>
+          <div>Right: {completion.iceSides.right || 'Open'}</div>
+        </div>
+      )}
+      {/* Towel completion (full or partial): show split format so partial stays visible on card */}
+      {(task.id === 'towels-5pm' || task.id === 'towels-close') &&
+        completion?.towelSides &&
+        (completion.towelSides.diningBar || completion.towelSides.bowlStation) && (
+        <div className="ice-preview-names">
+          <div>Dining/Bar: {completion.towelSides.diningBar || 'Open'}</div>
+          <div>Bowl Station: {completion.towelSides.bowlStation || 'Open'}</div>
         </div>
       )}
       {/* Ice draft preview: show partial selection when one side is filled but task not completed */}
@@ -179,6 +208,16 @@ export const TaskCard = memo(({
         <div className="ice-preview-names">
           <div>Left: {iceDraftPreview.left || 'Open'}</div>
           <div>Right: {iceDraftPreview.right || 'Open'}</div>
+        </div>
+      )}
+      {/* Towel draft preview: show partial selection when one side is filled but task not completed */}
+      {(task.id === 'towels-5pm' || task.id === 'towels-close') &&
+        !completion &&
+        towelDraftPreview &&
+        (towelDraftPreview.diningBar || towelDraftPreview.bowlStation) && (
+        <div className="ice-preview-names">
+          <div>Dining/Bar: {towelDraftPreview.diningBar || 'Open'}</div>
+          <div>Bowl Station: {towelDraftPreview.bowlStation || 'Open'}</div>
         </div>
       )}
       {completion?.deferredToClose && (

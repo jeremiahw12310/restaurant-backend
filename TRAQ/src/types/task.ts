@@ -33,6 +33,8 @@ export type TaskCompletion = {
   orderReportCounts?: Record<string, number>
   // Combined ice tasks: explicit Left/Right assignees (supports same employee for both sides)
   iceSides?: { left: string; right: string }
+  // Split towels: Dining/Bar vs Bowl Station assignees
+  towelSides?: { diningBar: string; bowlStation: string }
 }
 
 export type EffectiveStatus = 'pending' | 'late' | 'missing' | 'done'

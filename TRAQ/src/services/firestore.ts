@@ -486,6 +486,8 @@ export type TaskOverride = {
 
 export type TaskOverrides = {
   overrides: Record<string, TaskOverride>
+  /** When set, towels-5pm and towels-close use split UI (Dining/Bar + Bowl Station) for windows closing at or after this timestamp. */
+  towelsSplitEffectiveAtMs?: number
 }
 
 // ============ DAILY TASKS (admin-managed) ============
@@ -921,8 +923,11 @@ export const getTaskOverrides = async (): Promise<TaskOverrides> => {
       saveToLocalStorage(LS_TASK_OVERRIDES_KEY, empty)
       return empty
     }
-    const raw = docSnap.data() as { overrides?: Record<string, TaskOverride> }
-    const parsed: TaskOverrides = { overrides: raw.overrides || {} }
+    const raw = docSnap.data() as { overrides?: Record<string, TaskOverride>; towelsSplitEffectiveAtMs?: number }
+    const parsed: TaskOverrides = {
+      overrides: raw.overrides || {},
+      towelsSplitEffectiveAtMs: typeof raw.towelsSplitEffectiveAtMs === 'number' ? raw.towelsSplitEffectiveAtMs : undefined,
+    }
     saveToLocalStorage(LS_TASK_OVERRIDES_KEY, parsed)
     return parsed
   } catch (error) {
@@ -967,8 +972,12 @@ export const subscribeToTaskOverrides = (callback: (value: TaskOverrides) => voi
       unsubscribe = onSnapshot(
         docRef,
         (snap) => {
-          const next: TaskOverrides = snap.exists()
-            ? { overrides: ((snap.data() as { overrides?: Record<string, TaskOverride> }).overrides) || {} }
+          const data = snap.exists() ? (snap.data() as { overrides?: Record<string, TaskOverride>; towelsSplitEffectiveAtMs?: number }) : null
+          const next: TaskOverrides = data
+            ? {
+                overrides: data.overrides || {},
+                towelsSplitEffectiveAtMs: typeof data.towelsSplitEffectiveAtMs === 'number' ? data.towelsSplitEffectiveAtMs : undefined,
+              }
             : { overrides: {} }
           lastTaskOverridesSource = 'firestore-sdk'
           saveToLocalStorage(LS_TASK_OVERRIDES_KEY, next)
@@ -1008,6 +1017,8 @@ export type TaskCompletion = {
   orderReportCounts?: Record<string, number>
   // Combined ice tasks: explicit Left/Right assignees (supports same employee for both sides)
   iceSides?: { left: string; right: string }
+  // Split towels: Dining/Bar vs Bowl Station assignees
+  towelSides?: { diningBar: string; bowlStation: string }
 }
 
 export type TaskState = Record<string, Record<WindowKey, Record<string, TaskCompletion>>>
@@ -1040,6 +1051,7 @@ export const subscribeToTaskCompletionsForWindow = (
           // Only accept "done" docs; ignore any other experimental states.
           if (raw.status !== 'done') return
           const rawIceSides = raw.iceSides && typeof raw.iceSides === 'object' ? (raw.iceSides as Record<string, unknown>) : null
+          const rawTowelSides = raw.towelSides && typeof raw.towelSides === 'object' ? (raw.towelSides as Record<string, unknown>) : null
           map[d.id] = {
             status: 'done',
             assignees: (raw.assignees as string[]) || [],
@@ -1055,6 +1067,12 @@ export const subscribeToTaskCompletionsForWindow = (
               ? {
                   left: String(rawIceSides.left || ''),
                   right: String(rawIceSides.right || ''),
+                }
+              : undefined,
+            towelSides: rawTowelSides
+              ? {
+                  diningBar: String(rawTowelSides.diningBar || ''),
+                  bowlStation: String(rawTowelSides.bowlStation || ''),
                 }
               : undefined,
           }
@@ -1114,6 +1132,7 @@ export const subscribeToRecentTaskCompletions = (
           if (!dateKey || (windowKey !== '11' && windowKey !== '17' && windowKey !== '21')) return
           const taskId = String(raw.taskId || d.id)
           const rawIceSides = raw.iceSides && typeof raw.iceSides === 'object' ? (raw.iceSides as Record<string, unknown>) : null
+          const rawTowelSides = raw.towelSides && typeof raw.towelSides === 'object' ? (raw.towelSides as Record<string, unknown>) : null
 
           if (!next[dateKey]) next[dateKey] = { '11': {}, '17': {}, '21': {} }
           if (!next[dateKey][windowKey]) next[dateKey][windowKey] = {}
@@ -1132,6 +1151,12 @@ export const subscribeToRecentTaskCompletions = (
               ? {
                   left: String(rawIceSides.left || ''),
                   right: String(rawIceSides.right || ''),
+                }
+              : undefined,
+            towelSides: rawTowelSides
+              ? {
+                  diningBar: String(rawTowelSides.diningBar || ''),
+                  bowlStation: String(rawTowelSides.bowlStation || ''),
                 }
               : undefined,
           }
@@ -1189,6 +1214,7 @@ export const completeTaskIfAvailable = async (args: CompleteTaskArgs): Promise<v
       deferredToClose: completion.deferredToClose ?? null,
       orderReportCounts: completion.orderReportCounts ?? null,
       iceSides: completion.iceSides ?? null,
+      towelSides: completion.towelSides ?? null,
       dateKey,
       windowKey,
       taskId,
@@ -1217,6 +1243,7 @@ export const adminSetTaskCompletion = async (args: CompleteTaskArgs): Promise<vo
       deferredToClose: completion.deferredToClose ?? null,
       orderReportCounts: completion.orderReportCounts ?? null,
       iceSides: completion.iceSides ?? null,
+      towelSides: completion.towelSides ?? null,
       dateKey,
       windowKey,
       taskId,
