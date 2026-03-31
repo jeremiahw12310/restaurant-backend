@@ -1888,17 +1888,37 @@ export type TimeOffRequest = {
   decision?: { by: 'admin'; at: string; note?: string }
 }
 
-/** Last calendar day covered by the request (YYYY-MM-DD), or null if unknown. */
+/**
+ * Last calendar day covered by the request (YYYY-MM-DD), or null if unknown.
+ * Uses the latest date from dateRange and requestedShifts (does not rely on requestKind —
+ * legacy Firestore docs may omit it or only set one of the two).
+ */
 export function getTimeOffLastDayDateKey(req: TimeOffRequest): string | null {
-  if (req.requestKind === 'date_range' && req.dateRange) {
+  const candidates: string[] = []
+  if (req.dateRange) {
     const { endDateKey, startDateKey } = req.dateRange
-    if (endDateKey) return endDateKey
-    if (startDateKey) return startDateKey
+    if (endDateKey) candidates.push(endDateKey)
+    else if (startDateKey) candidates.push(startDateKey)
+  }
+  for (const s of req.requestedShifts ?? []) {
+    if (s.dateKey) candidates.push(s.dateKey)
+  }
+  if (candidates.length === 0) return null
+  return candidates.sort().pop() ?? null
+}
+
+/** Local calendar YYYY-MM-DD from an ISO timestamp (for visibility when no PTO dates exist). */
+function dateKeyFromIsoLocal(iso: string): string | null {
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return null
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  } catch {
     return null
   }
-  const keys = (req.requestedShifts ?? []).map((s) => s.dateKey).filter(Boolean)
-  if (keys.length === 0) return null
-  return keys.sort().pop() ?? null
 }
 
 const addCalendarDaysToDateKey = (dateKey: string, delta: number): string => {
@@ -1914,11 +1934,15 @@ const addCalendarDaysToDateKey = (dateKey: string, delta: number): string => {
 
 /**
  * Employee-facing time off board: visible through the second calendar day after the last PTO day
- * (same rule as "2 days past" then hide). Requests with no computable end date stay visible.
+ * (same rule as "2 days past" then hide). If no PTO dates exist, uses request createdAt so
+ * undated legacy rows still roll off instead of staying forever.
  */
 export function isTimeOffVisibleOnPublicList(req: TimeOffRequest, todayDateKey: string): boolean {
-  const last = getTimeOffLastDayDateKey(req)
-  if (!last) return true
+  let last = getTimeOffLastDayDateKey(req)
+  if (!last && req.createdAt) {
+    last = dateKeyFromIsoLocal(req.createdAt)
+  }
+  if (!last) return false
   const visibleThrough = addCalendarDaysToDateKey(last, 2)
   return todayDateKey <= visibleThrough
 }
