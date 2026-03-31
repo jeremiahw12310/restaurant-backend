@@ -11855,7 +11855,7 @@ function App() {
                     <div className="timeoff-empty">
                       {timeOffRequests.length === 0
                         ? 'No time off requests yet.'
-                        : 'No recent requests. Entries older than 2 days past the last day off are hidden here; admins still see the full history.'}
+                        : 'No requests in the current window. Upcoming time off always shows here; after the last day off, each request stays for two more days, then drops off. Admins still see full history.'}
                     </div>
                   ) : (
                     <div className="timeoff-request-list">

@@ -2076,9 +2076,10 @@ const addCalendarDaysToDateKey = (dateKey: string, delta: number): string => {
 }
 
 /**
- * Employee-facing time off board: visible through the second calendar day after the last PTO day
- * (same rule as "2 days past" then hide). If no PTO dates exist, uses request createdAt so
- * undated legacy rows still roll off instead of staying forever.
+ * Employee-facing Time Off list:
+ * - Show **all upcoming** requests (today is on or before the last scheduled day off).
+ * - After the last PTO day, keep showing for **two more calendar days**, then hide.
+ * If no PTO dates exist on the doc, falls back to `createdAt` so undated rows still roll off.
  */
 export function isTimeOffVisibleOnPublicList(req: TimeOffRequest, todayDateKey: string): boolean {
   let last = getTimeOffLastDayDateKey(req)
@@ -2086,11 +2087,18 @@ export function isTimeOffVisibleOnPublicList(req: TimeOffRequest, todayDateKey: 
     last = dateKeyFromIsoLocal(req.createdAt)
   }
   if (!last) return false
-  const visibleThrough = addCalendarDaysToDateKey(last, 2)
+
   const t = utcMsFromDateKey(todayDateKey)
+  const lastMs = utcMsFromDateKey(last)
+  if (!Number.isFinite(t) || !Number.isFinite(lastMs)) return false
+
+  // Upcoming or still on the last day of the absence
+  if (t <= lastMs) return true
+
+  // PTO ended: grace window = last day + 2 calendar days (inclusive), then off the list
+  const visibleThrough = addCalendarDaysToDateKey(last, 2)
   const v = utcMsFromDateKey(visibleThrough)
-  if (!Number.isFinite(t) || !Number.isFinite(v)) return false
-  return t <= v
+  return Number.isFinite(v) && t <= v
 }
 
 /** For support / debugging: why a request is on or off the public list. */
@@ -2120,10 +2128,15 @@ export function getTimeOffPublicListVisibilityDebug(
       usedCreatedAtFallback,
     }
   }
-  const visibleThrough = addCalendarDaysToDateKey(effectiveLastDay, 2)
   const t = utcMsFromDateKey(todayDateKey)
+  const lastMs = utcMsFromDateKey(effectiveLastDay)
+  const visibleThrough = addCalendarDaysToDateKey(effectiveLastDay, 2)
   const v = utcMsFromDateKey(visibleThrough)
-  const visible = Number.isFinite(t) && Number.isFinite(v) ? t <= v : false
+  let visible = false
+  if (Number.isFinite(t) && Number.isFinite(lastMs)) {
+    if (t <= lastMs) visible = true
+    else if (Number.isFinite(v)) visible = t <= v
+  }
   return {
     ptoLastDay,
     effectiveLastDay,
