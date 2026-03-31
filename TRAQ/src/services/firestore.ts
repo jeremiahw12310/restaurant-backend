@@ -1,5 +1,6 @@
 import { db, waitForFirebase } from '../firebase'
 import {
+  Timestamp,
   collection,
   collectionGroup,
   deleteDoc,
@@ -1888,23 +1889,135 @@ export type TimeOffRequest = {
   decision?: { by: 'admin'; at: string; note?: string }
 }
 
+function isFirestoreTimestampLike(v: unknown): v is { toDate: () => Date } {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    'toDate' in v &&
+    typeof (v as { toDate?: unknown }).toDate === 'function'
+  )
+}
+
+/** Plain object from JSON/localStorage cache of Firestore Timestamp. */
+function dateFromSecondsObject(value: unknown): Date | null {
+  if (typeof value !== 'object' || value === null) return null
+  const s = (value as { seconds?: unknown }).seconds
+  if (typeof s === 'number' && Number.isFinite(s)) return new Date(s * 1000)
+  return null
+}
+
+function formatLocalDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** Read YYYY-MM-DD from Firestore strings, Timestamps, or odd legacy values. */
+export function coerceDateKeyFromFirestore(value: unknown): string | null {
+  if (value == null) return null
+  if (typeof value === 'string') {
+    const t = value.trim()
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t
+    const d = new Date(t)
+    if (!Number.isNaN(d.getTime())) {
+      return formatLocalDateKey(d)
+    }
+    return null
+  }
+  const fromSec = dateFromSecondsObject(value)
+  if (fromSec) return formatLocalDateKey(fromSec)
+  if (value instanceof Timestamp || isFirestoreTimestampLike(value)) {
+    const d = value instanceof Timestamp ? value.toDate() : value.toDate()
+    return formatLocalDateKey(d)
+  }
+  return null
+}
+
+function coerceIsoFromFirestore(value: unknown): string {
+  if (typeof value === 'string' && value.length > 0) return value
+  const fromSec = dateFromSecondsObject(value)
+  if (fromSec) return fromSec.toISOString()
+  if (value instanceof Timestamp) return value.toDate().toISOString()
+  if (isFirestoreTimestampLike(value)) return value.toDate().toISOString()
+  return ''
+}
+
+/**
+ * Normalize raw Firestore time off docs so date fields are always strings (fixes Timestamps
+ * and snake_case keys that otherwise break visibility and sorting).
+ */
+export function normalizeTimeOffRequestFromFirestore(
+  id: string,
+  data: Record<string, unknown>
+): TimeOffRequest {
+  const drRaw = data.dateRange as Record<string, unknown> | undefined
+  let dateRange: TimeOffRequest['dateRange'] = undefined
+  if (drRaw && typeof drRaw === 'object') {
+    const start = coerceDateKeyFromFirestore(drRaw.startDateKey ?? drRaw.start_date_key)
+    const end = coerceDateKeyFromFirestore(drRaw.endDateKey ?? drRaw.end_date_key)
+    if (start || end) {
+      dateRange = {
+        startDateKey: start ?? end ?? '',
+        endDateKey: end ?? start ?? '',
+      }
+    }
+  }
+
+  const shiftsRaw = Array.isArray(data.requestedShifts) ? data.requestedShifts : []
+  const requestedShifts: RequestedShift[] = shiftsRaw.map((s) => {
+    const sh = s as Record<string, unknown>
+    const dk = coerceDateKeyFromFirestore(sh.dateKey ?? sh.date_key)
+    return {
+      dateKey: dk ?? '',
+      shift: (sh.shift as RequestedShift['shift']) || 'lunch',
+    }
+  })
+
+  const createdAt = coerceIsoFromFirestore(data.createdAt) || new Date(0).toISOString()
+  const updatedAt = coerceIsoFromFirestore(data.updatedAt) || createdAt
+
+  return {
+    id,
+    employee: typeof data.employee === 'string' ? data.employee : '',
+    status: (data.status as TimeOffRequest['status']) || 'pending',
+    reason: typeof data.reason === 'string' ? data.reason : '',
+    createdAt,
+    updatedAt,
+    requestedShifts,
+    requestKind: (data.requestKind as TimeOffRequest['requestKind']) || 'shift_blocks',
+    dateRange,
+    decision: data.decision as TimeOffRequest['decision'],
+  }
+}
+
+function utcMsFromDateKey(key: string): number {
+  const [y, m, d] = key.split('-').map((x) => parseInt(x, 10))
+  if (!y || !m || !d) return NaN
+  return Date.UTC(y, m - 1, d)
+}
+
+function maxDateKeyOf(candidates: string[]): string | null {
+  const valid = candidates.filter((k) => Number.isFinite(utcMsFromDateKey(k)))
+  if (valid.length === 0) return null
+  return valid.reduce((a, b) => (utcMsFromDateKey(a) >= utcMsFromDateKey(b) ? a : b))
+}
+
 /**
  * Last calendar day covered by the request (YYYY-MM-DD), or null if unknown.
- * Uses the latest date from dateRange and requestedShifts (does not rely on requestKind —
- * legacy Firestore docs may omit it or only set one of the two).
+ * Uses the latest date from dateRange and requestedShifts (does not rely on requestKind).
  */
 export function getTimeOffLastDayDateKey(req: TimeOffRequest): string | null {
   const candidates: string[] = []
   if (req.dateRange) {
     const { endDateKey, startDateKey } = req.dateRange
     if (endDateKey) candidates.push(endDateKey)
-    else if (startDateKey) candidates.push(startDateKey)
+    if (startDateKey) candidates.push(startDateKey)
   }
   for (const s of req.requestedShifts ?? []) {
     if (s.dateKey) candidates.push(s.dateKey)
   }
-  if (candidates.length === 0) return null
-  return candidates.sort().pop() ?? null
+  return maxDateKeyOf(candidates)
 }
 
 /** Local calendar YYYY-MM-DD from an ISO timestamp (for visibility when no PTO dates exist). */
@@ -1944,10 +2057,13 @@ export function isTimeOffVisibleOnPublicList(req: TimeOffRequest, todayDateKey: 
   }
   if (!last) return false
   const visibleThrough = addCalendarDaysToDateKey(last, 2)
-  return todayDateKey <= visibleThrough
+  const t = utcMsFromDateKey(todayDateKey)
+  const v = utcMsFromDateKey(visibleThrough)
+  if (!Number.isFinite(t) || !Number.isFinite(v)) return false
+  return t <= v
 }
 
-const LS_TIME_OFF_KEY = 'traq-timeoff-v1'
+const LS_TIME_OFF_KEY = 'traq-timeoff-v2'
 
 /**
  * List recent time off requests (all employees), sorted by createdAt desc
@@ -1958,10 +2074,9 @@ export const listTimeOffRequests = async (limitN: number = 50): Promise<TimeOffR
     const colRef = collection(db, 'timeOffRequests')
     // Simple fetch all and sort client-side to avoid index requirements
     const snap = await getDocs(colRef)
-    const requests: TimeOffRequest[] = snap.docs.map((d) => ({
-      id: d.id,
-      ...(d.data() as Omit<TimeOffRequest, 'id'>),
-    }))
+    const requests: TimeOffRequest[] = snap.docs.map((d) =>
+      normalizeTimeOffRequestFromFirestore(d.id, d.data() as Record<string, unknown>)
+    )
     // Sort by createdAt desc, then limit
     requests.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
     const limited = requests.slice(0, limitN)
@@ -1996,10 +2111,9 @@ export const subscribeToTimeOffRequests = (
       unsubscribe = onSnapshot(
         colRef,
         (snap) => {
-          const requests: TimeOffRequest[] = snap.docs.map((d) => ({
-            id: d.id,
-            ...(d.data() as Omit<TimeOffRequest, 'id'>),
-          }))
+          const requests: TimeOffRequest[] = snap.docs.map((d) =>
+            normalizeTimeOffRequestFromFirestore(d.id, d.data() as Record<string, unknown>)
+          )
           // Sort by createdAt desc
           requests.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
           saveToLocalStorage(LS_TIME_OFF_KEY, requests)
