@@ -7,7 +7,13 @@ import legacy from '@vitejs/plugin-legacy'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // https://vite.dev/config/
-// Multi-page build: `index.html` = TRAQ ops; `apply.html` = applicant-only (deploy to separate Hosting site).
+// Multi-page build:
+// - `index.html` → main TRAQ app (Time Off, tasks, admin, etc.)
+// - `apply.html` → Bonfire applicant-only shell
+//
+// Firebase Hosting (see `.firebaserc`):
+// - Deploy with `npm run deploy:hosting:main` → Hosting site **traq-caab9** (serves `index.html`).
+// - `npm run deploy:hosting:apply` → site **traq-apply** only (does not ship `index.html`; not the main TRAQ UI).
 export default defineConfig({
   plugins: [
     react(),

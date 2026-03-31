@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
     "deploy:hosting:main": "npm run build && firebase deploy --only hosting:main",
-    "deploy:hosting:apply": "npm run build && firebase deploy --only hosting:apply"
+    "deploy:hosting:apply": "npm run build && firebase deploy --only hosting:apply",
+    "deploy:traq": "npm run deploy:hosting:main",
+    "deploy:apply-site": "npm run deploy:hosting:apply"
   },
   "dependencies": {
     "firebase": "^12.6.0",
