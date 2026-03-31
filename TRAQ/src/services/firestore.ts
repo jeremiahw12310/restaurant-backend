@@ -1888,6 +1888,41 @@ export type TimeOffRequest = {
   decision?: { by: 'admin'; at: string; note?: string }
 }
 
+/** Last calendar day covered by the request (YYYY-MM-DD), or null if unknown. */
+export function getTimeOffLastDayDateKey(req: TimeOffRequest): string | null {
+  if (req.requestKind === 'date_range' && req.dateRange) {
+    const { endDateKey, startDateKey } = req.dateRange
+    if (endDateKey) return endDateKey
+    if (startDateKey) return startDateKey
+    return null
+  }
+  const keys = (req.requestedShifts ?? []).map((s) => s.dateKey).filter(Boolean)
+  if (keys.length === 0) return null
+  return keys.sort().pop() ?? null
+}
+
+const addCalendarDaysToDateKey = (dateKey: string, delta: number): string => {
+  const [y, m, d] = dateKey.split('-').map((x) => parseInt(x, 10))
+  if (!y || !m || !d) return dateKey
+  const dt = new Date(y, m - 1, d)
+  dt.setDate(dt.getDate() + delta)
+  const yy = dt.getFullYear()
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  const dd = String(dt.getDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
+}
+
+/**
+ * Employee-facing time off board: visible through the second calendar day after the last PTO day
+ * (same rule as "2 days past" then hide). Requests with no computable end date stay visible.
+ */
+export function isTimeOffVisibleOnPublicList(req: TimeOffRequest, todayDateKey: string): boolean {
+  const last = getTimeOffLastDayDateKey(req)
+  if (!last) return true
+  const visibleThrough = addCalendarDaysToDateKey(last, 2)
+  return todayDateKey <= visibleThrough
+}
+
 const LS_TIME_OFF_KEY = 'traq-timeoff-v1'
 
 /**

@@ -83,6 +83,7 @@ import {
   type WeeklyAvailability,
   type AvailabilityMap,
   type TimeOffRequest,
+  isTimeOffVisibleOnPublicList,
   type RequestedShift,
   type ShiftType,
   type StockReport,
@@ -4036,6 +4037,10 @@ function App() {
   const selectedDateKey = useMemo(() => formatDateKey(selectedDate), [selectedDate])
   const todayDate = useMemo(() => startOfDay(now), [now])
   const todayKey = useMemo(() => formatDateKey(todayDate), [todayDate])
+  const publicTimeOffRequests = useMemo(
+    () => timeOffRequests.filter((req) => isTimeOffVisibleOnPublicList(req, todayKey)),
+    [timeOffRequests, todayKey]
+  )
   const currentMonthStartKey = useMemo(() => formatDateKey(startOfMonth(todayDate)), [todayDate])
   const isDemoDaySelected = useMemo(() => demoDayKey !== null && selectedDateKey === demoDayKey, [demoDayKey, selectedDateKey])
   // Break Selection: per-day editable plan (stored separately from task completions)
@@ -11823,11 +11828,15 @@ function App() {
                     + New Request
                   </button>
 
-                  {timeOffRequests.length === 0 ? (
-                    <div className="timeoff-empty">No time off requests yet.</div>
+                  {publicTimeOffRequests.length === 0 ? (
+                    <div className="timeoff-empty">
+                      {timeOffRequests.length === 0
+                        ? 'No time off requests yet.'
+                        : 'No recent requests. Entries older than 2 days past the last day off are hidden here; admins still see the full history.'}
+                    </div>
                   ) : (
                     <div className="timeoff-request-list">
-                      {timeOffRequests.map((req) => (
+                      {publicTimeOffRequests.map((req) => (
                         <div
                           key={req.id}
                           className={`timeoff-request-card timeoff-status-${req.status}`}
