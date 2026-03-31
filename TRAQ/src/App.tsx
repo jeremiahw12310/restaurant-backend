@@ -84,6 +84,7 @@ import {
   type AvailabilityMap,
   type TimeOffRequest,
   isTimeOffVisibleOnPublicList,
+  getTimeOffPublicListVisibilityDebug,
   type RequestedShift,
   type ShiftType,
   type StockReport,
@@ -4041,6 +4042,28 @@ function App() {
     () => timeOffRequests.filter((req) => isTimeOffVisibleOnPublicList(req, todayKey)),
     [timeOffRequests, todayKey]
   )
+
+  // Opt-in: localStorage `traq-debug-timeoff=1` logs public-list visibility breakdown when Time Off is open.
+  useEffect(() => {
+    if (!showTimeOff) return
+    try {
+      if (typeof localStorage === 'undefined' || localStorage.getItem('traq-debug-timeoff') !== '1') return
+      // eslint-disable-next-line no-console
+      console.log('[TRAQ timeoff public]', {
+        todayKey,
+        totalRaw: timeOffRequests.length,
+        publicCount: publicTimeOffRequests.length,
+        rows: timeOffRequests.map((r) => ({
+          id: r.id,
+          employee: r.employee,
+          ...getTimeOffPublicListVisibilityDebug(r, todayKey),
+        })),
+      })
+    } catch {
+      /* ignore */
+    }
+  }, [showTimeOff, todayKey, timeOffRequests, publicTimeOffRequests])
+
   const currentMonthStartKey = useMemo(() => formatDateKey(startOfMonth(todayDate)), [todayDate])
   const isDemoDaySelected = useMemo(() => demoDayKey !== null && selectedDateKey === demoDayKey, [demoDayKey, selectedDateKey])
   // Break Selection: per-day editable plan (stored separately from task completions)

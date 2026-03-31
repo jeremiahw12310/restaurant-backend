@@ -1963,8 +1963,23 @@ export function normalizeTimeOffRequestFromFirestore(
       }
     }
   }
+  // Root-level range fields (legacy / imports)
+  if (!dateRange) {
+    const rs = coerceDateKeyFromFirestore(data.startDateKey ?? data.start_date_key)
+    const re = coerceDateKeyFromFirestore(data.endDateKey ?? data.end_date_key)
+    if (rs || re) {
+      dateRange = {
+        startDateKey: rs ?? re ?? '',
+        endDateKey: re ?? rs ?? '',
+      }
+    }
+  }
 
-  const shiftsRaw = Array.isArray(data.requestedShifts) ? data.requestedShifts : []
+  const shiftsRaw = Array.isArray(data.requestedShifts)
+    ? data.requestedShifts
+    : Array.isArray(data.requested_shifts)
+      ? data.requested_shifts
+      : []
   const requestedShifts: RequestedShift[] = shiftsRaw.map((s) => {
     const sh = s as Record<string, unknown>
     const dk = coerceDateKeyFromFirestore(sh.dateKey ?? sh.date_key)
@@ -2005,19 +2020,18 @@ function maxDateKeyOf(candidates: string[]): string | null {
 
 /**
  * Last calendar day covered by the request (YYYY-MM-DD), or null if unknown.
- * Uses the latest date from dateRange and requestedShifts (does not rely on requestKind).
+ * When `dateRange` is present with at least one bound, use **only** that range (end, else start).
+ * Do not mix in `requestedShifts` max — expanded shifts can duplicate days and rare bad rows could skew.
+ * For shift-only requests, use the latest shift dateKey.
  */
 export function getTimeOffLastDayDateKey(req: TimeOffRequest): string | null {
-  const candidates: string[] = []
   if (req.dateRange) {
     const { endDateKey, startDateKey } = req.dateRange
-    if (endDateKey) candidates.push(endDateKey)
-    if (startDateKey) candidates.push(startDateKey)
+    if (endDateKey) return endDateKey
+    if (startDateKey) return startDateKey
   }
-  for (const s of req.requestedShifts ?? []) {
-    if (s.dateKey) candidates.push(s.dateKey)
-  }
-  return maxDateKeyOf(candidates)
+  const keys = (req.requestedShifts ?? []).map((s) => s.dateKey).filter(Boolean)
+  return maxDateKeyOf(keys)
 }
 
 /** Local calendar YYYY-MM-DD from an ISO timestamp (for visibility when no PTO dates exist). */
@@ -2061,6 +2075,46 @@ export function isTimeOffVisibleOnPublicList(req: TimeOffRequest, todayDateKey: 
   const v = utcMsFromDateKey(visibleThrough)
   if (!Number.isFinite(t) || !Number.isFinite(v)) return false
   return t <= v
+}
+
+/** For support / debugging: why a request is on or off the public list. */
+export function getTimeOffPublicListVisibilityDebug(
+  req: TimeOffRequest,
+  todayDateKey: string
+): {
+  ptoLastDay: string | null
+  effectiveLastDay: string | null
+  visibleThrough: string | null
+  visible: boolean
+  usedCreatedAtFallback: boolean
+} {
+  const ptoLastDay = getTimeOffLastDayDateKey(req)
+  let effectiveLastDay = ptoLastDay
+  let usedCreatedAtFallback = false
+  if (!effectiveLastDay && req.createdAt) {
+    effectiveLastDay = dateKeyFromIsoLocal(req.createdAt)
+    usedCreatedAtFallback = !!effectiveLastDay
+  }
+  if (!effectiveLastDay) {
+    return {
+      ptoLastDay,
+      effectiveLastDay: null,
+      visibleThrough: null,
+      visible: false,
+      usedCreatedAtFallback,
+    }
+  }
+  const visibleThrough = addCalendarDaysToDateKey(effectiveLastDay, 2)
+  const t = utcMsFromDateKey(todayDateKey)
+  const v = utcMsFromDateKey(visibleThrough)
+  const visible = Number.isFinite(t) && Number.isFinite(v) ? t <= v : false
+  return {
+    ptoLastDay,
+    effectiveLastDay,
+    visibleThrough,
+    visible,
+    usedCreatedAtFallback,
+  }
 }
 
 const LS_TIME_OFF_KEY = 'traq-timeoff-v2'
