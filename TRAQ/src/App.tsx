@@ -1746,7 +1746,7 @@ const effectiveStatus = (
       completion.iceSides &&
       (!String(completion.iceSides.left || '').trim() || !String(completion.iceSides.right || '').trim())
     const isPartialTowel =
-      (taskId === 'towels-5pm' || taskId === 'towels-close') &&
+      (taskId === 'towels' || taskId === 'towels-5pm' || taskId === 'towels-close') &&
       completion.towelSides &&
       (!String(completion.towelSides.diningBar || '').trim() || !String(completion.towelSides.bowlStation || '').trim())
     if (!isPartialIce && !isPartialTowel) return 'done'
@@ -5080,7 +5080,7 @@ function App() {
     const isCombinedIce = activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close'
     const effectiveAt = taskOverrides?.towelsSplitEffectiveAtMs
     const isTowelsSplitEffectiveHere =
-      (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+      (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
       typeof effectiveAt === 'number' &&
       effectiveAt > 0 &&
       (() => {
@@ -8261,7 +8261,7 @@ function App() {
 
   const persistPartialTowelTask = async (sides: { diningBar: string | null; bowlStation: string | null }) => {
     if (!activeTaskId) return
-    if (activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+    if (activeTaskId !== 'towels' && activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
 
     const diningBar = String(sides.diningBar || '').trim()
     const bowlStation = String(sides.bowlStation || '').trim()
@@ -8350,7 +8350,7 @@ function App() {
 
   const completeCombinedTowelTask = async (sides: { diningBar: string; bowlStation: string }) => {
     if (!activeTaskId) return
-    if (activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+    if (activeTaskId !== 'towels' && activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
 
     const diningBar = String(sides.diningBar || '').trim()
     const bowlStation = String(sides.bowlStation || '').trim()
@@ -8564,7 +8564,7 @@ function App() {
 
   const clearCombinedTowelTask = useCallback(async () => {
     if (!activeTaskId) return
-    if (activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+    if (activeTaskId !== 'towels' && activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
 
     const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
     setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
@@ -10697,7 +10697,7 @@ function App() {
                 ? iceSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
                 : undefined
             const towelDraftPreview =
-              (task.id === 'towels-5pm' || task.id === 'towels-close') &&
+              (task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
               !completion &&
               isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
                 ? towelSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
@@ -12661,7 +12661,7 @@ function App() {
                     )
                   })()}
                 </div>
-              ) : (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+              ) : (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                 isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) ? (
                 <div ref={requirementsScrollRef} className="modal-requirements-scroll" aria-label="Towel selection">
                   {(() => {
@@ -12672,6 +12672,14 @@ function App() {
                       (!!activeCompletion?.assignedByAdmin && !isAdmin)
                     return (
                       <div className="towel-combined">
+                        <div className="requirements">
+                          <h4>Requirements</h4>
+                          <ul>
+                            {activeTask.requirements.map((item, idx) => (
+                              <li key={`${idx}-${item}`}>{renderRequirementText(item)}</li>
+                            ))}
+                          </ul>
+                        </div>
                         <div className="ice-combined-title">Tap to select who did each area</div>
                         <div className="towel-sides-grid">
                           <button
@@ -12856,7 +12864,7 @@ function App() {
                     {(isTodaySelected || isAdmin) && (
                       <>
                         {(activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') ||
-                        ((activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                        ((activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                           isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow))
                           ? null
                           : (
@@ -12866,7 +12874,7 @@ function App() {
                         {(() => {
                           const isCombinedIce = activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close'
                           const isCombinedTowelModal =
-                            (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                            (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                             isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
                           const allowEarlyYumYum =
                             !isAdmin && activeTaskId === 'yum-yum-close' && (selectedWindow === '17' || selectedWindow === '21')
@@ -13313,7 +13321,7 @@ function App() {
               <>
                 {((activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') && pendingIceSide) ? (
                   <h3>Select {pendingIceSide === 'left' ? 'Left Ice' : 'Right Ice'} Employee</h3>
-                ) : ((activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                ) : ((activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                   isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
                   pendingTowelSide) ? (
                   <h3>Select {pendingTowelSide === 'diningBar' ? 'Dining/Bar Towel' : 'Bowl Station Towel'} Employee</h3>
@@ -13342,7 +13350,7 @@ function App() {
                   className={`employee-option ${
                     ((activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') && pendingIceSide)
                       ? ((pendingIceSide === 'left' ? iceSidesDraft.left : iceSidesDraft.right) === user ? 'selected' : '')
-                      : ((activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                      : ((activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                           isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
                           pendingTowelSide)
                         ? ((pendingTowelSide === 'diningBar' ? towelSidesDraft.diningBar : towelSidesDraft.bowlStation) === user ? 'selected' : '')
@@ -13394,7 +13402,7 @@ function App() {
                         return
                       }
                       const isTowelSidePick =
-                        (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                        (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                         isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
                         !!pendingTowelSide
                       if (isTowelSidePick) {
@@ -13473,7 +13481,7 @@ function App() {
                       return
                     }
                     const isTowelSidePickOnClick =
-                      (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                      (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                       isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow) &&
                       !!pendingTowelSide
                     if (isTowelSidePickOnClick) {
@@ -13631,7 +13639,7 @@ function App() {
                           }
                       } else if (action === 'towel') {
                           const isCombinedTowel =
-                            (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                            (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                             isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
                           const side = pendingTowelSide
                           if (isCombinedTowel && (side === 'diningBar' || side === 'bowlStation')) {
@@ -13700,7 +13708,7 @@ function App() {
                         }
                       } else if (action === 'towel') {
                         const isCombinedTowel =
-                          (activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                          (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                           isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
                         const side = pendingTowelSide
                         if (isCombinedTowel && (side === 'diningBar' || side === 'bowlStation')) {
@@ -14555,7 +14563,7 @@ function App() {
                       if (adminApplyingTowelsSplit) return
                       if (
                         confirm(
-                          'Apply Towels Split now?\n\nTowels (5PM + Close) will use the split UI (Dining/Bar + Bowl Station) going forward. Past completions are preserved.'
+                          'Apply Towels Split now?\n\nTowels (11AM, 5PM & 9PM) will use the split UI (Dining/Bar + Bowl Station) going forward. Past completions are preserved.'
                         )
                       ) {
                         void applyTowelsSplitNow()
@@ -14563,7 +14571,7 @@ function App() {
                     }}
                     title="Enable split Towels UI for future windows without changing history."
                   >
-                    {adminApplyingTowelsSplit ? 'Applying Towels Split…' : 'Apply Towels Split (5PM + Close)'}
+                    {adminApplyingTowelsSplit ? 'Applying Towels Split…' : 'Apply Towels Split (11AM, 5PM & 9PM)'}
                   </button>
                 </div>
 

@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
-import { BonfireApply } from './pages/BonfireApply.tsx'
 import { POSPage } from './pages/POSPage.tsx'
 
 // Admin Suite
@@ -32,7 +31,6 @@ createRoot(document.getElementById('root')!).render(
       <Routes>
         {/* Main App */}
         <Route path="/" element={<App />} />
-        <Route path="/bonfire" element={<BonfireApply />} />
         <Route path="/pos" element={<POSPage />} />
         
         {/* Admin Suite */}

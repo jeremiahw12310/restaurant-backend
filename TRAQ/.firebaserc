@@ -1,6 +1,14 @@
 {
   "projects": {
     "default": "traq-caab9"
+  },
+  "targets": {
+    "traq-caab9": {
+      "hosting": {
+        "main": ["traq-caab9"],
+        "apply": ["traq-apply"]
+      }
+    }
   }
 }
 

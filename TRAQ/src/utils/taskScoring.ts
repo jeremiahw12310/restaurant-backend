@@ -238,7 +238,7 @@ export const computeShiftLeadersForState = (
       // Split Towels (Dining/Bar + Bowl Station): credit each side as half the total weight.
       // Towels count for shift participation (unlike ice).
       if (
-        (taskId === 'towels-5pm' || taskId === 'towels-close') &&
+        (taskId === 'towels' || taskId === 'towels-5pm' || taskId === 'towels-close') &&
         completion.towelSides &&
         typeof completion.towelSides.diningBar === 'string' &&
         typeof completion.towelSides.bowlStation === 'string'

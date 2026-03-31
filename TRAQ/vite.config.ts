@@ -1,8 +1,13 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import legacy from '@vitejs/plugin-legacy'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
 // https://vite.dev/config/
+// Multi-page build: `index.html` = TRAQ ops; `apply.html` = applicant-only (deploy to separate Hosting site).
 export default defineConfig({
   plugins: [
     react(),
@@ -64,5 +69,11 @@ export default defineConfig({
     // Target ES5 for maximum compatibility with legacy browsers
     target: 'es5',
     cssTarget: 'safari9',
-  }
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        apply: path.resolve(__dirname, 'apply.html'),
+      },
+    },
+  },
 })

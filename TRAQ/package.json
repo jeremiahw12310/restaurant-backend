@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "deploy:hosting:main": "npm run build && firebase deploy --only hosting:main",
+    "deploy:hosting:apply": "npm run build && firebase deploy --only hosting:apply"
   },
   "dependencies": {
     "firebase": "^12.6.0",

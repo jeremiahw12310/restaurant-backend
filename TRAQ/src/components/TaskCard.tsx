@@ -77,7 +77,7 @@ export const TaskCard = memo(({
       return [a, b].filter(Boolean)
     }
     // Split Towels: Dining/Bar + Bowl Station
-    if ((task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) {
+    if ((task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) {
       const a = String(completion.towelSides.diningBar || '').trim()
       const b = String(completion.towelSides.bowlStation || '').trim()
       if (a && b && a === b) return [a]
@@ -177,7 +177,7 @@ export const TaskCard = memo(({
       {((displayAssignees && displayAssignees.length > 0) ||
         (previewAssignees && previewAssignees.length > 0)) &&
         !((task.id === 'ice-5pm' || task.id === 'ice-close') && completion?.iceSides) &&
-        !((task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) && (
+        !((task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) && (
         <div className="completed-names">
           {(displayAssignees && displayAssignees.length > 0 ? displayAssignees : previewAssignees || []).join(' & ')}
         </div>
@@ -192,7 +192,7 @@ export const TaskCard = memo(({
         </div>
       )}
       {/* Towel completion (full or partial): show split format so partial stays visible on card */}
-      {(task.id === 'towels-5pm' || task.id === 'towels-close') &&
+      {(task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
         completion?.towelSides &&
         (completion.towelSides.diningBar || completion.towelSides.bowlStation) && (
         <div className="ice-preview-names">
@@ -211,7 +211,7 @@ export const TaskCard = memo(({
         </div>
       )}
       {/* Towel draft preview: show partial selection when one side is filled but task not completed */}
-      {(task.id === 'towels-5pm' || task.id === 'towels-close') &&
+      {(task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
         !completion &&
         towelDraftPreview &&
         (towelDraftPreview.diningBar || towelDraftPreview.bowlStation) && (

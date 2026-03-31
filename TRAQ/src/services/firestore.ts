@@ -486,7 +486,7 @@ export type TaskOverride = {
 
 export type TaskOverrides = {
   overrides: Record<string, TaskOverride>
-  /** When set, towels-5pm and towels-close use split UI (Dining/Bar + Bowl Station) for windows closing at or after this timestamp. */
+  /** When set, towels (11AM), towels-5pm, and towels-close use split UI (Dining/Bar + Bowl Station) for windows closing at or after this timestamp. */
   towelsSplitEffectiveAtMs?: number
 }
 
