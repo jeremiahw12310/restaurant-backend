@@ -8,47 +8,8 @@ import {
   type TimeOffRequest,
   type TimeOffRequestStatus,
 } from '../../services/firestore'
-
-// Format the request summary for display
-function formatRequestSummary(req: TimeOffRequest): string {
-  // Date range format
-  if (req.dateRange) {
-    const { startDateKey, endDateKey } = req.dateRange
-    if (startDateKey === endDateKey) {
-      return formatDateDisplay(startDateKey)
-    }
-    return `${formatDateDisplay(startDateKey)} - ${formatDateDisplay(endDateKey)}`
-  }
-
-  // Individual shifts format
-  if (req.requestedShifts && req.requestedShifts.length > 0) {
-    const count = req.requestedShifts.length
-    if (count === 1) {
-      const shift = req.requestedShifts[0]
-      return `${formatDateDisplay(shift.dateKey)} (${shift.shift})`
-    }
-    // Group by date
-    const dates = new Set(req.requestedShifts.map((s) => s.dateKey))
-    if (dates.size === 1) {
-      const dateKey = req.requestedShifts[0].dateKey
-      const shifts = req.requestedShifts.map((s) => s.shift).join(', ')
-      return `${formatDateDisplay(dateKey)} (${shifts})`
-    }
-    return `${count} shifts requested`
-  }
-
-  return 'Dates not specified'
-}
-
-function formatDateDisplay(dateKey: string): string {
-  const [year, month, day] = dateKey.split('-').map(Number)
-  const date = new Date(year, month - 1, day)
-  return date.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  })
-}
+import { TimeOffShiftDetailList } from '../../components/TimeOffShiftDetailList'
+import { formatTimeOffNotificationBody, formatTimeOffSummaryLine } from '../../utils/timeOffDisplay'
 
 export function TimeOffPage() {
   const [requests, setRequests] = useState<TimeOffRequest[]>([])
@@ -102,7 +63,7 @@ export function TimeOffPage() {
     try {
       await setTimeOffRequestStatus(req.id, 'approved')
       // Send notification to employee
-      const dateInfo = formatRequestSummary(req)
+      const dateInfo = formatTimeOffNotificationBody(req)
       await createNotification(
         req.employee,
         `✅ Your time off request has been APPROVED!\n\n${dateInfo}`
@@ -120,7 +81,7 @@ export function TimeOffPage() {
     try {
       await setTimeOffRequestStatus(req.id, 'denied')
       // Send notification to employee
-      const dateInfo = formatRequestSummary(req)
+      const dateInfo = formatTimeOffNotificationBody(req)
       await createNotification(
         req.employee,
         `❌ Your time off request has been DENIED.\n\n${dateInfo}`
@@ -247,8 +208,11 @@ export function TimeOffPage() {
 
                   <div className="timeoff-card-body">
                     <div className="timeoff-dates">
-                      <strong>Days:</strong> {formatRequestSummary(req)}
+                      <strong>Days:</strong> {formatTimeOffSummaryLine(req)}
                     </div>
+                    {req.requestKind === 'shift_blocks' && req.requestedShifts.length > 0 && (
+                      <TimeOffShiftDetailList requestedShifts={req.requestedShifts} />
+                    )}
 
                     {req.reason && (
                       <div className="timeoff-reason">

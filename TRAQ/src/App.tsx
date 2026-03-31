@@ -103,6 +103,8 @@ import {
   type DailyTaskRun,
   type DailyTaskWeek,
 } from './services/firestore'
+import { TimeOffShiftDetailList } from './components/TimeOffShiftDetailList'
+import { formatTimeOffNotificationBody, formatTimeOffSummaryLine } from './utils/timeOffDisplay'
 import { getFirebaseStatus, storage } from './firebase'
 import {
   deleteMusicTrack,
@@ -1608,28 +1610,6 @@ const countInclusiveCalendarDays = (startDateKey: string, endDateKey: string): n
   const endMs = toUtcDayMs(endDateKey)
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return 0
   return Math.floor((endMs - startMs) / (24 * 60 * 60 * 1000)) + 1
-}
-
-// Summary line for request cards - always show calendar days
-const formatTimeOffRequestCardSummary = (req: TimeOffRequest): string => {
-  if (req.requestKind === 'date_range' && req.dateRange) {
-    const { startDateKey, endDateKey } = req.dateRange
-    const calendarDays = countInclusiveCalendarDays(startDateKey, endDateKey)
-    return `${formatDateRange(startDateKey, endDateKey)} (${calendarDays} day${calendarDays !== 1 ? 's' : ''})`
-  }
-  // For shift_blocks, count unique dates
-  const uniqueDates = new Set(req.requestedShifts.map(s => s.dateKey))
-  const calendarDays = uniqueDates.size
-  if (calendarDays === 0) return 'No days'
-  if (calendarDays === 1) {
-    const dateKey = req.requestedShifts[0]?.dateKey
-    if (dateKey) return `${displayDate(parseDateKey(dateKey))} (1 day)`
-    return '1 day'
-  }
-  const sortedDates = Array.from(uniqueDates).sort()
-  const firstDate = sortedDates[0]
-  const lastDate = sortedDates[sortedDates.length - 1]
-  return `${formatDateRange(firstDate, lastDate)} (${calendarDays} day${calendarDays !== 1 ? 's' : ''})`
 }
 
 const hasBootstrapCache = (): boolean => {
@@ -11886,7 +11866,7 @@ function App() {
                             </span>
                           </div>
                           <div className="timeoff-request-shifts">
-                            {formatTimeOffRequestCardSummary(req)}
+                            {formatTimeOffSummaryLine(req)}
                           </div>
                           {req.reason && (
                             <div className="timeoff-request-reason">
@@ -15138,8 +15118,11 @@ function App() {
                             </span>
                           </div>
                           <div className="admin-timeoff-shifts">
-                            <strong>Days:</strong> {formatTimeOffRequestCardSummary(req)}
+                            <strong>Days:</strong> {formatTimeOffSummaryLine(req)}
                           </div>
+                          {req.requestKind === 'shift_blocks' && req.requestedShifts.length > 0 && (
+                            <TimeOffShiftDetailList requestedShifts={req.requestedShifts} />
+                          )}
                           {req.reason && (
                             <div className="admin-timeoff-reason">
                               <strong>Reason:</strong> {req.reason}
@@ -15163,7 +15146,7 @@ function App() {
                                   try {
                                     await setTimeOffRequestStatus(req.id, 'approved')
                                     // Send notification to employee with date range
-                                    const dateInfo = formatTimeOffRequestCardSummary(req)
+                                    const dateInfo = formatTimeOffNotificationBody(req)
                                     await createNotification(req.employee, `✅ Your time off request has been APPROVED!\n\n${dateInfo}`)
                                   } catch (err) {
                                     console.error('Failed to approve:', err)
@@ -15182,7 +15165,7 @@ function App() {
                                   try {
                                     await setTimeOffRequestStatus(req.id, 'denied')
                                     // Send notification to employee with date range
-                                    const dateInfo = formatTimeOffRequestCardSummary(req)
+                                    const dateInfo = formatTimeOffNotificationBody(req)
                                     await createNotification(req.employee, `❌ Your time off request has been DENIED.\n\n${dateInfo}`)
                                   } catch (err) {
                                     console.error('Failed to deny:', err)
