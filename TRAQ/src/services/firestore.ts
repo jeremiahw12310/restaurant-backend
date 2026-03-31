@@ -2029,24 +2029,33 @@ function earlierDateKey(a: string, b: string): string {
 
 /**
  * Last calendar day covered by the request (YYYY-MM-DD), or null if unknown.
- * When both `dateRange` and `requestedShifts` exist, use the **earlier** of (range end, latest shift day).
- * That way a bad or placeholder `endDateKey` in the future does not keep old requests on the public board
- * when shift rows still reflect the real last day off.
- * Shift-only requests use max shift date; range-only (no shifts) use end/start.
+ *
+ * - **shift_blocks** (includes docs with missing `requestKind`, normalized to shift_blocks): if there are
+ *   any `requestedShifts`, use **only** the latest shift date. The card summary is shift-based; ignoring
+ *   a stale or far-future `dateRange` fixes rows that looked “a month ago” but stayed visible.
+ * - **date_range**: use the earlier of range end and latest shift (expanded range should match end).
+ * - If there are no shifts, fall back to `dateRange` end/start.
  */
 export function getTimeOffLastDayDateKey(req: TimeOffRequest): string | null {
-  let fromRange: string | null = null
-  if (req.dateRange) {
-    const { endDateKey, startDateKey } = req.dateRange
-    if (endDateKey) fromRange = endDateKey
-    else if (startDateKey) fromRange = startDateKey
-  }
   const shiftKeys = (req.requestedShifts ?? []).map((s) => s.dateKey).filter(Boolean)
   const maxShift = maxDateKeyOf(shiftKeys)
-  if (fromRange && maxShift) {
-    return earlierDateKey(fromRange, maxShift)
+
+  const fromRange = (): string | null => {
+    if (!req.dateRange) return null
+    const { endDateKey, startDateKey } = req.dateRange
+    if (endDateKey) return endDateKey
+    if (startDateKey) return startDateKey
+    return null
   }
-  if (fromRange) return fromRange
+
+  if (req.requestKind === 'shift_blocks') {
+    if (maxShift) return maxShift
+    return fromRange()
+  }
+
+  const fr = fromRange()
+  if (fr && maxShift) return earlierDateKey(fr, maxShift)
+  if (fr) return fr
   return maxShift
 }
 
