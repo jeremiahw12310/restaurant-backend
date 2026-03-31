@@ -2018,20 +2018,36 @@ function maxDateKeyOf(candidates: string[]): string | null {
   return valid.reduce((a, b) => (utcMsFromDateKey(a) >= utcMsFromDateKey(b) ? a : b))
 }
 
+/** Chronologically earlier calendar day (YYYY-MM-DD). Invalid keys fall back to the other. */
+function earlierDateKey(a: string, b: string): string {
+  const ma = utcMsFromDateKey(a)
+  const mb = utcMsFromDateKey(b)
+  if (!Number.isFinite(ma)) return b
+  if (!Number.isFinite(mb)) return a
+  return ma <= mb ? a : b
+}
+
 /**
  * Last calendar day covered by the request (YYYY-MM-DD), or null if unknown.
- * When `dateRange` is present with at least one bound, use **only** that range (end, else start).
- * Do not mix in `requestedShifts` max — expanded shifts can duplicate days and rare bad rows could skew.
- * For shift-only requests, use the latest shift dateKey.
+ * When both `dateRange` and `requestedShifts` exist, use the **earlier** of (range end, latest shift day).
+ * That way a bad or placeholder `endDateKey` in the future does not keep old requests on the public board
+ * when shift rows still reflect the real last day off.
+ * Shift-only requests use max shift date; range-only (no shifts) use end/start.
  */
 export function getTimeOffLastDayDateKey(req: TimeOffRequest): string | null {
+  let fromRange: string | null = null
   if (req.dateRange) {
     const { endDateKey, startDateKey } = req.dateRange
-    if (endDateKey) return endDateKey
-    if (startDateKey) return startDateKey
+    if (endDateKey) fromRange = endDateKey
+    else if (startDateKey) fromRange = startDateKey
   }
-  const keys = (req.requestedShifts ?? []).map((s) => s.dateKey).filter(Boolean)
-  return maxDateKeyOf(keys)
+  const shiftKeys = (req.requestedShifts ?? []).map((s) => s.dateKey).filter(Boolean)
+  const maxShift = maxDateKeyOf(shiftKeys)
+  if (fromRange && maxShift) {
+    return earlierDateKey(fromRange, maxShift)
+  }
+  if (fromRange) return fromRange
+  return maxShift
 }
 
 /** Local calendar YYYY-MM-DD from an ISO timestamp (for visibility when no PTO dates exist). */
