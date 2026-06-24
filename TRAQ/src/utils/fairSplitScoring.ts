@@ -144,22 +144,6 @@ function computeWindowTotalWeightLocal(args: {
   return totalWeight
 }
 
-function dailyBonusPointsForPerson(
-  dateMap: NonNullable<TaskState[string]>,
-  wKey: WindowKey,
-  useDailyTaskPoints: boolean,
-  name: string
-): number {
-  if (!useDailyTaskPoints || (wKey !== '17' && wKey !== '21')) return 0
-  const dailyTaskCompletion = dateMap[wKey]?.['daily-task']
-  if (!dailyTaskCompletion) return 0
-  const assignees = dailyTaskCompletion.assignees || []
-  if (assignees.length === 0) return 0
-  const nk = normEmp(name)
-  if (!assignees.some((a) => normEmp(a) === nk)) return 0
-  return 5.0 / assignees.length
-}
-
 function suggestedTowelSides(contract: FairSplitContractDoc, taskId: string, empA: string, empB: string): { diningBar: string; bowlStation: string } | null {
   const owner = normEmp(contract.suggestedAssignment[taskId] || '')
   if (!owner) return null
