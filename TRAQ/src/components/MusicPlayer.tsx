@@ -13,6 +13,7 @@ import {
   type MusicTrack,
 } from '../services/music'
 import { listMusicSessionCommandsREST, patchMusicSessionCommandREST } from '../services/firestore-rest'
+import { reportMusicScreensaverUi } from '../musicScreensaverBridge.ts'
 
 const LS_PLAYER_STATE_KEY = 'traq-music-player-state-v1'
 const LS_PLAYBACK_STATE_KEY = 'traq-music-playback-state-v1'
@@ -937,6 +938,24 @@ export const MusicPlayer = memo(function MusicPlayer() {
     : isBuffering
       ? bufferText
       : currentTrack?.title || (queue.length ? 'Loading…' : 'No music uploaded')
+
+  useEffect(() => {
+    const primaryLine = currentTrack?.title || (queue.length ? 'Loading…' : 'No music uploaded')
+    let statusLine: string | null = null
+    if (isBuffering) {
+      statusLine = bufferText
+    } else if (isIdle) {
+      statusLine = pillPrompt
+    }
+    reportMusicScreensaverUi({ primaryLine, statusLine })
+  }, [
+    bufferText,
+    currentTrack?.title,
+    isBuffering,
+    isIdle,
+    pillPrompt,
+    queue.length,
+  ])
 
   const playbackPct = useMemo(() => {
     if (!Number.isFinite(durationSec) || durationSec <= 0) return 0

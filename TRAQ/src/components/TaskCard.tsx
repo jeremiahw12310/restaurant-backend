@@ -1,4 +1,4 @@
-import { memo, type CSSProperties, type DragEvent, type TouchEvent } from 'react'
+import { Fragment, memo, type CSSProperties, type DragEvent, type TouchEvent } from 'react'
 import type { EmployeeColors } from '../services/firestore'
 import type { EffectiveStatus, Task, TaskCompletion } from '../types/task'
 
@@ -16,6 +16,8 @@ export type TaskCardProps = {
   interactionLocked?: boolean
   cardRef?: (el: HTMLDivElement | null) => void
   isAdmin: boolean
+  /** When false, task cards are not draggable (v3 uses admin portal for order). Default true. */
+  dragReorderEnabled?: boolean
   draggedTaskId: string | null
   dragOverTaskId: string | null
   urgency: 'none' | 'low' | 'medium' | 'high' | 'critical'
@@ -31,6 +33,15 @@ export type TaskCardProps = {
   onDragLeave: () => void
   onDragOver: (e: DragEvent) => void
   onDrop: (taskId: string, e: DragEvent) => void
+  /** Hide the card in the grid while its task modal is open (keeps layout gap; FLIP continuity). */
+  hiddenForActiveModal?: boolean
+  /** v3: task completed as "didn't need to complete" (greyed row + undo). */
+  didNotNeedToComplete?: boolean
+  onUndoDidNotNeed?: (taskId: string) => void
+  /** Window-complete fly-off: card order for staggered exit (only set while grid is evacuating). */
+  evacuationStaggerIndex?: number
+  /** True when the selected date is in solo mode; hides the "required to be split" footer. */
+  soloModeActive?: boolean
 }
 
 // Memoized TaskCard component to prevent unnecessary re-renders
@@ -48,6 +59,7 @@ export const TaskCard = memo(({
   interactionLocked,
   cardRef,
   isAdmin,
+  dragReorderEnabled = true,
   draggedTaskId,
   dragOverTaskId,
   urgency,
@@ -63,11 +75,17 @@ export const TaskCard = memo(({
   onDragLeave,
   onDragOver,
   onDrop,
+  hiddenForActiveModal = false,
+  didNotNeedToComplete = false,
+  onUndoDidNotNeed,
+  evacuationStaggerIndex,
+  soloModeActive = false,
 }: TaskCardProps) => {
   const displayStatus = status === 'missing' ? 'missing' : status === 'late' ? 'late' : status
   const isWeighted = (task.weight ?? 1) > 1
   const isDeferredVisual = !!completion?.deferredToClose || !!deferredBadgeAt
   const locked = !!interactionLocked && !isAdmin
+  const canDragReorder = isAdmin && dragReorderEnabled
   const displayAssignees = (() => {
     // Combined Ice: if both sides are the same person, display only once.
     if ((task.id === 'ice-5pm' || task.id === 'ice-close') && completion?.iceSides) {
@@ -100,7 +118,7 @@ export const TaskCard = memo(({
   const pulseClass = isPulsing ? 'next-task-pulse' : ''
   const extraBadges: { key: string; text: string; className: string }[] = []
   if (showNewBadge) extraBadges.push({ key: 'new', text: 'new', className: 'pill-new' })
-  if (showUpdatedRequirementsBadge) {
+  if (showUpdatedRequirementsBadge && status !== 'done') {
     extraBadges.push({ key: 'updated', text: 'updated requirements', className: 'pill-updated' })
   }
 
@@ -109,13 +127,29 @@ export const TaskCard = memo(({
     status === 'done' && displayAssignees.length && employeeColors
       ? employeeColors[displayAssignees[0]] || null
       : null
+  const showNoWorkRow = !!didNotNeedToComplete
+
+  const evacSide =
+    evacuationStaggerIndex !== undefined ? (evacuationStaggerIndex % 2 === 0 ? 'left' : 'right') : undefined
+  /* Keep in sync with WINDOW_COMPLETE_EVAC_* in App.tsx (window-complete fly-off) */
+  const evacDelayMs =
+    evacuationStaggerIndex !== undefined ? Math.min(evacuationStaggerIndex * 72, 720) : undefined
+
+  const rootStyle = (() => {
+    const s: CSSProperties = {}
+    if (tintColor) s['--employee-tint' as keyof CSSProperties] = tintColor as never
+    if (evacDelayMs !== undefined) s['--task-evac-delay' as keyof CSSProperties] = `${evacDelayMs}ms` as never
+    return Object.keys(s).length ? s : undefined
+  })()
 
   return (
     <div
-      className={`task-card ${status === 'done' ? 'done' : ''} ${highlightEarlyCompletable ? 'early-completable' : ''} ${isAdmin ? 'draggable' : ''} ${draggedTaskId === task.id ? 'dragging' : ''} ${dragOverTaskId === task.id ? 'drag-over' : ''} ${completion?.assignedByAdmin ? 'admin-assigned' : ''} ${isDeferredVisual ? 'deferred' : ''} ${locked ? 'interaction-locked' : ''} ${urgencyClass} ${pulseClass}`}
+      className={`task-card ${status === 'done' ? 'done' : ''} ${highlightEarlyCompletable ? 'early-completable' : ''} ${canDragReorder ? 'draggable' : ''} ${draggedTaskId === task.id ? 'dragging' : ''} ${dragOverTaskId === task.id ? 'drag-over' : ''} ${completion?.assignedByAdmin ? 'admin-assigned' : ''} ${isDeferredVisual ? 'deferred' : ''} ${locked ? 'interaction-locked' : ''} ${urgencyClass} ${pulseClass} ${hiddenForActiveModal ? 'task-card--hidden-for-modal' : ''} ${showNoWorkRow ? 'task-card--did-not-need' : ''}`}
       data-task-id={task.id}
+      data-task-evac-side={evacSide}
       ref={cardRef}
-      style={tintColor ? ({ '--employee-tint': tintColor } as CSSProperties) : undefined}
+      aria-hidden={hiddenForActiveModal ? true : undefined}
+      style={rootStyle}
       onClick={() => {
         if (locked) return
         onTaskClick(task.id)
@@ -129,7 +163,7 @@ export const TaskCard = memo(({
         if (locked) return
         onTaskTouchEnd(task.id, e)
       }}
-      draggable={isAdmin}
+      draggable={canDragReorder}
       onDragStart={(e) => onDragStart(task.id, e)}
       onDragEnd={onDragEnd}
       onDragEnter={() => onDragEnter(task.id)}
@@ -175,29 +209,16 @@ export const TaskCard = memo(({
         </div>
       </div>
       {((displayAssignees && displayAssignees.length > 0) ||
-        (previewAssignees && previewAssignees.length > 0)) &&
-        !((task.id === 'ice-5pm' || task.id === 'ice-close') && completion?.iceSides) &&
-        !((task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') && completion?.towelSides) && (
+        (previewAssignees && previewAssignees.length > 0)) && (
         <div className="completed-names">
-          {(displayAssignees && displayAssignees.length > 0 ? displayAssignees : previewAssignees || []).join(' & ')}
-        </div>
-      )}
-      {/* Ice completion: show split format (Left/Right) on card */}
-      {(task.id === 'ice-5pm' || task.id === 'ice-close') &&
-        completion?.iceSides &&
-        (completion.iceSides.left || completion.iceSides.right) && (
-        <div className="ice-preview-names">
-          <div>Left: {completion.iceSides.left || 'Open'}</div>
-          <div>Right: {completion.iceSides.right || 'Open'}</div>
-        </div>
-      )}
-      {/* Towel completion (full or partial): show split format so partial stays visible on card */}
-      {(task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
-        completion?.towelSides &&
-        (completion.towelSides.diningBar || completion.towelSides.bowlStation) && (
-        <div className="ice-preview-names">
-          <div>Dining/Bar: {completion.towelSides.diningBar || 'Open'}</div>
-          <div>Bowl Station: {completion.towelSides.bowlStation || 'Open'}</div>
+          {(displayAssignees && displayAssignees.length > 0 ? displayAssignees : previewAssignees || []).map(
+            (name, i) => (
+              <Fragment key={`${name}-${i}`}>
+                {i > 0 ? <span className="completed-names__join"> & </span> : null}
+                <span className="completed-names__bubble">{name}</span>
+              </Fragment>
+            )
+          )}
         </div>
       )}
       {/* Ice draft preview: show partial selection when one side is filled but task not completed */}
@@ -225,6 +246,27 @@ export const TaskCard = memo(({
       )}
       {!completion?.deferredToClose && deferredBadgeAt && (
         <div className="card-deferred-badge">Will be counted at {deferredBadgeAt}PM</div>
+      )}
+      {task.requiresSplit && status !== 'done' && !soloModeActive && (
+        <div className="card-required-split-badge">Split Required</div>
+      )}
+      {showNoWorkRow && (
+        <div className="task-card-no-work-row">
+          <div className="task-card-no-work-label">Didn&apos;t need to complete</div>
+          {onUndoDidNotNeed ? (
+            <button
+              type="button"
+              className="task-card-no-work-undo"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onUndoDidNotNeed(task.id)
+              }}
+            >
+              Undo
+            </button>
+          ) : null}
+        </div>
       )}
     </div>
   )

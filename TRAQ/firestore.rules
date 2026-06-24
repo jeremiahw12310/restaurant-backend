@@ -11,11 +11,101 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.admin == true;
     }
 
+    // Spotify auth doc holds the long-lived refresh_token for the shared house
+    // Spotify Premium account. It must NEVER be readable or writable from the
+    // client. Only Cloud Functions (Admin SDK, which bypasses these rules) may
+    // touch it. This match block must come BEFORE the open `config/{docId}`
+    // rule below so it takes precedence.
+    match /config/spotifyAuth {
+      allow read: if false;
+      allow write: if false;
+    }
+
     // Public config reads (app bootstraps employees + task order from here).
+    // `config/taskOrder` may include `order` (v2 / legacy) and `orderV3` (3.0 shell only).
+    // Includes `config/appUi` (productionShell, v3Release, v3ReleaseBeta, v3AdminPosEnabled, …) for shell selection.
+    // Includes `config/spotifyStatus` (public connection state, no secrets) and
+    // `config/spotifyConfig` (admin-managed Spotify playlist URIs / volume).
     match /config/{docId} {
       allow read: if true;
       // If you later add Firebase Auth + custom claims, change this to: if isAdmin()
       allow write: if true;
+    }
+
+    // Spotify OAuth code-exchange request queue. Client writes the auth code
+    // here; a Firestore-trigger Cloud Function exchanges it for tokens, stores
+    // tokens in the server-only `config/spotifyAuth` doc, and writes the
+    // result status back to the same request doc.
+    match /spotifyOAuthRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.code is string
+        && request.resource.data.redirectUri is string
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      allow update: if true; // trigger writes status/error; client may clean up
+      allow delete: if true;
+    }
+
+    // Short-lived access-token requests. The Web Playback SDK's `getOAuthToken`
+    // callback writes a doc here; the trigger fills in `accessToken` +
+    // `expiresAtMs` and the client reads it back via onSnapshot.
+    match /spotifyTokenRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Catalog search requests. Function proxies `/v1/search` so the access
+    // token never leaves the server.
+    match /spotifySearchRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.query is string
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Imperative remote playback commands (skip / pause / resume) issued from
+    // the admin UI when the iPad isn't currently the active Spotify Connect
+    // device. Client-side SDK handles most playback.
+    match /spotifyPlaybackCommands/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.kind is string
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Admin "Disconnect Spotify" requests. Trigger clears `config/spotifyAuth`.
+    match /spotifyDisconnectRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.createdAt is string
+        && request.resource.data.createdAtMs is int;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Public song-request queue (anyone on the iPad can submit). Each item is
+    // a track URI + status so the SpotifyMusicPlayer can subscribe and call
+    // POST /me/player/queue when new pending items appear.
+    match /spotifyQueue/{itemId} {
+      allow read: if true;
+      allow create: if request.resource.data.trackUri is string
+        && request.resource.data.trackName is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.addedAt is string
+        && request.resource.data.addedAtMs is int;
+      allow update: if true;
+      allow delete: if true;
     }
 
     // Music track metadata (unauthenticated app today; keep open like other admin features).
@@ -105,6 +195,16 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // Solo Mode (per-day: one person on day shift; late forgiveness + score cap in app logic)
+    match /days/{dateKey}/meta/soloMode {
+      allow read: if true;
+      allow create, update: if request.resource.data.active is bool
+        && request.resource.data.activatedAt is string
+        && (!('nightActive' in request.resource.data) || request.resource.data.nightActive is bool)
+        && (!('nightActivatedAt' in request.resource.data) || request.resource.data.nightActivatedAt is string);
+      allow delete: if true;
+    }
+
     // Daily Tasks - per-day run state (shared, one per dateKey doc id)
     match /dailyTaskRuns/{dateKey} {
       allow read: if true;
@@ -153,6 +253,19 @@ service cloud.firestore {
       allow update: if request.resource.data.kind is string
         && request.resource.data.item is string
         && request.resource.data.status is string;
+      allow delete: if true;
+    }
+
+    // Stock report audit log (append-only: created / status_changed / deleted)
+    match /stockReportLogs/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.ts is string
+        && request.resource.data.tsMs is int
+        && request.resource.data.action is string
+        && request.resource.data.reportId is string
+        && request.resource.data.kind is string
+        && request.resource.data.item is string;
+      allow update: if false;
       allow delete: if true;
     }
 
@@ -207,6 +320,16 @@ service cloud.firestore {
       allow delete: if true; // Admin can clean up old attempts
     }
 
+    // App reload logs (intentional and unexpected kiosk page reloads)
+    match /reloadLogs/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.kind is string
+        && request.resource.data.ts is string
+        && request.resource.data.tsMs is int;
+      allow update: if false;
+      allow delete: if true;
+    }
+
     // Selection Logs (task selections and clearings across all devices)
     match /selectionLogs/{logId} {
       allow read: if true;
@@ -217,6 +340,39 @@ service cloud.firestore {
         && request.resource.data.taskName is string;
       allow update: if false; // Selection logs are immutable
       allow delete: if true; // Admin can clean up old logs
+    }
+
+    // Good Morning: tap logs (daily 10:00 overlay dismissals)
+    match /goodMorningLogs/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.ts is string
+        && request.resource.data.tsMs is int
+        && request.resource.data.dateKey is string
+        && request.resource.data.sessionId is string;
+      allow update: if false;
+      allow delete: if true;
+    }
+
+    // Good Morning: presence while overlay is visible (heartbeat)
+    match /goodMorningSessions/{sessionId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.sessionId is string
+        && request.resource.data.lastSeenAtMs is int
+        && request.resource.data.dateKey is string
+        && request.resource.data.phase is string;
+      allow delete: if true;
+    }
+
+    // Apply-site funnel events (anonymous): page_opened, apply_clicked, form_started, abandoned, submitted.
+    // Written by the public apply page; read by the admin Apply Analytics page. No PII.
+    match /applyEvents/{eventId} {
+      allow read: if true;
+      allow create: if request.resource.data.type is string
+        && request.resource.data.sessionId is string
+        && request.resource.data.ts is string
+        && request.resource.data.tsMs is int;
+      allow update: if false; // events are immutable once written
+      allow delete: if true;  // admin cleanup
     }
 
     // Job Applications (Bonfire hiring portal)
@@ -249,6 +405,78 @@ service cloud.firestore {
     match /pos/orders {
       allow read: if true;
       allow write: if true; // Anyone can create orders (cash transactions)
+    }
+
+    // AI Quote Requests (frontend writes context, Cloud Function trigger fills in the response)
+    match /aiQuoteRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.timeOfDay is string
+        && request.resource.data.windowKey is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // AI Quote Cache (written by Cloud Functions, read by frontend)
+    match /aiQuoteCache/{cacheId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // AI window-complete messages (frontend writes context, trigger fills response)
+    match /aiWindowCompleteRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.timeOfDay is string
+        && request.resource.data.windowKey is string
+        && request.resource.data.windowLabel is string
+        && request.resource.data.layout is string
+        && request.resource.data.players is list;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    match /aiWindowCompleteCache/{cacheId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // AI daily task schedule requests (client writes pending payload; Cloud Function fills resultJson)
+    match /aiDailyTaskScheduleRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.payload is map
+        && request.resource.data.payload.payloadVersion == 1;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // AI fair task split (dice): client writes pending payload; Cloud Function fills finalAssignment
+    match /aiTaskSplitRequests/{requestId} {
+      allow read: if true;
+      allow create: if request.resource.data.status == 'pending'
+        && request.resource.data.payload is map
+        && request.resource.data.payload.payloadVersion == 1
+        && request.resource.data.payload.windowKey is string
+        && request.resource.data.payload.dateKey is string
+        && request.resource.data.payload.employeeA is string
+        && request.resource.data.payload.employeeB is string;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Fair-split dice contract (per date + 5PM/9PM window). Floor app writes on Generate/Regenerate; Undo deletes.
+    match /fairSplitContracts/{docId} {
+      allow read: if true;
+      allow write: if true;
+      allow delete: if true;
+    }
+
+    // Secret training mode marker (per date + window). Floor app toggles via home menu 5-tap.
+    match /trainingWindows/{docId} {
+      allow read: if true;
+      allow write: if true;
+      allow delete: if true;
     }
 
     // Default deny.

@@ -14,6 +14,25 @@ import {
   type MusicPlaylist,
   type MusicSession,
 } from '../../services/music'
+import {
+  subscribeToAppUiSettings,
+  setMusicProvider,
+  type MusicProvider,
+} from '../../services/appSettings'
+import {
+  buildSpotifyAuthorizeUrl,
+  removeQueueItem,
+  requestSpotifyDisconnect,
+  sendSpotifyPlaybackCommand,
+  submitSpotifyOAuthCode,
+  subscribeToSpotifyConfig,
+  subscribeToSpotifyQueue,
+  subscribeToSpotifyStatus,
+  updateSpotifyConfig,
+  type SpotifyConfig,
+  type SpotifyQueueItem,
+  type SpotifyStatus,
+} from '../../services/spotify'
 
 export function MusicPage() {
   // Tracks and playlist
@@ -42,6 +61,18 @@ export function MusicPage() {
   const [processing, setProcessing] = useState<string | null>(null)
   const [sendingCommand, setSendingCommand] = useState<string | null>(null)
 
+  // ─── Spotify integration state ─────────────────────────────────────────
+  const [musicProvider, setMusicProviderState] = useState<MusicProvider>('legacy')
+  const [providerSwitching, setProviderSwitching] = useState(false)
+  const [spotifyStatus, setSpotifyStatus] = useState<SpotifyStatus>({ connected: false })
+  const [spotifyConfig, setSpotifyConfig] = useState<SpotifyConfig | null>(null)
+  const [spotifyQueue, setSpotifyQueue] = useState<SpotifyQueueItem[]>([])
+  const [spotifyConnecting, setSpotifyConnecting] = useState(false)
+  const [spotifyDisconnecting, setSpotifyDisconnecting] = useState(false)
+  const [spotifyError, setSpotifyError] = useState<string | null>(null)
+  const [newPlaylistUri, setNewPlaylistUri] = useState('')
+  const [skippingQueue, setSkippingQueue] = useState(false)
+
   // Subscribe to tracks
   useEffect(() => {
     const unsub = subscribeToMusicTracks((list) => {
@@ -64,6 +95,65 @@ export function MusicPage() {
       setSessions(list)
     })
     return () => unsub?.()
+  }, [])
+
+  // Subscribe to app UI settings (musicProvider toggle).
+  useEffect(() => {
+    const unsub = subscribeToAppUiSettings((settings) => {
+      setMusicProviderState(settings.musicProvider)
+    })
+    return () => unsub()
+  }, [])
+
+  // Subscribe to Spotify status / config / queue.
+  useEffect(() => {
+    const unsubStatus = subscribeToSpotifyStatus(setSpotifyStatus)
+    const unsubConfig = subscribeToSpotifyConfig(setSpotifyConfig)
+    const unsubQueue = subscribeToSpotifyQueue(setSpotifyQueue)
+    return () => {
+      unsubStatus()
+      unsubConfig()
+      unsubQueue()
+    }
+  }, [])
+
+  // Handle Spotify OAuth redirect: when admin returns to /admin/music with
+  // ?code=…&state=…, exchange the code via the Firestore-trigger function and
+  // strip the URL.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    const code = url.searchParams.get('code')
+    const stateParam = url.searchParams.get('state')
+    const errParam = url.searchParams.get('error')
+    if (errParam) {
+      setSpotifyError(`Spotify authorization failed: ${errParam}`)
+      url.searchParams.delete('error')
+      url.searchParams.delete('state')
+      window.history.replaceState({}, '', url.toString())
+      return
+    }
+    if (!code) return
+
+    const redirectUri = `${url.origin}${url.pathname}`
+    setSpotifyConnecting(true)
+    setSpotifyError(null)
+
+    submitSpotifyOAuthCode({ code, redirectUri })
+      .then(() => {
+        setSpotifyError(null)
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : 'Failed to connect Spotify'
+        setSpotifyError(msg)
+      })
+      .finally(() => {
+        setSpotifyConnecting(false)
+        url.searchParams.delete('code')
+        url.searchParams.delete('state')
+        window.history.replaceState({}, '', url.toString())
+      })
+    void stateParam
   }, [])
 
   // Sorted tracks by playlist order
@@ -276,6 +366,122 @@ export function MusicPage() {
     }
   }, [playlist.order, sortedTracks])
 
+  // ─── Spotify handlers ─────────────────────────────────────────────────
+  const handleSwitchProvider = useCallback(async (next: MusicProvider) => {
+    setProviderSwitching(true)
+    try {
+      await setMusicProvider(next)
+    } catch (err) {
+      console.error('Failed to switch music provider:', err)
+    } finally {
+      setProviderSwitching(false)
+    }
+  }, [])
+
+  const handleConnectSpotify = useCallback(() => {
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    const redirectUri = `${url.origin}${url.pathname}`
+    window.location.href = buildSpotifyAuthorizeUrl(redirectUri)
+  }, [])
+
+  const handleDisconnectSpotify = useCallback(async () => {
+    if (!confirm('Disconnect Spotify from TRAQ? The iPad will stop streaming via Spotify.')) return
+    setSpotifyDisconnecting(true)
+    setSpotifyError(null)
+    try {
+      await requestSpotifyDisconnect()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Disconnect failed'
+      setSpotifyError(msg)
+    } finally {
+      setSpotifyDisconnecting(false)
+    }
+  }, [])
+
+  const handleAddPlaylistUri = useCallback(async () => {
+    const uri = newPlaylistUri.trim()
+    if (!uri) return
+    if (!uri.startsWith('spotify:playlist:') && !uri.startsWith('spotify:album:') && !uri.startsWith('https://open.spotify.com/')) {
+      setSpotifyError('Enter a Spotify playlist or album URI / share link')
+      return
+    }
+    // Normalize https://open.spotify.com/... links to spotify:... URIs.
+    let normalized = uri
+    if (uri.startsWith('https://open.spotify.com/')) {
+      try {
+        const u = new URL(uri)
+        const segments = u.pathname.split('/').filter(Boolean)
+        if (segments.length >= 2) {
+          const kind = segments[0]
+          const id = segments[1].split('?')[0]
+          if ((kind === 'playlist' || kind === 'album') && id) {
+            normalized = `spotify:${kind}:${id}`
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const next = [...(spotifyConfig?.playlistUris || []), normalized]
+    try {
+      await updateSpotifyConfig({ playlistUris: next })
+      setNewPlaylistUri('')
+      setSpotifyError(null)
+    } catch (err) {
+      setSpotifyError(err instanceof Error ? err.message : 'Failed to save playlist')
+    }
+  }, [newPlaylistUri, spotifyConfig?.playlistUris])
+
+  const handleRemovePlaylistUri = useCallback(async (idx: number) => {
+    if (!spotifyConfig) return
+    const next = spotifyConfig.playlistUris.filter((_, i) => i !== idx)
+    try {
+      const newCurrent = Math.min(spotifyConfig.currentPlaylistIndex, Math.max(0, next.length - 1))
+      await updateSpotifyConfig({ playlistUris: next, currentPlaylistIndex: newCurrent })
+    } catch (err) {
+      setSpotifyError(err instanceof Error ? err.message : 'Failed to update playlists')
+    }
+  }, [spotifyConfig])
+
+  const handleMovePlaylistUri = useCallback(async (idx: number, dir: 'up' | 'down') => {
+    if (!spotifyConfig) return
+    const list = [...spotifyConfig.playlistUris]
+    const target = dir === 'up' ? idx - 1 : idx + 1
+    if (target < 0 || target >= list.length) return
+    const tmp = list[idx]
+    list[idx] = list[target]
+    list[target] = tmp
+    try {
+      await updateSpotifyConfig({ playlistUris: list })
+    } catch (err) {
+      setSpotifyError(err instanceof Error ? err.message : 'Failed to reorder playlists')
+    }
+  }, [spotifyConfig])
+
+  const handleSpotifySkip = useCallback(async () => {
+    setSkippingQueue(true)
+    try {
+      await sendSpotifyPlaybackCommand({ kind: 'next' })
+    } catch (err) {
+      setSpotifyError(err instanceof Error ? err.message : 'Skip failed')
+    } finally {
+      setSkippingQueue(false)
+    }
+  }, [])
+
+  const handleRemoveQueueItem = useCallback(async (item: SpotifyQueueItem) => {
+    try {
+      if (item.status === 'playing') {
+        // Already playing — skip first, then remove the row.
+        await sendSpotifyPlaybackCommand({ kind: 'next' }).catch(() => {})
+      }
+      await removeQueueItem(item.id)
+    } catch (err) {
+      setSpotifyError(err instanceof Error ? err.message : 'Remove failed')
+    }
+  }, [])
+
   // Session commands
   const handleSessionCommand = useCallback(async (
     sessionId: string,
@@ -297,12 +503,277 @@ export function MusicPage() {
     return sessions.filter((s) => !s.isStale)
   }, [sessions])
 
+  // Visible queue items (not played/skipped).
+  const visibleSpotifyQueue = useMemo(
+    () => spotifyQueue.filter((q) => q.status !== 'played' && q.status !== 'skipped'),
+    [spotifyQueue]
+  )
+
   return (
     <div className="music-page">
       <header className="admin-page-header">
         <h1>Music Management</h1>
         <p>Upload tracks, manage playlist order, and control active sessions.</p>
       </header>
+
+      {/* Player Mode toggle */}
+      <div className="admin-card">
+        <h3 className="admin-card-title">
+          <span>🎚️</span> Player Mode
+        </h3>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            className={`admin-btn ${musicProvider === 'legacy' ? 'admin-btn-primary' : ''}`}
+            onClick={() => handleSwitchProvider('legacy')}
+            disabled={providerSwitching || musicProvider === 'legacy'}
+          >
+            Legacy Audio
+          </button>
+          <button
+            className={`admin-btn ${musicProvider === 'spotify' ? 'admin-btn-primary' : ''}`}
+            onClick={() => handleSwitchProvider('spotify')}
+            disabled={providerSwitching || musicProvider === 'spotify'}
+          >
+            Spotify
+          </button>
+          <span style={{ opacity: 0.7, fontSize: 13 }}>
+            {musicProvider === 'spotify'
+              ? 'Devices stream from the connected Spotify account.'
+              : 'Devices play uploaded MP3s from Firebase Storage.'}
+          </span>
+        </div>
+      </div>
+
+      {/* Spotify Connection */}
+      <div className="admin-card">
+        <h3 className="admin-card-title">
+          <span>🟢</span> Spotify Connection
+        </h3>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          {spotifyStatus.connected ? (
+            <>
+              <span
+                style={{
+                  background: '#0f5132',
+                  color: '#d1f4dd',
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  fontSize: 13,
+                }}
+              >
+                ✓ Connected{spotifyStatus.connectedUserName ? ` as ${spotifyStatus.connectedUserName}` : ''}
+              </span>
+              <button
+                className="admin-btn"
+                onClick={handleDisconnectSpotify}
+                disabled={spotifyDisconnecting}
+              >
+                {spotifyDisconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </button>
+            </>
+          ) : (
+            <>
+              <span
+                style={{
+                  background: '#444',
+                  color: '#ddd',
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  fontSize: 13,
+                }}
+              >
+                Not connected
+              </span>
+              <button
+                className="admin-btn admin-btn-primary"
+                onClick={handleConnectSpotify}
+                disabled={spotifyConnecting}
+              >
+                {spotifyConnecting ? 'Connecting…' : 'Connect Spotify'}
+              </button>
+            </>
+          )}
+        </div>
+        {spotifyError && (
+          <div style={{ marginTop: 12, color: '#ff6f6f', fontSize: 13 }}>{spotifyError}</div>
+        )}
+        <div style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>
+          Connect a Spotify Premium account once. The token auto-refreshes server-side so the iPad
+          can keep streaming all day without re-authorization.
+        </div>
+      </div>
+
+      {/* Spotify Playlists */}
+      {spotifyStatus.connected && (
+        <div className="admin-card">
+          <h3 className="admin-card-title">
+            <span>📃</span> Spotify Playlists
+          </h3>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <input
+              type="text"
+              className="admin-input"
+              placeholder="spotify:playlist:… or https://open.spotify.com/playlist/…"
+              value={newPlaylistUri}
+              onChange={(e) => setNewPlaylistUri(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button
+              className="admin-btn admin-btn-primary"
+              onClick={handleAddPlaylistUri}
+              disabled={!newPlaylistUri.trim()}
+            >
+              Add
+            </button>
+          </div>
+          {(spotifyConfig?.playlistUris.length ?? 0) === 0 ? (
+            <div className="admin-empty">
+              <span className="admin-empty-icon">📃</span>
+              <h3>No playlists yet</h3>
+              <p>Add a Spotify playlist URI to start streaming on the iPad.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(spotifyConfig?.playlistUris || []).map((uri, idx) => {
+                const isCurrent = idx === (spotifyConfig?.currentPlaylistIndex || 0)
+                return (
+                  <div
+                    key={`${uri}-${idx}`}
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      padding: 10,
+                      background: isCurrent ? '#1f3a2c' : '#1c1c1c',
+                      border: '1px solid #2a2a2a',
+                      borderRadius: 8,
+                    }}
+                  >
+                    {isCurrent && (
+                      <span style={{ fontSize: 12, color: '#9be0a8', fontWeight: 700 }}>NOW</span>
+                    )}
+                    <code style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {uri}
+                    </code>
+                    <button
+                      className="admin-btn"
+                      onClick={() => handleMovePlaylistUri(idx, 'up')}
+                      disabled={idx === 0}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      className="admin-btn"
+                      onClick={() => handleMovePlaylistUri(idx, 'down')}
+                      disabled={idx === (spotifyConfig?.playlistUris.length ?? 0) - 1}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      className="admin-btn music-delete-btn"
+                      onClick={() => handleRemovePlaylistUri(idx)}
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Spotify Request Queue */}
+      {spotifyStatus.connected && (
+        <div className="admin-card">
+          <h3 className="admin-card-title">
+            <span>🎤</span> Song Requests
+            {visibleSpotifyQueue.length > 0 && (
+              <span className="music-count">{visibleSpotifyQueue.length}</span>
+            )}
+          </h3>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <button
+              className="admin-btn"
+              onClick={handleSpotifySkip}
+              disabled={skippingQueue}
+            >
+              {skippingQueue ? 'Skipping…' : 'Skip current track'}
+            </button>
+          </div>
+          {visibleSpotifyQueue.length === 0 ? (
+            <div className="admin-empty">
+              <span className="admin-empty-icon">🎤</span>
+              <h3>No requests right now</h3>
+              <p>Anyone on the iPad can search and queue a song.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {visibleSpotifyQueue.map((q) => (
+                <div
+                  key={q.id}
+                  style={{
+                    display: 'flex',
+                    gap: 10,
+                    alignItems: 'center',
+                    padding: 10,
+                    background: q.status === 'playing' ? '#1f3a2c' : '#1c1c1c',
+                    border: '1px solid #2a2a2a',
+                    borderRadius: 8,
+                  }}
+                >
+                  {q.albumImageUrl && (
+                    <img
+                      src={q.albumImageUrl}
+                      alt=""
+                      style={{ width: 36, height: 36, borderRadius: 6, objectFit: 'cover' }}
+                    />
+                  )}
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {q.trackName}
+                    </span>
+                    <span
+                      style={{
+                        opacity: 0.7,
+                        fontSize: 12,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {q.artistName}
+                    </span>
+                  </span>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>{q.status}</span>
+                  <button
+                    className="admin-btn music-delete-btn"
+                    onClick={() => handleRemoveQueueItem(q)}
+                    title="Remove from queue"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Upload Section */}
       <div className="admin-card music-upload-card">

@@ -10,6 +10,7 @@ export type Task = {
   requiresChecklist?: number // Number of requirements that need to be checked off
   weight?: number // Scoring weight (defaults to 1). Used for labor-heavy tasks.
   askNightShiftComplete?: boolean // Show "Was this completed by night shift?" prompt
+  requiresSplit?: boolean // Always-split: forces two assignees on completion (bypassed in solo mode)
   createdAtMs?: number // for admin-created tasks (used for NEW badge + activation)
   disabledAtMs?: number // optional future support
   source?: 'builtin' | 'admin'
@@ -28,6 +29,8 @@ export type TaskCompletion = {
   lateForgiven?: boolean
   completedEarly?: boolean
   autoAssigned?: boolean
+  /** v3: marked complete with no assignees — task wasn't needed; user can undo and complete normally. */
+  didNotNeedToComplete?: boolean
   deferredToClose?: string // '9' or '10' - indicates task was auto-completed due to both employees taking 1hr breaks
   // Order Report: number of orders taken by each employee (keyed by employee name)
   orderReportCounts?: Record<string, number>

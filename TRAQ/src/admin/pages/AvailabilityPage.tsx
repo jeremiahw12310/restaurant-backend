@@ -1,51 +1,52 @@
 import { useState, useEffect, useCallback } from 'react'
 import './AvailabilityPage.css'
 import {
-  subscribeToEmployees,
   subscribeToAvailability,
-  saveAvailability,
+  subscribeToTimeOffRequests,
+  saveAvailabilityState,
   createDefaultWeeklyAvailability,
   type DayOfWeek,
   type WeeklyAvailability,
-  type AvailabilityMap,
+  type AvailabilityState,
+  type TimeOffRequest,
 } from '../../services/firestore'
-
-const DAY_OF_WEEK_KEYS: DayOfWeek[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
-
-const DAY_OF_WEEK_LABELS: Record<DayOfWeek, string> = {
-  sun: 'Sun',
-  mon: 'Mon',
-  tue: 'Tue',
-  wed: 'Wed',
-  thu: 'Thu',
-  fri: 'Fri',
-  sat: 'Sat',
-}
+import { AvailabilityWeekPreview } from '../components/AvailabilityWeekPreview'
+import { useEmployeeRoster } from '../../hooks/useEmployeeRoster'
+import { applyEmployeeAvailabilityUpdate } from '../../utils/availabilityEffective'
+import { getWeekStartDateKeyMonday } from '../../utils/availabilityWeekPreview'
+import { DAY_OF_WEEK_KEYS, DAY_OF_WEEK_LABELS, formatDateKey } from '../../utils/dayOfWeek'
 
 export function AvailabilityPage() {
-  const [employees, setEmployees] = useState<string[]>([])
-  const [availabilityMap, setAvailabilityMap] = useState<AvailabilityMap>({})
+  const { activeEmployees } = useEmployeeRoster()
+  const [availabilityState, setAvailabilityState] = useState<AvailabilityState>({
+    patterns: {},
+    metaByEmployee: {},
+  })
+  const [timeOffRequests, setTimeOffRequests] = useState<TimeOffRequest[]>([])
+  const [weekStartDateKey, setWeekStartDateKey] = useState(() =>
+    getWeekStartDateKeyMonday(formatDateKey(new Date()))
+  )
   const [editingEmployee, setEditingEmployee] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
 
-  // Subscribe to employees
+  // Subscribe to availability
   useEffect(() => {
-    const unsub = subscribeToEmployees((list) => {
-      setEmployees(list)
+    const unsub = subscribeToAvailability((state) => {
+      setAvailabilityState(state)
     })
     return () => unsub?.()
   }, [])
 
-  // Subscribe to availability
+  // Subscribe to time off (week preview overlay)
   useEffect(() => {
-    const unsub = subscribeToAvailability((map) => {
-      setAvailabilityMap(map)
+    const unsub = subscribeToTimeOffRequests((reqs) => {
+      setTimeOffRequests(reqs)
     })
     return () => unsub?.()
   }, [])
 
   // Filter employees by search
-  const filteredEmployees = employees.filter((emp) =>
+  const filteredEmployees = activeEmployees.filter((emp) =>
     emp.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
@@ -57,20 +58,23 @@ export function AvailabilityPage() {
       } else {
         setEditingEmployee(emp)
         // Initialize availability if not set
-        if (!availabilityMap[emp]) {
-          const newMap = { ...availabilityMap }
+        if (!availabilityState.patterns[emp]) {
+          const newMap = { ...availabilityState.patterns }
           newMap[emp] = createDefaultWeeklyAvailability()
-          setAvailabilityMap(newMap)
+          setAvailabilityState((prev) => ({ ...prev, patterns: newMap }))
         }
       }
     },
-    [editingEmployee, availabilityMap]
+    [editingEmployee, availabilityState.patterns]
   )
+
+  const todayDateKey = formatDateKey(new Date())
 
   // Toggle a specific shift
   const toggleShift = useCallback(
     async (emp: string, day: DayOfWeek, shift: 'lunch' | 'dinner') => {
-      const currentAvail = availabilityMap[emp] || createDefaultWeeklyAvailability()
+      const currentAvail =
+        availabilityState.patterns[emp] || createDefaultWeeklyAvailability()
       const isAvailable = currentAvail[day]?.[shift] ?? false
 
       const newAvail: WeeklyAvailability = {
@@ -81,18 +85,22 @@ export function AvailabilityPage() {
         },
       }
 
-      const newMap = { ...availabilityMap, [emp]: newAvail }
-      setAvailabilityMap(newMap)
+      const nextState = applyEmployeeAvailabilityUpdate(
+        availabilityState,
+        emp,
+        newAvail,
+        todayDateKey
+      )
+      setAvailabilityState(nextState)
 
       try {
-        await saveAvailability(newMap)
+        await saveAvailabilityState(nextState)
       } catch (err) {
         console.error('Failed to save availability:', err)
-        // Revert on error
-        setAvailabilityMap(availabilityMap)
+        setAvailabilityState(availabilityState)
       }
     },
-    [availabilityMap]
+    [availabilityState, todayDateKey]
   )
 
   // Get summary text for an employee's availability
@@ -116,8 +124,20 @@ export function AvailabilityPage() {
     <div className="availability-page">
       <header className="admin-page-header">
         <h1>Weekly Availability</h1>
-        <p>Set each employee's usual working shifts. This helps with time off requests.</p>
+        <p>
+          Use the week preview to see who is available each day (Mon–Sun), including approved time off.
+          Edit recurring patterns below.
+        </p>
       </header>
+
+      <AvailabilityWeekPreview
+        weekStartDateKey={weekStartDateKey}
+        onWeekStartChange={setWeekStartDateKey}
+        availabilityState={availabilityState}
+        timeOffRequests={timeOffRequests}
+        employees={activeEmployees}
+        searchQuery={searchQuery}
+      />
 
       {/* Search */}
       <div className="availability-search">
@@ -133,7 +153,7 @@ export function AvailabilityPage() {
 
       {/* Employee List */}
       <div className="admin-card availability-list-card">
-        {employees.length === 0 ? (
+        {activeEmployees.length === 0 ? (
           <div className="admin-empty">
             <span className="admin-empty-icon">👥</span>
             <h3>No employees yet</h3>
@@ -148,7 +168,7 @@ export function AvailabilityPage() {
         ) : (
           <div className="availability-list">
             {filteredEmployees.map((emp) => {
-              const avail = availabilityMap[emp] || null
+              const avail = availabilityState.patterns[emp] || null
               const isEditing = editingEmployee === emp
               const summaryTags = getSummaryText(avail)
 
@@ -181,7 +201,8 @@ export function AvailabilityPage() {
                         <div className="availability-grid-row">
                           <div className="availability-shift-label">Lunch</div>
                           {DAY_OF_WEEK_KEYS.map((day) => {
-                            const currentAvail = availabilityMap[emp] || createDefaultWeeklyAvailability()
+                            const currentAvail =
+                              availabilityState.patterns[emp] || createDefaultWeeklyAvailability()
                             const isAvailable = currentAvail[day]?.lunch ?? false
                             return (
                               <button
@@ -201,7 +222,8 @@ export function AvailabilityPage() {
                         <div className="availability-grid-row">
                           <div className="availability-shift-label">Dinner</div>
                           {DAY_OF_WEEK_KEYS.map((day) => {
-                            const currentAvail = availabilityMap[emp] || createDefaultWeeklyAvailability()
+                            const currentAvail =
+                              availabilityState.patterns[emp] || createDefaultWeeklyAvailability()
                             const isAvailable = currentAvail[day]?.dinner ?? false
                             return (
                               <button

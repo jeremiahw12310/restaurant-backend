@@ -1,0 +1,1945 @@
+/* TRAQ 3.0 shell — Option B “floating card stack” (scoped under .app-shell--v3) */
+
+.app-shell--v3 .traq-v3-slim-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 14px;
+  margin: 0 0 6px;
+  border-radius: var(--r-lg, 16px);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 250, 252, 0.96) 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow: var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06));
+}
+
+.app-shell--v3 .traq-v3-slim-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.app-shell--v3 .traq-v3-brand .brand-logo {
+  height: 5.05em;
+  margin: -0.68em 0;
+}
+
+.app-shell--v3 .traq-v3-slim-music {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.app-shell--v3 .traq-v3-slim-music .header-player {
+  flex: 1 1 100%;
+  max-width: min(420px, 100%);
+}
+
+.app-shell--v3 .traq-v3-slim-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Unified hero: shift header + P1 | % | P2 + full-width bar */
+/* Option C (v3 only): near-white face; day/night read from rim + soft inner edge glow */
+.app-shell--v3 .traq-v3-hero-unified.shift-hud {
+  margin: -8px 0 12px;
+  padding: 14px 16px 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-shell--v3 .traq-v3-hero-unified.shift-hud.day {
+  background: linear-gradient(180deg, #ffffff 0%, #fcfcfb 100%);
+  border-color: rgba(200, 168, 78, 0.44);
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 14px 28px -14px rgba(255, 214, 150, 0.22);
+}
+
+.app-shell--v3 .traq-v3-hero-unified.shift-hud.night {
+  background: linear-gradient(180deg, #ffffff 0%, #f9fafc 100%);
+  border-color: rgba(105, 112, 185, 0.42);
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 14px 28px -14px rgba(185, 195, 255, 0.18);
+}
+
+.app-shell--v3 .traq-v3-hero-unified-header.shift-hud-header {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-triad {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  gap: 12px 32px;
+  width: 100%;
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Equal-width side cards; wide enough for multi-line names */
+.app-shell--v3 .traq-v3-hero-slot-col.shift-player-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 280px;
+  width: 100%;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-progress.top-progress {
+  flex: 0 0 auto;
+  min-width: 108px;
+  max-width: 200px;
+  padding: 4px 8px;
+  align-self: center;
+  justify-content: center;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-progress .progress-percent {
+  margin-bottom: 4px;
+  font-size: clamp(36px, 8vw, 44px);
+}
+
+.app-shell--v3 .traq-v3-hero-unified-progress .dash-progress-sub {
+  margin-bottom: 0;
+  text-align: center;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-track-wrap {
+  margin-top: 14px;
+  width: 100%;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-track-wrap .progress-track {
+  width: 100%;
+  height: 40px;
+  border-radius: 999px;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-track-wrap .progress-fill {
+  border-radius: 999px;
+}
+
+/* Window unlock-status card: matches the hero card surface; day/night read from rim */
+.app-shell--v3 .window-unlock-card {
+  margin: 0 0 12px;
+  padding: 14px 18px;
+  border-radius: var(--r-lg, 16px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-shell--v3 .window-unlock-card.day {
+  border-color: rgba(200, 168, 78, 0.44);
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 14px 28px -14px rgba(255, 214, 150, 0.22);
+}
+
+.app-shell--v3 .window-unlock-card.night {
+  border-color: rgba(105, 112, 185, 0.42);
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 14px 28px -14px rgba(185, 195, 255, 0.18);
+}
+
+.app-shell--v3 .window-unlock-card-countdown {
+  font-size: 34px;
+}
+
+/* Match previous shift-HUD type scale on slot text inside unified triad */
+.app-shell--v3 .traq-v3-hero-unified-triad .slot-name {
+  font-size: 24px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.18;
+  hyphens: auto;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-triad .slot-score {
+  font-size: 32px;
+  min-width: 42px;
+}
+
+/* v2.2 split: keep the 32px 5PM number prominent; AM pill scales to match v3 hero. */
+.app-shell--v3 .traq-v3-hero-unified-triad .slot-score.slot-score--split {
+  gap: 10px;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-triad .slot-score--split .slot-score-am {
+  padding: 3px 8px;
+  font-size: 13px;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-triad .slot-score--split .slot-score-am-label {
+  font-size: 11px;
+}
+
+.app-shell--v3 .traq-v3-hero-unified-triad .slot-score--split .slot-score-am-value {
+  font-size: 16px;
+}
+
+/* P1: accent on outer (left) edge; P2: mirrored accent on outer (right) edge */
+.app-shell--v3 .traq-v3-hero-unified .traq-v3-hero-slot-col--p1.shift-player-slot--v3-accent {
+  padding-left: 10px;
+}
+
+.app-shell--v3 .traq-v3-hero-unified .traq-v3-hero-slot-col--p2.shift-player-slot--v3-accent {
+  padding-right: 12px;
+}
+
+@media (max-width: 560px) {
+  .app-shell--v3 .traq-v3-hero-unified-triad {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .app-shell--v3 .traq-v3-hero-unified-progress.top-progress {
+    order: -1;
+    flex: 1 1 100%;
+    max-width: none;
+    width: 100%;
+  }
+
+  .app-shell--v3 .traq-v3-hero-slot-col.shift-player-slot {
+    flex: 1 1 calc(50% - 8px);
+    max-width: none;
+  }
+}
+
+/*
+ * Single row: window selector | quote/countdown | More | Calculator
+ */
+.app-shell--v3 .traq-v3-controls-quote-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px 14px;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.1));
+  border-radius: var(--r-lg, 16px);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 248, 250, 0.92) 100%);
+  box-shadow: var(--shadow-sm, 0 4px 12px rgba(0, 0, 0, 0.05));
+  min-height: 56px;
+  box-sizing: border-box;
+}
+
+.app-shell--v3 .traq-v3-window-wrap {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-shell--v3 .traq-v3-window-wrap .window-selector-float {
+  position: static;
+  left: auto;
+  bottom: auto;
+  margin: 0;
+}
+
+.app-shell--v3 .traq-v3-greeting-inline {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  overflow: hidden;
+}
+
+.app-shell--v3 .traq-v3-greeting-inline .greeting-compact {
+  width: 100%;
+  min-width: 0;
+}
+
+.app-shell--v3 .traq-v3-greeting-inline .greeting-text-compact,
+.app-shell--v3 .traq-v3-greeting-inline .motivational-quote-compact {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.app-shell--v3 .traq-v3-greeting-inline .greeting-text-compact {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  margin-bottom: 2px;
+}
+
+.app-shell--v3 .traq-v3-greeting-inline .break-countdown-time {
+  font-size: clamp(22px, 3.5vw, 30px);
+  line-height: 1.1;
+}
+
+.app-shell--v3 .traq-v3-greeting-inline .break-countdown-label {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell--v3 .traq-v3-trailing-actions {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+}
+
+.app-shell--v3 .traq-v3-trailing-actions .menu-fab,
+.app-shell--v3 .traq-v3-trailing-actions .calc-fab,
+.app-shell--v3 .traq-v3-trailing-actions .random-task-fab {
+  position: static;
+  left: auto;
+  bottom: auto;
+  top: auto;
+  right: auto;
+  transform: none;
+  margin: 0;
+  min-height: 54px;
+  padding: 12px 18px;
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.app-shell--v3 .traq-v3-trailing-actions .menu-fab {
+  min-width: 108px;
+}
+
+.app-shell--v3 .traq-v3-trailing-actions .calc-fab {
+  min-width: 128px;
+  border-radius: var(--r-lg, 16px);
+}
+
+.app-shell--v3 .traq-v3-trailing-actions .random-task-fab {
+  min-width: 54px;
+  padding-left: 14px;
+  padding-right: 14px;
+  font-size: 26px;
+  line-height: 1;
+  border-radius: var(--r-lg, 16px);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* v3: calculator lives in controls bar; drop extra top padding on tasks */
+.app-shell--v3 .tasks-section--v3 {
+  padding-top: 0;
+}
+
+/* Day strip sits just above Settings + powered-by */
+.app-shell--v3 .bottom-date-nav {
+  padding-left: 12px;
+  padding-right: 12px;
+  margin-bottom: 2px;
+}
+
+/* Settings (refresh app) — bottom-right above powered-by, under task grid */
+.app-shell--v3 .app-settings-fab-wrap {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  padding: 8px 4px 4px;
+  margin-top: 0;
+}
+
+.app-shell--v3 .app-settings-fab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  min-height: 44px;
+  border-radius: var(--r-lg, 16px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.14));
+  background: var(--surface-3, rgba(255, 255, 255, 0.92));
+  box-shadow: var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.06));
+  font-weight: 800;
+  font-size: 15px;
+  color: var(--text, #111113);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app-shell--v3 .app-settings-fab:active {
+  transform: scale(0.98);
+}
+
+.app-shell--v3 .app-settings-fab__icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.app-shell--v3 .app-settings-fab__label {
+  letter-spacing: -0.02em;
+}
+
+/* Stack on narrow widths / portrait */
+@media (max-width: 900px) {
+  .app-shell--v3 .traq-v3-controls-quote-row {
+    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .app-shell--v3 .traq-v3-window-wrap {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .app-shell--v3 .traq-v3-greeting-inline {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .app-shell--v3 .traq-v3-trailing-actions {
+    align-self: center;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 719px) {
+  .app-shell--v3 .traq-v3-slim-bar {
+    flex-wrap: wrap;
+  }
+
+  .app-shell--v3 .traq-v3-slim-music {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: stretch;
+  }
+
+  .app-shell--v3 .traq-v3-slim-music .header-player {
+    max-width: none;
+  }
+}
+
+/* ----- Leaderboard modal: white + TRAQ red (v3 shell only; `.lb-v2-v3` on panel) ----- */
+.app-shell--v3 .leaderboard-panel.lb-v2.lb-v2-v3 {
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  border-radius: 24px;
+  padding: 0;
+  overflow: hidden;
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.14),
+    0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-header {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f7f9 100%);
+  border-bottom: 1px solid var(--border, rgba(17, 17, 19, 0.1));
+  padding: 20px 22px 18px;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-title {
+  color: var(--text, #111113);
+  font-size: clamp(26px, 5vw, 32px);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-trophy {
+  animation: none;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-period,
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-subtitle {
+  color: var(--muted, rgba(17, 17, 19, 0.64));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-nav-btn {
+  border: 1px solid var(--border, rgba(17, 17, 19, 0.14));
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-nav-btn:hover:not(:disabled) {
+  background: rgba(209, 26, 42, 0.08);
+  border-color: rgba(209, 26, 42, 0.35);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-tabs {
+  background: rgba(17, 17, 19, 0.06);
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-tab {
+  color: var(--muted, rgba(17, 17, 19, 0.55));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-tab:hover:not(.active) {
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-tab.active {
+  background: var(--gradient-accent, linear-gradient(135deg, #d11a2a 0%, #a0121f 100%));
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(209, 26, 42, 0.35);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-close {
+  border: 1px solid var(--border, rgba(17, 17, 19, 0.14));
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text-2, rgba(17, 17, 19, 0.86));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-close:hover {
+  background: rgba(209, 26, 42, 0.1);
+  border-color: rgba(209, 26, 42, 0.4);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-content {
+  background: #fafbfc;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-stat {
+  background: #fff;
+  border: 1px solid var(--border, rgba(17, 17, 19, 0.1));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-stat-value {
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-stat-label {
+  color: var(--muted, rgba(17, 17, 19, 0.55));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-stat-updated .lb-v2-stat-label {
+  color: var(--muted-2, rgba(17, 17, 19, 0.52));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-name {
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-1 .lb-v2-podium-name {
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-score {
+  color: var(--accent, #d11a2a);
+  text-shadow: none;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-1 .lb-v2-podium-score {
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-shifts {
+  color: var(--muted, rgba(17, 17, 19, 0.55));
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-avatar-v3 {
+  width: 72px;
+  height: 72px;
+  background: #fff !important;
+  border: 3px solid var(--accent, #d11a2a) !important;
+  color: var(--accent, #d11a2a);
+  box-shadow: 0 6px 18px rgba(209, 26, 42, 0.12);
+  text-shadow: none;
+  font-size: 22px;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-avatar-v3--first {
+  width: 84px;
+  height: 84px;
+  font-size: 26px;
+  border-width: 4px !important;
+  box-shadow: 0 8px 22px rgba(209, 26, 42, 0.18);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-avatar-initials {
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-bar-v3 {
+  background: linear-gradient(
+    180deg,
+    rgba(209, 26, 42, 0.45) 0%,
+    rgba(209, 26, 42, 0.12) 100%
+  ) !important;
+  border: 1px solid rgba(209, 26, 42, 0.25);
+  border-bottom: none;
+  width: 112px;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-1 .lb-v2-podium-bar-v3 {
+  width: 128px;
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-info-btn {
+  background: #fff;
+  border: 2px solid rgba(209, 26, 42, 0.35);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-info-btn:hover {
+  background: rgba(209, 26, 42, 0.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell--v3 .leaderboard-panel.lb-v2-v3 .lb-v2-podium-slot {
+    animation: none;
+  }
+}
+
+/* ----- Home menu sheet (v3 shell only; `.home-menu-sheet--v3` on modal) ----- */
+.app-shell--v3 .modal-sheet.home-menu-sheet--v3 {
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-shell--v3 .home-menu-title-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  overflow: visible;
+}
+
+.app-shell--v3 .home-menu-logo {
+  height: 230px;
+  width: auto;
+  max-width: 192px;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: block;
+  /* Keep the logo visually large without inflating header layout height. */
+  margin-top: -64px;
+  margin-bottom: -64px;
+}
+
+.app-shell--v3 .home-menu-title-row h2 {
+  margin: 0;
+  margin-left: -10px;
+  font-size: 42px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .close-button.home-menu-close--v3 {
+  border: 1px solid var(--border, rgba(17, 17, 19, 0.14));
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text-2, rgba(17, 17, 19, 0.86));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.app-shell--v3 .close-button.home-menu-close--v3:hover {
+  background: rgba(209, 26, 42, 0.1);
+  border-color: rgba(209, 26, 42, 0.4);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .modal-body.home-menu-body--v3 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 8px 0 4px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-shell--v3 .home-menu-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 180px;
+  padding: 20px 14px;
+  margin: 0;
+  text-align: center;
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+  color: var(--text, #111113);
+  background: #fff;
+  border: 2px solid rgba(209, 26, 42, 0.22);
+  border-radius: 16px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
+  transition:
+    transform var(--dur-fast, 120ms) var(--ease-standard, ease),
+    border-color var(--dur, 180ms) var(--ease-standard, ease),
+    box-shadow var(--dur, 180ms) var(--ease-standard, ease),
+    background var(--dur, 180ms) var(--ease-standard, ease);
+}
+
+.app-shell--v3 .home-menu-tile:hover {
+  border-color: rgba(209, 26, 42, 0.45);
+  box-shadow: 0 6px 18px rgba(209, 26, 42, 0.12);
+}
+
+.app-shell--v3 .home-menu-tile:active {
+  transform: scale(0.98);
+}
+
+.app-shell--v3 .home-menu-tile-icon {
+  font-size: 60px;
+  line-height: 1;
+}
+
+.app-shell--v3 .home-menu-tile-label {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .home-menu-tile--locked {
+  opacity: 0.62;
+  cursor: not-allowed;
+  pointer-events: none;
+  border-color: rgba(17, 17, 19, 0.12);
+  background: linear-gradient(180deg, rgba(250, 250, 252, 0.98) 0%, rgba(243, 244, 246, 0.96) 100%);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+  color: var(--muted, #6b7280);
+}
+
+.app-shell--v3 .home-menu-tile--locked .home-menu-tile-label {
+  color: var(--muted, #6b7280);
+}
+
+.app-shell--v3 .home-menu-tile--locked .home-menu-tile-icon {
+  filter: grayscale(0.25);
+  opacity: 0.9;
+}
+
+.app-shell--v3 .home-menu-tile-locked-badge {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(107, 114, 128, 0.95);
+}
+
+/* Secret training unlock: looks locked but accepts taps */
+.app-shell--v3 .home-menu-tile--locked.home-menu-tile--locked-secret {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+@media (max-width: 380px) {
+  .app-shell--v3 .modal-body.home-menu-body--v3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ----- Time Off modal (v3 shell only; `.timeoff-modal--v3` on sheet) ----- */
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 {
+  --timeoff-card-face: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+  --timeoff-border-soft: rgba(17, 17, 19, 0.1);
+  --timeoff-border-medium: rgba(17, 17, 19, 0.16);
+  --timeoff-accent-soft: rgba(209, 26, 42, 0.08);
+  --timeoff-accent-medium: rgba(209, 26, 42, 0.18);
+  --timeoff-shadow-soft: 0 8px 24px rgba(17, 17, 19, 0.08);
+  --timeoff-shadow-accent: 0 8px 24px rgba(209, 26, 42, 0.2);
+  background: var(--timeoff-card-face);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .modal-title h2 {
+  color: var(--text, #111113);
+  letter-spacing: -0.02em;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-content {
+  padding: 10px 8px 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-view {
+  gap: 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-list,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-employee-list,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-date-range,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-shift-picker {
+  gap: 12px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-empty {
+  color: var(--muted, rgba(17, 17, 19, 0.55));
+  background: rgba(17, 17, 19, 0.03);
+  border: 1px dashed var(--timeoff-border-medium);
+  border-radius: var(--r-xl, 18px);
+  font-size: 17px;
+  line-height: 1.45;
+  padding: 26px 18px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-new-btn,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-continue-btn,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-submit-btn {
+  border-radius: var(--r-lg, 16px);
+  font-size: 22px;
+  font-weight: 800;
+  padding: 22px;
+  box-shadow: var(--timeoff-shadow-accent);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-card {
+  background: var(--timeoff-card-face);
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  box-shadow: var(--timeoff-shadow-soft);
+  padding: 20px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-card:hover {
+  border-color: rgba(209, 26, 42, 0.25);
+  box-shadow: 0 10px 22px rgba(209, 26, 42, 0.12);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-card.timeoff-status-pending {
+  border-left: 6px solid #f59e0b;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-card.timeoff-status-approved {
+  border-left: 6px solid #22c55e;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-card.timeoff-status-denied {
+  border-left: 6px solid rgba(209, 26, 42, 0.78);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-header {
+  margin-bottom: 10px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-employee {
+  color: var(--text, #111113);
+  font-size: 22px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-status-chip {
+  border: 1px solid transparent;
+  border-radius: var(--r-pill, 999px);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 6px 11px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-status-chip.timeoff-status-pending {
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-status-chip.timeoff-status-approved {
+  background: rgba(34, 197, 94, 0.12);
+  color: #166534;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-status-chip.timeoff-status-denied {
+  background: var(--timeoff-accent-soft);
+  color: #991b1b;
+  border-color: rgba(209, 26, 42, 0.28);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-shifts,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-reason {
+  color: var(--text-2, rgba(17, 17, 19, 0.8));
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-request-meta {
+  color: var(--muted, rgba(17, 17, 19, 0.56));
+  font-size: 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-edit-hint {
+  font-size: 13px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-help {
+  color: var(--muted, rgba(17, 17, 19, 0.58));
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-employee-btn {
+  background: var(--timeoff-card-face);
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  box-shadow: 0 3px 12px rgba(17, 17, 19, 0.06);
+  color: var(--text, #111113);
+  font-size: 22px;
+  padding: 22px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-employee-btn:hover {
+  border-color: rgba(209, 26, 42, 0.3);
+  transform: translateY(-1px);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-employee-btn.selected {
+  border-color: var(--accent, #d11a2a);
+  background: linear-gradient(180deg, rgba(209, 26, 42, 0.09) 0%, rgba(209, 26, 42, 0.03) 100%);
+  box-shadow: 0 6px 16px rgba(209, 26, 42, 0.14);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-no-availability {
+  background: linear-gradient(180deg, rgba(209, 26, 42, 0.08) 0%, rgba(209, 26, 42, 0.04) 100%);
+  border: 2px solid var(--timeoff-accent-medium);
+  border-radius: var(--r-lg, 16px);
+  color: #8f1f2a;
+  font-size: 16px;
+  padding: 20px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-no-availability p {
+  margin-bottom: 10px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-week-grid {
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  overflow: hidden;
+  background: var(--timeoff-card-face);
+  box-shadow: var(--timeoff-shadow-soft);
+  padding: 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-week-day {
+  color: var(--muted, rgba(17, 17, 19, 0.56));
+  font-size: 13px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-week-label {
+  color: var(--text-2, rgba(17, 17, 19, 0.78));
+  font-size: 17px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-week-cell {
+  border: 1px solid rgba(17, 17, 19, 0.08);
+  border-radius: var(--r-md, 12px);
+  font-size: 17px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-week-cell.available {
+  background: rgba(34, 197, 94, 0.1);
+  color: #166534;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-week-cell.unavailable {
+  background: rgba(17, 17, 19, 0.04);
+  color: rgba(107, 114, 128, 0.9);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-shift-times {
+  border-top: 1px solid var(--timeoff-border-soft);
+  color: var(--muted, rgba(17, 17, 19, 0.58));
+  font-size: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-kind-toggle {
+  background: rgba(17, 17, 19, 0.05);
+  border: 1px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  padding: 4px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-kind-toggle button {
+  border-radius: var(--r-md, 12px);
+  color: var(--muted, rgba(17, 17, 19, 0.62));
+  font-size: 16px;
+  font-weight: 700;
+  padding: 16px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-kind-toggle button.active {
+  background: #fff;
+  color: var(--text, #111113);
+  box-shadow: 0 4px 14px rgba(209, 26, 42, 0.16);
+  border: 1px solid rgba(209, 26, 42, 0.3);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-shell {
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  background: var(--timeoff-card-face);
+  box-shadow: var(--timeoff-shadow-soft);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-sticky {
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-nav button {
+  border: 1px solid var(--timeoff-border-soft);
+  background: #fff;
+  color: var(--muted, rgba(17, 17, 19, 0.72));
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-nav button:hover {
+  border-color: rgba(209, 26, 42, 0.28);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-nav span,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-date {
+  color: var(--text, #111113);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-header > div {
+  color: var(--muted, rgba(17, 17, 19, 0.56));
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-cell {
+  background: #fafbfc;
+  border: 1px solid rgba(17, 17, 19, 0.06);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-calendar-cell.today {
+  border: 2px solid rgba(209, 26, 42, 0.42);
+  background: rgba(209, 26, 42, 0.07);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-shift-btn {
+  border: 2px solid rgba(17, 17, 19, 0.14);
+  border-radius: var(--r-md, 12px);
+  font-size: 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-shift-btn:hover:not(:disabled) {
+  border-color: var(--accent, #d11a2a);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-shift-btn.disabled {
+  opacity: 0.28;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-selected-summary {
+  background: var(--timeoff-card-face);
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  color: var(--muted, rgba(17, 17, 19, 0.6));
+  font-size: 16px;
+  padding: 16px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-none-selected {
+  color: var(--muted, rgba(17, 17, 19, 0.65));
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-date-picker-btn {
+  background: var(--timeoff-card-face);
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  box-shadow: var(--timeoff-shadow-soft);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-date-picker-btn:hover {
+  border-color: rgba(209, 26, 42, 0.32);
+  background: linear-gradient(180deg, rgba(209, 26, 42, 0.04) 0%, rgba(209, 26, 42, 0.015) 100%);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-date-picker-label {
+  color: var(--muted, rgba(17, 17, 19, 0.58));
+  font-size: 13px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-date-picker-value {
+  color: var(--text, #111113);
+  font-size: 20px;
+}
+
+.timeoff-date-picker-overlay--v3 {
+  backdrop-filter: blur(2px);
+}
+
+.timeoff-date-picker-card--v3 {
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.22);
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-header h3,
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-nav span {
+  color: var(--text, #111113);
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-header button,
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-nav button {
+  border: 1px solid var(--timeoff-border-soft);
+  background: #fff;
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-header button:hover,
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-nav button:hover {
+  border-color: rgba(209, 26, 42, 0.3);
+  color: var(--accent, #d11a2a);
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-weekdays > div {
+  color: var(--muted, rgba(17, 17, 19, 0.55));
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-day {
+  border: 1px solid transparent;
+  background: #f7f8fa;
+  color: var(--text, #111113);
+  font-size: 18px;
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-day:hover:not(.disabled):not(.selected) {
+  border-color: rgba(209, 26, 42, 0.25);
+  background: rgba(209, 26, 42, 0.06);
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-day.selected {
+  background: var(--gradient-accent, linear-gradient(135deg, #d11a2a 0%, #a0121f 100%));
+  border-color: transparent;
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-day.in-range {
+  background: rgba(209, 26, 42, 0.1);
+  color: var(--accent, #d11a2a);
+}
+
+.timeoff-date-picker-overlay--v3 .timeoff-date-picker-day.disabled {
+  color: rgba(107, 114, 128, 0.45);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-range-preview {
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.1) 0%, rgba(34, 197, 94, 0.05) 100%);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: var(--r-lg, 16px);
+  padding: 16px 18px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-range-preview p,
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-range-shifts {
+  color: #166534;
+  font-size: 15px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-summary {
+  background: var(--timeoff-card-face);
+  border: 2px solid var(--timeoff-border-soft);
+  border-radius: var(--r-lg, 16px);
+  box-shadow: var(--timeoff-shadow-soft);
+  padding: 18px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-summary h3 {
+  color: var(--muted, rgba(17, 17, 19, 0.55));
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-summary p {
+  color: var(--text, #111113);
+  font-size: 16px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-reason-label {
+  color: var(--text, #111113);
+  font-size: 16px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-reason-input {
+  border: 2px solid var(--timeoff-border-soft);
+  background: #fff;
+  border-radius: var(--r-lg, 16px);
+  font-size: 16px;
+  min-height: 120px;
+  padding: 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-reason-input:focus {
+  border-color: var(--accent, #d11a2a);
+  box-shadow: 0 0 0 3px rgba(209, 26, 42, 0.14);
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-error {
+  background: rgba(209, 26, 42, 0.08);
+  border: 1px solid rgba(209, 26, 42, 0.25);
+  border-radius: var(--r-md, 12px);
+  color: #991b1b;
+  font-size: 15px;
+  padding: 12px 14px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-delete-btn {
+  border-color: rgba(209, 26, 42, 0.42);
+  border-radius: var(--r-lg, 16px);
+  color: var(--accent, #d11a2a);
+  font-size: 18px;
+}
+
+.app-shell--v3 .modal-sheet.timeoff-modal--v3 .timeoff-delete-btn:hover:not(:disabled) {
+  background: rgba(209, 26, 42, 0.08);
+}
+
+/* ----- OUT / LOW STOCK modal (v3; `.stock-modal--v3` on sheet) ----- */
+.app-shell--v3 .modal-sheet.stock-modal--v3 {
+  background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-shell--v3 .modal-sheet.stock-modal--v3 .modal-title h2 {
+  color: var(--text, #111113);
+  letter-spacing: -0.02em;
+}
+
+.app-shell--v3 .modal-sheet.stock-modal--v3 .stock-modal-body {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.app-shell--v3 .modal-sheet.stock-modal--v3 .stock-item-bubble,
+.app-shell--v3 .modal-body--stock-check .stock-item-bubble {
+  border-width: 2px;
+  border-radius: var(--r-lg, 16px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+}
+
+.app-shell--v3 .modal-sheet.stock-modal--v3 .stock-item-bubble-name,
+.app-shell--v3 .modal-body--stock-check .stock-item-bubble-name {
+  font-size: 22px;
+}
+
+.app-shell--v3 .modal-body--stock-check .stock-item-bubble-chip {
+  font-size: 15px;
+  padding: 7px 12px;
+}
+
+.app-shell--v3 .modal-body--stock-check .stock-item-bubble-chip.stock-kind-out {
+  font-size: 22.5px;
+}
+
+.app-shell--v3 .home-menu-tile--stock {
+  position: relative;
+}
+
+.app-shell--v3 .home-menu-tile-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.app-shell--v3 .home-menu-tile-badge--urgent {
+  background: #ef4444;
+  color: #fff;
+}
+
+.app-shell--v3 .home-menu-tile-badge--low {
+  background: #f59e0b;
+  color: #fff;
+}
+
+.app-shell--v3 .modal-sheet.stock-modal--v3 .stock-section-header-label,
+.app-shell--v3 .modal-body--stock-check .stock-section-header-label {
+  font-size: 20px;
+}
+
+@media (orientation: landscape) and (max-height: 850px) {
+  .app-shell--v3 .modal-sheet.stock-modal--v3 .stock-item-bubble-name,
+  .app-shell--v3 .modal-body--stock-check .stock-item-bubble-name {
+    font-size: 20px;
+  }
+
+  .app-shell--v3 .modal-sheet.stock-modal--v3 .stock-item-bubble-chip,
+  .app-shell--v3 .modal-body--stock-check .stock-item-bubble-chip {
+    font-size: 14px;
+    padding: 6px 10px;
+  }
+
+  .app-shell--v3 .modal-body--stock-check .stock-item-bubble-chip.stock-kind-out {
+    font-size: 21px;
+  }
+
+  .app-shell--v3 .modal-sheet.stock-modal--v3 .stock-section-header-label,
+  .app-shell--v3 .modal-body--stock-check .stock-section-header-label {
+    font-size: 18px;
+  }
+
+  .app-shell--v3 .modal-body--stock-check .stock-check-actions .completed-by-label {
+    font-size: 17px;
+  }
+
+  .app-shell--v3 .modal-body--stock-check .stock-check-actions .select-employee-btn {
+    font-size: 17px;
+  }
+
+  .app-shell--v3 .modal-body--stock-check .stock-check-actions .split-button {
+    font-size: 15px;
+  }
+}
+
+/* ── Task Stage Dividers (v3 only) ────────────────────────────── */
+
+.app-shell--v3 .stage-divider {
+  flex: 0 0 100%;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 8px 2px;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .stage-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(209, 26, 42, 0.22);
+}
+
+.app-shell--v3 .stage-divider--completed {
+  color: rgba(22, 101, 52, 0.95);
+  margin-top: 10px;
+}
+
+.app-shell--v3 .stage-divider--completed::after {
+  background: rgba(34, 197, 94, 0.28);
+}
+
+/* Daily task teaser sits below 11AM Stage 2 — visually separate from 11:00/11:30 deadlines */
+.app-shell--v3 .stage-divider--daily {
+  margin-top: 10px;
+  color: rgba(17, 17, 19, 0.72);
+  font-weight: 600;
+}
+
+.app-shell--v3 .stage-divider--daily::after {
+  background: rgba(17, 17, 19, 0.14);
+}
+
+/* "Didn't need to complete" optional tasks (yum / ice / peanuts) — greyed completed row + undo */
+.app-shell--v3 .task-card--did-not-need {
+  opacity: 0.72;
+  filter: grayscale(0.35);
+}
+
+.app-shell--v3 .task-card--did-not-need .task-color-tint {
+  opacity: 0.35;
+}
+
+.app-shell--v3 .task-card-no-work-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(17, 17, 19, 0.06);
+  border: 1px solid rgba(17, 17, 19, 0.08);
+}
+
+.app-shell--v3 .task-card-no-work-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted, #6b7280);
+  letter-spacing: 0.02em;
+}
+
+.app-shell--v3 .task-card-no-work-undo {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  border-radius: 999px;
+  border: 2px solid rgba(17, 17, 19, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--accent, #d11a2a);
+}
+
+.app-shell--v3 .task-card-no-work-undo:active {
+  transform: scale(0.98);
+}
+
+.app-shell--v3 .v3-modal-no-work-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(17, 17, 19, 0.05);
+  border: 1px solid rgba(17, 17, 19, 0.1);
+}
+
+.app-shell--v3 .v3-modal-no-work-banner p {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-2, #374151);
+}
+
+.app-shell--v3 .v3-modal-no-work-undo {
+  align-self: flex-start;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 800;
+  border-radius: 999px;
+  border: 2px solid rgba(17, 17, 19, 0.14);
+  background: #fff;
+  color: var(--accent, #d11a2a);
+}
+
+/* Floating Shift HUD for point celebrations (below stars overlay z-index); card uses same classes as main shift-hud */
+.app-shell--v3 .v3-shift-score-notify {
+  position: fixed;
+  left: 50%;
+  top: max(12px, env(safe-area-inset-top, 12px));
+  transform: translateX(-50%) translateY(0);
+  z-index: 55;
+  width: min(860px, calc(100vw - 24px));
+  pointer-events: none;
+  animation: v3ShiftNotifyIn 380ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+@keyframes v3ShiftNotifyIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-120%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell--v3 .v3-shift-score-notify {
+    animation: none;
+    opacity: 1;
+    transform: translateX(-50%);
+  }
+}
+
+.app-shell--v3 .v3-shift-score-notify .traq-v3-hero-unified.shift-hud.v3-shift-score-notify-card {
+  margin: 0;
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 18px 44px rgba(0, 0, 0, 0.12);
+}
+
+.app-shell--v3 .v3-shift-score-notify .traq-v3-hero-unified.shift-hud.v3-shift-score-notify-card.day {
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 14px 28px -14px rgba(255, 214, 150, 0.22),
+    0 18px 44px rgba(0, 0, 0, 0.1);
+}
+
+.app-shell--v3 .v3-shift-score-notify .traq-v3-hero-unified.shift-hud.v3-shift-score-notify-card.night {
+  box-shadow:
+    var(--shadow-sm, 0 4px 14px rgba(0, 0, 0, 0.06)),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 14px 28px -14px rgba(185, 195, 255, 0.18),
+    0 18px 44px rgba(0, 0, 0, 0.1);
+}
+
+.app-shell--v3 .v3-shift-score-notify .traq-v3-hero-unified-track-wrap .progress-track {
+  height: 32px;
+}
+
+/* Beta HTML + 3.1: quick Demo Day strip above Powered by */
+.app-shell--v3 .beta-demo-mode-footer {
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-lg, 16px);
+  background: linear-gradient(180deg, rgba(255, 248, 220, 0.95) 0%, rgba(255, 240, 200, 0.92) 100%);
+  border: 1px solid rgba(180, 140, 60, 0.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.app-shell--v3 .beta-demo-mode-footer__start {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(140, 100, 40, 0.45);
+  background: rgba(255, 255, 255, 0.85);
+  font-size: 15px;
+  font-weight: 600;
+  color: #3d2e12;
+  cursor: pointer;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__start:active {
+  transform: scale(0.98);
+}
+
+.app-shell--v3 .beta-demo-mode-footer__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__date {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4a3a1a;
+  letter-spacing: 0.02em;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__btn {
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(100, 80, 40, 0.35);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 14px;
+  font-weight: 600;
+  color: #3d3018;
+  cursor: pointer;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__btn.beta-demo-mode-footer__exit {
+  border-color: rgba(120, 60, 50, 0.4);
+  background: rgba(255, 245, 242, 0.95);
+  color: #6b2e28;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__screensaver {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(60, 90, 140, 0.4);
+  background: rgba(240, 248, 255, 0.92);
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e3a5f;
+  cursor: pointer;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__screensaver:active {
+  transform: scale(0.98);
+}
+
+.app-shell--v3 .beta-demo-mode-footer__screensaver-demo {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(90, 60, 120, 0.38);
+  background: rgba(248, 242, 255, 0.95);
+  font-size: 15px;
+  font-weight: 600;
+  color: #3d2a55;
+  cursor: pointer;
+}
+
+.app-shell--v3 .beta-demo-mode-footer__screensaver-demo:active {
+  transform: scale(0.98);
+}
+
+/* ----- v3.1 task modal + employee picker (`.modal-sheet--v31-task`, `.selector-card--v31`) ----- */
+
+.app-shell--v3 .modal-sheet.modal-sheet--v31-task {
+  border-radius: var(--r-lg, 20px);
+  padding: 22px 24px 26px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(250, 250, 252, 0.98) 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    var(--shadow-sm, 0 8px 28px rgba(0, 0, 0, 0.08)),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  max-height: min(88vh, 900px);
+  max-height: min(88dvh, 900px);
+}
+
+.app-shell--v3 .modal-sheet--v31-task .modal-title h2 {
+  font-size: clamp(1.35rem, 4.2vw, 2rem);
+  letter-spacing: -0.03em;
+}
+
+.app-shell--v3 .modal-sheet--v31-task .close-button {
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* Slightly tighter requirement bubbles — still large for kitchen distance */
+.app-shell--v3 .modal-sheet--v31-task .requirements-bubbles {
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.app-shell--v3 .modal-sheet--v31-task .requirement-bubble {
+  font-size: clamp(1rem, 3vw, 1.35rem);
+  padding: 12px 16px;
+  border-radius: 12px;
+  line-height: 1.45;
+}
+
+.app-shell--v3 .modal-sheet--v31-task .ice-combined-title {
+  font-size: clamp(1rem, 3vw, 1.2rem);
+  margin: 8px 0 12px;
+  font-weight: 800;
+  color: var(--text, #111);
+}
+
+/* Split towels (3.1): tiles first; requirements in bounded scroll below */
+.app-shell--v3 .towel-combined--v31 .task-modal-requirements-panel--v31 {
+  margin: 0 0 10px;
+  max-height: min(22vh, 180px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 14px;
+  border: 1px solid rgba(17, 17, 19, 0.08);
+  background: rgba(248, 248, 250, 0.6);
+}
+
+.app-shell--v3 .towel-combined .task-modal-requirements-panel {
+  margin: 0 0 10px;
+  max-height: min(22vh, 180px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 14px;
+  border: 1px solid rgba(17, 17, 19, 0.08);
+  background: rgba(248, 248, 250, 0.6);
+}
+
+.app-shell--v3 .towel-combined--v31 .task-modal-requirements-panel--v31 .requirements-bubbles {
+  margin: 0;
+  gap: 6px;
+}
+
+.app-shell--v3 .towel-combined--v31 .task-modal-requirements-panel--v31 .requirement-bubble {
+  font-size: clamp(1rem, 3vw, 1.35rem);
+  line-height: 1.45;
+  padding: 12px 16px;
+  border-radius: 12px;
+}
+
+.app-shell--v3 .towel-combined--v31 .towel-sides-grid {
+  margin-bottom: 4px;
+}
+
+.app-shell--v3 .modal-sheet--v31-task .ice-side-tile,
+.app-shell--v3 .modal-sheet--v31-task .towel-side-tile {
+  border-radius: var(--r-lg, 18px);
+  min-height: 200px;
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.app-shell--v3 .towel-combined--v31 .towel-side-tile {
+  min-height: 240px;
+}
+
+.app-shell--v3 .modal-sheet--v31-task .ice-side-tile:focus-visible,
+.app-shell--v3 .modal-sheet--v31-task .towel-side-tile:focus-visible {
+  outline: 3px solid rgba(209, 26, 42, 0.45);
+  outline-offset: 2px;
+}
+
+/* Employee picker overlay */
+.app-shell--v3 .selector-card.selector-card--v31 {
+  width: min(640px, 100%);
+  border-radius: var(--r-lg, 22px);
+  padding: 26px 24px 28px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(252, 252, 254, 0.98) 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    0 20px 56px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+.app-shell--v3 .selector-card--v31 .selector-header-center h3 {
+  font-size: clamp(1.2rem, 3.8vw, 1.75rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.app-shell--v3 .selector-card--v31 .employee-option {
+  min-height: 72px;
+  font-size: clamp(1.05rem, 3.2vw, 1.35rem);
+  border-radius: 16px;
+  padding: 18px 16px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.app-shell--v3 .selector-card--v31 .employee-option.selected {
+  box-shadow:
+    0 4px 14px rgba(209, 26, 42, 0.2),
+    inset 0 0 0 2px rgba(209, 26, 42, 0.35);
+}
+
+/* v3: optional tasks "Didn't need to complete" CTA */
+.app-shell--v3 .auto-assign-btn {
+  font-size: 20px;
+  font-weight: 800;
+  gap: 0;
+}
+
+/* ----- Daily Task modal (v3 shell only) ----- */
+.app-shell--v3 .modal-sheet.daily-task-modal-sheet {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(250, 250, 252, 0.98) 100%);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow:
+    0 24px 54px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  border-radius: var(--r-lg, 22px);
+  padding: 18px 18px 20px;
+}
+
+.app-shell--v3 .daily-task-modal-h1 {
+  color: var(--text, rgba(17, 17, 19, 0.92));
+  font-size: clamp(1.35rem, 4.2vw, 2rem);
+  letter-spacing: -0.03em;
+}
+
+.app-shell--v3 .close-button.daily-task-modal-close {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(17, 17, 19, 0.14);
+  color: rgba(17, 17, 19, 0.86);
+}
+
+.app-shell--v3 .daily-task-section-header {
+  font-size: clamp(1.05rem, 3.2vw, 1.35rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.app-shell--v3 .daily-task-primary-btn {
+  border-radius: 14px;
+}
+
+/* Cinematic reveal (v3 only) — matches daily task sheet chrome */
+.app-shell--v3 .cinematic-reveal-container {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  padding: 4px 2px 8px;
+}
+
+.app-shell--v3 .cinematic-reveal-hero {
+  position: relative;
+  width: 100%;
+  min-height: 168px;
+  border-radius: 18px;
+  padding: 22px 20px 20px;
+  border: 1px solid rgba(17, 17, 19, 0.1);
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(252, 250, 246, 0.96) 45%,
+    rgba(248, 246, 252, 0.98) 100%
+  );
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+  cursor: pointer;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+}
+
+.app-shell--v3 .cinematic-reveal-vignette {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 72px rgba(17, 17, 19, 0.08);
+}
+
+.app-shell--v3 .cinematic-reveal-spotlight {
+  position: absolute;
+  inset: -40% -20%;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 55% 45% at 50% 42%,
+    rgba(255, 214, 140, 0.22) 0%,
+    rgba(255, 200, 120, 0.06) 42%,
+    transparent 72%
+  );
+  opacity: 0.85;
+}
+
+.app-shell--v3 .cinematic-phase-playing .cinematic-reveal-spotlight {
+  animation: cinematicSpotDrift 2.4s ease-in-out infinite;
+}
+
+.app-shell--v3 .cinematic-reveal-accent-bar {
+  position: absolute;
+  top: 0;
+  left: 12%;
+  right: 12%;
+  height: 3px;
+  border-radius: 0 0 8px 8px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(200, 155, 60, 0.55) 20%,
+    rgba(230, 185, 90, 0.75) 50%,
+    rgba(200, 155, 60, 0.55) 80%,
+    transparent
+  );
+  opacity: 0.9;
+}
+
+.app-shell--v3 .cinematic-reveal-kicker {
+  position: relative;
+  margin: 0 0 10px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(17, 17, 19, 0.45);
+}
+
+.app-shell--v3 .cinematic-reveal-title {
+  position: relative;
+  margin: 0;
+  text-align: center;
+  font-weight: 950;
+  font-size: clamp(1.35rem, 4.4vw, 2rem);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--text, rgba(17, 17, 19, 0.92));
+  transform-origin: center top;
+}
+
+.app-shell--v3 .cinematic-phase-playing:not(.cinematic-reveal--reduced) .cinematic-reveal-title {
+  animation: cinematicTitleResolve 1.35s cubic-bezier(0.22, 0.82, 0.22, 1) forwards;
+}
+
+.app-shell--v3 .cinematic-phase-done:not(.cinematic-reveal--reduced) .cinematic-reveal-title {
+  filter: none;
+  opacity: 1;
+  transform: none;
+}
+
+.app-shell--v3 .cinematic-reveal--reduced .cinematic-reveal-title {
+  animation: none;
+}
+
+.app-shell--v3 .cinematic-reveal-skip-hint {
+  position: relative;
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: rgba(17, 17, 19, 0.38);
+}
+
+.app-shell--v3 .cinematic-continue-btn {
+  align-self: center;
+  min-width: min(100%, 280px);
+}
+
+@keyframes cinematicSpotDrift {
+  0%,
+  100% {
+    transform: translate(-4%, 2%) scale(1);
+    opacity: 0.75;
+  }
+  50% {
+    transform: translate(4%, -1%) scale(1.06);
+    opacity: 1;
+  }
+}
+
+@keyframes cinematicTitleResolve {
+  0% {
+    filter: blur(12px);
+    opacity: 0.12;
+    transform: translateY(12px) scale(0.97);
+  }
+  55% {
+    filter: blur(3px);
+    opacity: 0.85;
+    transform: translateY(2px) scale(0.995);
+  }
+  100% {
+    filter: blur(0);
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell--v3 .cinematic-phase-playing .cinematic-reveal-spotlight {
+    animation: none;
+  }
+}

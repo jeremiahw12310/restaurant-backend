@@ -1,19 +1,28 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { createPortal } from 'react-dom'
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal, flushSync } from 'react-dom'
 import './App.css'
-import tlogoUrl from './assets/TLOGO.png'
-import poweredByUrl from './assets/poweredby.png'
+import './AppV3.css'
+import { DEFAULT_SOLAR_COORDS, getTimeOfDaySolar, type TimeOfDay } from './solarTimeOfDay'
+import { markIntentionalReload, recordLastUserAction } from './utils/reloadForensics'
+import traqLogoUrl from './assets/tasklogo.png'
+import poweredByUrl from './assets/biglogo.png'
 import { 
-  getEmployees, 
+  getEmployeeRoster,
   saveEmployees, 
-  subscribeToEmployees,
+  subscribeToEmployeeRoster,
   subscribeToEmployeeColors,
   getEmployeeColors,
   saveEmployeeColor,
   removeEmployeeColor,
   getTaskOrder,
+  getTaskOrderV3,
   saveTaskOrder,
   subscribeToTaskOrder,
+  subscribeToTaskOrderV3,
+  getTaskStages,
+  saveTaskStages,
+  subscribeToTaskStages,
+  type TaskStageMap,
   getTaskCatalog,
   saveTaskCatalog,
   subscribeToTaskCatalog,
@@ -27,6 +36,7 @@ import {
   subscribeToDailyTaskRun,
   upsertDailyTaskRun,
   adminRecloseDailyTaskRun,
+  adminPatchDailyTaskRunHistory,
   getDailyTaskWeek,
   upsertDailyTaskWeek,
   listDailyTaskRunsInRange,
@@ -39,13 +49,15 @@ import {
   migrateLegacyTaskStateV1ToV2,
   subscribeToBreakSelection,
   saveBreakSelection,
+  subscribeToSoloMode,
+  saveSoloMode,
   subscribeToForceRefresh,
   triggerForceRefresh,
   saveNightShiftReport,
   dismissNightShiftReport,
   subscribeToNightShiftReports,
   subscribeToAvailability,
-  saveAvailability,
+  saveAvailabilityState,
   subscribeToTimeOffRequests,
   createTimeOffRequest,
   updateTimeOffRequest,
@@ -68,7 +80,6 @@ import {
   setNotificationActive,
   deleteNotification,
   getPendingNotificationsForEmployee,
-  logAdminLoginAttempt,
   subscribeToAdminLoginAttempts,
   appendSelectionLogEntry,
   type AdminLoginAttempt,
@@ -78,10 +89,11 @@ import {
   type BreakSelection,
   type BreakSlot,
   type BreakShiftType,
+  type SoloMode,
   type NightShiftReport,
   type DayOfWeek,
   type WeeklyAvailability,
-  type AvailabilityMap,
+  type AvailabilityState,
   type TimeOffRequest,
   isTimeOffVisibleOnPublicList,
   getTimeOffPublicListVisibilityDebug,
@@ -102,9 +114,56 @@ import {
   type DailyTaskDef,
   type DailyTaskRun,
   type DailyTaskWeek,
+  subscribeFairSplitContract,
+  setFairSplitContract,
+  deleteFairSplitContract,
+  readFairSplitContractLocalCache,
+  clearFairSplitContractLocalCache,
+  type FairSplitContractDoc,
+  subscribeTrainingWindow,
+  setTrainingWindow,
+  deleteTrainingWindow,
+  subscribeTrainingWindowsInRange,
 } from './services/firestore'
+import { sendStockReportEmailNotification } from './services/stockEmail'
 import { TimeOffShiftDetailList } from './components/TimeOffShiftDetailList'
 import { formatTimeOffNotificationBody, formatTimeOffSummaryLine } from './utils/timeOffDisplay'
+import { createNewDailyTaskId, resolveDailyTaskDefFromCatalog } from './utils/dailyTaskCatalog'
+import {
+  formatDailyTaskRunCompletedBy,
+  getDailyTaskRunHistoryTitle,
+  NO_TASK_DAILY_RUN_LABEL,
+} from './utils/dailyTaskRunDisplay'
+import {
+  addDaysToDateKey,
+  buildMergedRecencyMap,
+  DAILY_TASK_WEEK_GENERATOR_VERSION,
+  DAILY_TASK_WEEK_GENERATOR_VERSION_AI,
+  enumerateWeekStartDateKeysInclusive,
+  generateDailyTaskWeek,
+  getWeekStartDateKeySunday,
+  type DailyWeekGenResult,
+} from './utils/dailyTaskWeekGenerator'
+import { isDailyTaskSchedulable } from './utils/dailyTaskArchive'
+import { applyEmployeeAvailabilityUpdate } from './utils/availabilityEffective'
+import { DAY_OF_WEEK_KEYS, DAY_OF_WEEK_LABELS, getDayOfWeekKey } from './utils/dayOfWeek'
+import {
+  approvalStatusLabel,
+  createOverrideDayEntry,
+  getDayApprovalStatus,
+  isDayVisibleToPlayers,
+  parseWeekDayEntry,
+} from './utils/dailyTaskApproval'
+import {
+  filterEmployeesForLeaderboardMonth,
+  getActiveEmployees,
+  type EmployeeArchiveMap,
+} from './utils/employeeRoster'
+import { fetchValidatedWeeklyPlacements } from './services/dailyTaskScheduleAi'
+import {
+  getCachedDailyTaskScheduleSystemPrompt,
+  subscribeToDailyTaskScheduleAiSettings,
+} from './services/dailyTaskScheduleAiSettings'
 import { getFirebaseStatus, storage } from './firebase'
 import {
   deleteMusicTrack,
@@ -122,6 +181,18 @@ import {
   type MusicTrack,
 } from './services/music'
 import {
+  appendGoodMorningLog,
+  clearGoodMorningSession,
+  getDeviceInfo as getGoodMorningDeviceInfo,
+  getOrCreateGoodMorningSessionId,
+  isPastTenAmLocal,
+  readGoodMorningLocal,
+  subscribeToGoodMorningConfig,
+  upsertGoodMorningSession,
+  writeGoodMorningLocal,
+  type GoodMorningLocalState,
+} from './services/goodMorning'
+import {
   subscribeToApplications,
   updateApplicationStatus,
   updateApplicationNotes,
@@ -137,20 +208,76 @@ import {
   getEffectiveTasksByWindowForDateKey as getEffectiveTasksByWindowForDateKeyShared,
   getWeightsForDateKey as getWeightsForDateKeyShared,
   DAILY_TASK_POINTS_EFFECTIVE_MS,
+  SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS,
+  computeShiftScoringCore,
 } from './utils/taskScoring'
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytesResumable } from 'firebase/storage'
-import * as pdfjsLib from 'pdfjs-dist'
-import { MusicPlayer } from './components/MusicPlayer.tsx'
+import { MusicPlayerSwitcher } from './components/MusicPlayerSwitcher.tsx'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
+/** Lazy-loaded on first print — keeps pdfjs off the iPad cold-start parse path. */
+const loadPdfJs = async () => {
+  const pdfjsLib = await import('pdfjs-dist')
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
+  return pdfjsLib
+}
 import { HeaderClock } from './components/HeaderClock'
 import { CalculatorOverlay } from './components/CalculatorOverlay.tsx'
+import { Screensaver, type ScreensaverCountdown } from './components/Screensaver.tsx'
 import { OrderReportOverlay } from './components/OrderReportOverlay.tsx'
+import { TaskSplitSuggestPanel } from './components/TaskSplitSuggestPanel'
+import {
+  buildTaskSplitRequestPayload,
+  buildWorkHistorySummary,
+  submitTaskSplitRequest,
+  suggestResultToVariant,
+  type TaskSplitSuggestResult,
+  type TaskSplitSuggestWindowKey,
+  buildFairSplitContractDocument,
+  fairSplitContractToSuggestResult,
+  resolveTaskSplitPanelRestore,
+} from './services/taskSplitSuggestAi'
+import { getSplitWindowEffectiveTaskIds, isTaskDoneForSplit } from './utils/taskSplitPartition'
+import {
+  buildLastTogetherSummaryForSplit,
+  computeSplitTogetherStreak,
+  computeTogetherStreak,
+  findLastTogetherCompleter,
+  findSharedShiftDates,
+} from './utils/lastTogetherHistory'
+import { fairSplitPreviewWindowPoints, readWindowPointForEmployee } from './utils/fairSplitScoring'
+import { isDiceEnabledForChannel } from './utils/diceVisibility'
+import type { TaskLike } from './utils/taskScoring'
+
+function shuffleInPlaceTaskSplitVariants<T>(arr: T[]): T[] {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j]!, a[i]!]
+  }
+  return a
+}
+
+type TaskSplitInlinePhase = 'loading' | 'active'
 import { DailyTaskTeaserCard } from './components/DailyTaskTeaserCard'
 import { DailyTaskModal } from './components/DailyTaskModal'
 import { TaskCard } from './components/TaskCard'
+import { StockCheckModal } from './components/StockCheckModal'
+import { StockItemBubble } from './components/StockItemBubble'
+import { StockPendingReportList } from './components/StockPendingReportList'
+import { countOutPending } from './components/stockReportHelpers'
+import { fetchShiftQuote, isAiBackedShiftQuote, onLateQuoteUpdate, type ShiftQuoteContext, type ShiftQuoteResponse } from './services/shiftQuotes'
+import {
+  buildWindowCompleteMessageContext,
+  fetchWindowCompleteMessage,
+  onLateWindowCompleteMessage,
+} from './services/windowCompleteAi'
+import {
+  WindowCompleteCelebration,
+  type WindowCompleteCelebrationPhase,
+  type WindowCompleteCelebrationViewModel,
+} from './components/WindowCompleteCelebration'
 import type { EffectiveStatus, Task, TaskCompletion } from './types/task'
-import { TASKS } from './constants/tasks'
+import { TASKS, ICE_COMBINED_CREATED_AT_MS } from './constants/tasks'
 
 type WindowConfig = {
   key: WindowKey
@@ -158,21 +285,6 @@ type WindowConfig = {
   start: string
   lateAfter: string
   unlocksAt?: string
-}
-
-type ConfettiPiece = {
-  id: string
-  x: number
-  y: number
-  dx: number
-  dy: number
-  rotDeg: number
-  delayMs: number
-  durMs: number
-  w: number
-  h: number
-  br: number
-  color: string
 }
 
 type SelectionLogEntry = {
@@ -189,23 +301,291 @@ type SelectionLogEntry = {
 type LeaderRow = {
   name: string
   score: number
+  /** Mirrors `taskScoring` — unrounded 0–100 for early small credits. */
+  scoreFloat?: number
   shiftsPlayed: number
+  /** v2.2 day-shift only (post-{@link SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS}): standalone 11AM 0–100 for the HUD. */
+  dayAmScore?: number
+  /** Pre-round counterpart to {@link dayAmScore}. */
+  dayAmScoreFloat?: number
 }
 
-type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'night'
+/** Display score: small positive credits (&lt; 1 pt) show one decimal so ice-first completions aren’t hidden. */
+function shiftHudDisplayScore(r: { score: number; scoreFloat?: number }): number {
+  const f = typeof r.scoreFloat === 'number' ? r.scoreFloat : r.score
+  if (f > 0 && f < 1) return Math.round(f * 10) / 10
+  return Math.round(Math.min(100, Math.max(0, f)))
+}
 
-const MOTIVATIONAL_QUOTES = [
-  'Teamwork makes the dream work! 💪',
-  'Every task completed is a win for the team! 🎯',
-  'Excellence is not an act, but a habit! ✨',
-  'Together we accomplish more! 🌟',
-  'Small steps lead to big victories! 🚀',
-  'Your effort makes a difference! 💫',
-  'Quality over speed, always! 👌',
-  'Let\'s make today amazing!',
-  'One team, one goal! 🤝',
-  'Consistency is the key to greatness! 🔑',
+/** Same rounding rule for the standalone 11AM number (day shift only, post-cutover). */
+function shiftHudAmDisplayScore(r: { dayAmScore?: number; dayAmScoreFloat?: number }): number {
+  const f = typeof r.dayAmScoreFloat === 'number' ? r.dayAmScoreFloat : (r.dayAmScore ?? 0)
+  if (f > 0 && f < 1) return Math.round(f * 10) / 10
+  return Math.round(Math.min(100, Math.max(0, f)))
+}
+
+/** Shift HUD cell text during count-up override: at most one decimal (avoids 2.0000000004-style float noise). */
+function shiftHudPointsCell(
+  override: number | null,
+  row: { score: number; scoreFloat?: number } | undefined,
+): string {
+  if (override != null) {
+    if (!Number.isFinite(override)) return '—'
+    const s = override.toFixed(1)
+    return s.endsWith('.0') ? s.slice(0, -2) : s
+  }
+  if (!row) return '—'
+  return String(shiftHudDisplayScore(row))
+}
+
+function shiftHudScoreForCelebration(r: { score: number; scoreFloat?: number } | undefined): number {
+  if (!r) return 0
+  return typeof r.scoreFloat === 'number' ? r.scoreFloat : r.score
+}
+
+/** True if the row has any HUD-visible credit (5PM or, post-cutover, standalone 11AM). */
+function shiftHudHasAnyPoints(
+  r: { score: number; scoreFloat?: number; dayAmScore?: number; dayAmScoreFloat?: number } | undefined,
+): boolean {
+  if (!r) return false
+  if (shiftHudScoreForCelebration(r) > 0) return true
+  const am = typeof r.dayAmScoreFloat === 'number' ? r.dayAmScoreFloat : (r.dayAmScore ?? 0)
+  return am > 0
+}
+
+/** Active split pair for HUD slot pinning (panel open on 5PM/9PM only). */
+function resolveActiveSplitHudPair(args: {
+  phase: 'loading' | 'active' | null
+  windowKey: WindowKey
+  empA: string
+  empB: string
+  contract: FairSplitContractDoc | null
+}): [string, string] | null {
+  if (args.phase === null) return null
+  if (args.windowKey !== '17' && args.windowKey !== '21') return null
+  const fromContractA = (args.contract?.employeeA || '').trim()
+  const fromContractB = (args.contract?.employeeB || '').trim()
+  const a = fromContractA || (args.empA || '').trim()
+  const b = fromContractB || (args.empB || '').trim()
+  if (!a || !b || a === b) return null
+  return [a, b]
+}
+
+function shiftHudLeaderOrStub(allLeaders: LeaderRow[], name: string): LeaderRow | undefined {
+  const trimmed = name.trim()
+  if (!trimmed) return undefined
+  return allLeaders.find((r) => r.name === trimmed) ?? { name: trimmed, score: 0, shiftsPlayed: 0 }
+}
+
+/** Map split pair + leader rows -> fixed p1/p2 + extra count. */
+function resolveShiftHudDisplaySlots(args: {
+  played: LeaderRow[]
+  allLeaders: LeaderRow[]
+  splitPair: [string, string] | null
+}): { p1: LeaderRow | undefined; p2: LeaderRow | undefined; extra: number } {
+  if (!args.splitPair) {
+    return {
+      p1: args.played[0],
+      p2: args.played[1],
+      extra: Math.max(0, args.played.length - 2),
+    }
+  }
+  const [empA, empB] = args.splitPair
+  const p1 = shiftHudLeaderOrStub(args.allLeaders, empA)
+  const p2 = shiftHudLeaderOrStub(args.allLeaders, empB)
+  const extra = args.played.filter((r) => r.name !== empA && r.name !== empB).length
+  return { p1, p2, extra }
+}
+
+/** Celebration slot lookup: split-pinned when panel open, else score-ranked. */
+function shiftHudCelebrationSlotForName(
+  name: string,
+  afterRows: LeaderRow[],
+  splitPair: [string, string] | null,
+): 'p1' | 'p2' | null {
+  const trimmed = name.trim()
+  if (!trimmed) return null
+  if (splitPair) {
+    if (trimmed === splitPair[0]) return 'p1'
+    if (trimmed === splitPair[1]) return 'p2'
+    return null
+  }
+  const afterPlayed = afterRows.filter((r) => shiftHudHasAnyPoints(r))
+  if (afterPlayed[0]?.name === trimmed) return 'p1'
+  if (afterPlayed[1]?.name === trimmed) return 'p2'
+  return null
+}
+
+/** Derive p1/p2 leader rows for dual-sided celebrations (order report). */
+function shiftHudCelebrationPairRows(
+  afterRows: LeaderRow[],
+  splitPair: [string, string] | null,
+): { p1: LeaderRow | undefined; p2: LeaderRow | undefined } {
+  if (splitPair) {
+    return {
+      p1: shiftHudLeaderOrStub(afterRows, splitPair[0]),
+      p2: shiftHudLeaderOrStub(afterRows, splitPair[1]),
+    }
+  }
+  return { p1: afterRows[0], p2: afterRows[1] }
+}
+
+const SPEAKER_QUOTES: ReadonlyArray<{ speaker: string; quote: string }> = [
+  { speaker: 'Maya Angelou', quote: 'Nothing will work unless you do.' },
+  { speaker: 'Vince Lombardi', quote: 'The only place success comes before work is in the dictionary.' },
+  { speaker: 'Helen Keller', quote: 'Alone we can do so little; together we can do so much.' },
+  { speaker: 'Walt Disney', quote: 'The way to get started is to quit talking and begin doing.' },
+  { speaker: 'Winston Churchill', quote: 'Success is not final, failure is not fatal — it is the courage to continue that counts.' },
+  { speaker: 'Nelson Mandela', quote: 'It always seems impossible until it is done.' },
+  { speaker: 'Fred Rogers', quote: 'You rarely have time for everything you want in this life, so you need to make choices.' },
+  { speaker: 'Harriet Tubman', quote: 'Every great dream begins with a dreamer.' },
+  { speaker: 'Theodore Roosevelt', quote: 'Do what you can, with what you have, where you are.' },
+  { speaker: 'Dolly Parton', quote: 'If you want the rainbow, you gotta put up with the rain.' },
+  { speaker: 'Michael Jordan', quote: 'I have failed over and over again in my life — and that is why I succeed.' },
+  { speaker: 'Oprah Winfrey', quote: 'The big secret in life is that there is no big secret — whatever your goal, you can get there.' },
 ]
+
+const COMPLETE_HEADLINES = ['All Done', 'Shift Complete', 'Great Work Team', 'Everything Crushed', 'Window Cleared']
+
+/** Shared celebration / dismiss timings (Phase 5). Same visuals, shorter pipeline on v3 iPad. */
+const CELEBRATION_TIMING = {
+  clickGuardMs: 350,
+  starAnimationDurationMs: 1300,
+  scoreCountUpMs: 650,
+  scoreCountUpOrderReportMs: 750,
+  starStaggerMs: 20,
+  starDurMinMs: 750,
+  starDurRangeMs: 250,
+  v2StarDelayMs: 650,
+  v2StarDelayReducedMs: 150,
+  v3SlideDurationMs: 220,
+  v3BackdropFadeMs: 180,
+  v3CelebrationLeadInMs: 80,
+  v3CelebrationLeadInReducedMs: 80,
+  windowCompleteScrollDelayMs: 650,
+  windowCompleteScrollDelayReducedMs: 140,
+  cardJiggleDurationMs: 450,
+  cardJiggleStaggerCapMs: 60,
+  iceTowelStarDelayMs: 650,
+} as const
+
+const getCelebrationTiming = (prefersReducedMotion: boolean) => ({
+  clickGuardMs: CELEBRATION_TIMING.clickGuardMs,
+  starAnimationDurationMs: prefersReducedMotion ? 400 : CELEBRATION_TIMING.starAnimationDurationMs,
+  scoreCountUpMs: prefersReducedMotion ? 0 : CELEBRATION_TIMING.scoreCountUpMs,
+  scoreCountUpOrderReportMs: prefersReducedMotion ? 0 : CELEBRATION_TIMING.scoreCountUpOrderReportMs,
+  starStaggerMs: prefersReducedMotion ? 8 : CELEBRATION_TIMING.starStaggerMs,
+  starDurMinMs: prefersReducedMotion ? 400 : CELEBRATION_TIMING.starDurMinMs,
+  starDurRangeMs: prefersReducedMotion ? 100 : CELEBRATION_TIMING.starDurRangeMs,
+  v2StarDelayMs: prefersReducedMotion
+    ? CELEBRATION_TIMING.v2StarDelayReducedMs
+    : CELEBRATION_TIMING.v2StarDelayMs,
+  v3SlideDurationMs: prefersReducedMotion ? 120 : CELEBRATION_TIMING.v3SlideDurationMs,
+  v3BackdropFadeMs: prefersReducedMotion ? 80 : CELEBRATION_TIMING.v3BackdropFadeMs,
+  v3CelebrationLeadInMs: prefersReducedMotion
+    ? CELEBRATION_TIMING.v3CelebrationLeadInReducedMs
+    : CELEBRATION_TIMING.v3CelebrationLeadInMs,
+  windowCompleteScrollDelayMs: prefersReducedMotion
+    ? CELEBRATION_TIMING.windowCompleteScrollDelayReducedMs
+    : CELEBRATION_TIMING.windowCompleteScrollDelayMs,
+  cardJiggleDurationMs: CELEBRATION_TIMING.cardJiggleDurationMs,
+  cardJiggleStaggerCapMs: CELEBRATION_TIMING.cardJiggleStaggerCapMs,
+  iceTowelStarDelayMs: CELEBRATION_TIMING.iceTowelStarDelayMs,
+})
+
+/** v3 full-completion slide + stars profile (ice/towel reference). */
+const V3_TASK_COMPLETION_ANIM_OPTS = { bypassReducedMotion: true as const }
+
+/** Solo mode auto-fills these as did-not-need (empty assignees); cleared when solo turns off or break undo. */
+const SOLO_AUTO_ORDER_REPORT_TARGETS: ReadonlyArray<{ windowKey: WindowKey; taskId: string }> = [
+  { windowKey: '17', taskId: 'order-report-5pm' },
+  { windowKey: '21', taskId: 'order-report-close' },
+]
+
+function isSoloAutoDidNotNeedPlaceholder(c?: TaskCompletion): boolean {
+  return (
+    c?.status === 'done' &&
+    !!c.didNotNeedToComplete &&
+    !(c.assignees && c.assignees.length > 0)
+  )
+}
+
+/** Solo-on waive: skip if a real order report (or any non–auto-placeholder done) already exists. */
+function shouldApplySoloOrderReportWaive(existing?: TaskCompletion): boolean {
+  return !existing || existing.status !== 'done'
+}
+
+function makeSoloAutoDidNotNeedCompletion(completedAt: string): TaskCompletion {
+  return {
+    status: 'done',
+    assignees: [],
+    completedAt,
+    assignedByAdmin: false,
+    completedLate: false,
+    lateForgiven: false,
+    completedEarly: false,
+    autoAssigned: true,
+    didNotNeedToComplete: true,
+  }
+}
+
+function makeSoloAutoDidNotNeedCompletionBody(completedAt: string): Omit<TaskCompletion, 'status'> {
+  const { status: _status, ...body } = makeSoloAutoDidNotNeedCompletion(completedAt)
+  return body
+}
+
+function getSoloOrderReportTargetsToWaive(state: TaskState, dateKey: string) {
+  return SOLO_AUTO_ORDER_REPORT_TARGETS.filter((t) =>
+    shouldApplySoloOrderReportWaive(state[dateKey]?.[t.windowKey]?.[t.taskId])
+  )
+}
+
+function getSoloOrderReportTargetsToClear(state: TaskState, dateKey: string) {
+  return SOLO_AUTO_ORDER_REPORT_TARGETS.filter(({ windowKey, taskId }) =>
+    isSoloAutoDidNotNeedPlaceholder(state[dateKey]?.[windowKey]?.[taskId])
+  )
+}
+
+function applySoloOrderReportWaivesToTaskState(prev: TaskState, dateKey: string, completedAt: string): TaskState {
+  let changed = false
+  const next: TaskState = { ...prev }
+  const dateMap: Record<WindowKey, Record<string, TaskCompletion>> = { ...(next[dateKey] ?? {}) }
+  for (const t of SOLO_AUTO_ORDER_REPORT_TARGETS) {
+    const ex = prev[dateKey]?.[t.windowKey]?.[t.taskId]
+    if (!shouldApplySoloOrderReportWaive(ex)) continue
+    changed = true
+    const wm = { ...(dateMap[t.windowKey] ?? {}) }
+    wm[t.taskId] = makeSoloAutoDidNotNeedCompletion(completedAt)
+    dateMap[t.windowKey] = wm
+  }
+  if (!changed) return prev
+  next[dateKey] = dateMap
+  return next
+}
+
+function clearSoloOrderReportWaivesFromTaskState(prev: TaskState, dateKey: string): TaskState {
+  const toClear = getSoloOrderReportTargetsToClear(prev, dateKey)
+  if (toClear.length === 0) return prev
+
+  const next: TaskState = { ...prev }
+  const dateMap: Record<WindowKey, Record<string, TaskCompletion>> = { ...(next[dateKey] ?? {}) }
+  for (const { windowKey, taskId } of toClear) {
+    const wm = { ...(dateMap[windowKey] ?? {}) }
+    delete wm[taskId]
+    if (Object.keys(wm).length === 0) {
+      delete (dateMap as Partial<Record<WindowKey, Record<string, TaskCompletion>>>)[windowKey]
+    } else {
+      dateMap[windowKey] = wm
+    }
+  }
+  if (Object.keys(dateMap).length === 0) {
+    const rest = { ...next }
+    delete (rest as Record<string, unknown>)[dateKey]
+    return rest as TaskState
+  }
+  next[dateKey] = dateMap
+  return next
+}
 
 // Label categories for the two-label display system
 type LabelCategory = 'achievement' | 'skill' | 'role' | 'status'
@@ -313,246 +693,8 @@ const pickDisplayLabels = (labels: EmployeeLabel[]): EmployeeLabel[] => {
   return bestPerCategory.slice(0, 2)
 }
 
-// Pure helper for shift scoring (same math as the existing leaderboard logic)
-const computeShiftLeadersForStateLegacy = (
-  state: TaskState,
-  dateKey: string,
-  shift: 'day' | 'night',
-  SHIFT_WINDOWS: Record<'day' | 'night', WindowKey[]>,
-  windowTaskWeights: Record<WindowKey, number>,
-  taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>
-): LeaderRow[] => {
-  const dateMap = state[dateKey]
-  if (!dateMap) return []
-
-  // Deferred-to-close support:
-  // Some 5PM ('17') tasks are auto-completed but should be scored at close (9/10PM).
-  // We implement this purely in scoring so historical task sets remain stable.
-  const deferredFrom17: Array<{ taskId: string; completion: TaskCompletion; weight: number }> = []
-  let deferredWeightTotal17 = 0
-  try {
-    const w17 = dateMap['17'] || {}
-    Object.keys(w17).forEach((taskId) => {
-      const c = w17[taskId]
-      if (!c?.deferredToClose) return
-      const wt17 = taskWeightByIdByWindow['17']?.[taskId] ?? 0
-      if (wt17 <= 0) return
-      deferredFrom17.push({ taskId, completion: c, weight: wt17 })
-      deferredWeightTotal17 += wt17
-    })
-  } catch {
-    // ignore
-  }
-
-  // Keep raw per-window points as floats (0..100) and only round at the final displayed score.
-  // This avoids double-rounding (e.g. rounding 11AM/5PM separately and then combining).
-  const pointsByWindow: Record<WindowKey, Record<string, number>> = { '11': {}, '17': {}, '21': {} }
-  const creditsByWindow: Record<WindowKey, Record<string, number>> = { '11': {}, '17': {}, '21': {} }
-  // Participation should exclude autoAssigned completions (yum-yum credit), so we don't
-  // count "ghost shifts" that only exist due to auto-assigned points.
-  const participationCreditsByWindow: Record<WindowKey, Record<string, number>> = { '11': {}, '17': {}, '21': {} }
-  // Track which tasks each person completed per window (used for yum-yum-only night shift exclusion)
-  const tasksByPersonByWindow: Record<WindowKey, Record<string, Set<string>>> = { '11': {}, '17': {}, '21': {} }
-
-  SHIFT_WINDOWS[shift].forEach((wKey) => {
-    // Adjust denominator when deferred tasks shift between 5PM and close-time scoring.
-    let totalWeight = windowTaskWeights[wKey] || 0
-    if (shift === 'day' && wKey === '17') totalWeight = Math.max(0, totalWeight - deferredWeightTotal17)
-    if (shift === 'night' && wKey === '21') totalWeight = totalWeight + deferredWeightTotal17
-    if (!totalWeight) return
-
-    const windowMap = dateMap[wKey] || {}
-    const creditsAll: Record<string, number> = {}
-    const creditsParticipation: Record<string, number> = {}
-
-    // Track which tasks each person completed (for yum-yum-only night shift logic)
-    const tasksByPerson: Record<string, Set<string>> = {}
-
-    const applyCredits = (taskId: string, completion: TaskCompletion | undefined, taskWeight: number) => {
-      if (!completion) return
-      // Leaderboard: late completions do NOT count for points
-      if (completion.completedLate && !completion.lateForgiven) return
-      const assignees = completion.assignees || []
-      if (!assignees.length) return
-      if (taskWeight <= 0) return
-
-      // Combined Ice (Left + Right): credit each side as half the total weight.
-      // This preserves legacy behavior where Left and Right were separate tasks (1.2 + 1.2).
-      // Note: Ice tasks do NOT count toward shift participation (same as yum-yum, peanuts-noodles)
-      // to prevent accidental leaderboard impact from "I didn't need to fill" misclicks.
-      if (
-        (taskId === 'ice-5pm' || taskId === 'ice-close') &&
-        completion.iceSides &&
-        typeof completion.iceSides.left === 'string' &&
-        typeof completion.iceSides.right === 'string'
-      ) {
-        const a = String(completion.iceSides.left || '').trim()
-        const b = String(completion.iceSides.right || '').trim()
-        if (!a || !b) return
-        const perSide = taskWeight / 2
-        ;[a, b].forEach((name) => {
-          if (!name) return
-          creditsAll[name] = (creditsAll[name] || 0) + perSide
-          // Ice tasks excluded from shift participation (prevents accidental leaderboard impact)
-        })
-        return
-      }
-
-      // Order Report: split proportional to entered order counts (2-person task).
-      if (
-        (taskId === 'order-report-5pm' || taskId === 'order-report-close') &&
-        assignees.length === 2 &&
-        completion.orderReportCounts
-      ) {
-        const a = (assignees[0] || '').trim()
-        const b = (assignees[1] || '').trim()
-        let ca = typeof completion.orderReportCounts[a] === 'number' ? Math.max(0, completion.orderReportCounts[a] as number) : 0
-        let cb = typeof completion.orderReportCounts[b] === 'number' ? Math.max(0, completion.orderReportCounts[b] as number) : 0
-
-        // If someone appears on both 5PM and Close Order Reports, we want Close to represent
-        // "orders since 5PM" so the night-only employee isn't penalized by an all-day total.
-        // We implement this in scoring so staff can simply enter the full-day totals at Close.
-        if (taskId === 'order-report-close') {
-          const fivePm = dateMap?.['17']?.['order-report-5pm']
-          const fiveCounts = fivePm?.orderReportCounts
-          if (fiveCounts && typeof fiveCounts === 'object') {
-            const fiveA = typeof (fiveCounts as Record<string, unknown>)[a] === 'number' ? (fiveCounts as Record<string, number>)[a] : null
-            const fiveB = typeof (fiveCounts as Record<string, unknown>)[b] === 'number' ? (fiveCounts as Record<string, number>)[b] : null
-            if (typeof fiveA === 'number' && Number.isFinite(fiveA)) ca = Math.max(0, ca - Math.max(0, fiveA))
-            if (typeof fiveB === 'number' && Number.isFinite(fiveB)) cb = Math.max(0, cb - Math.max(0, fiveB))
-          }
-        }
-        const sum = ca + cb
-        const shareA = sum > 0 ? ca / sum : 0.5
-        const shareB = sum > 0 ? cb / sum : 0.5
-
-        ;[
-          [a, shareA],
-          [b, shareB],
-        ].forEach(([name, share]) => {
-          if (!name) return
-          const sh = typeof share === 'number' ? share : 0
-          creditsAll[name] = (creditsAll[name] || 0) + taskWeight * sh
-          if (!completion.autoAssigned) {
-            creditsParticipation[name] = (creditsParticipation[name] || 0) + taskWeight * sh
-            if (!tasksByPerson[name]) tasksByPerson[name] = new Set()
-            tasksByPerson[name].add(taskId)
-          }
-        })
-        return
-      }
-
-      // Default: equal split across assignees
-      const share = 1 / assignees.length
-      // Tasks with "I didn't need to fill" buttons should never count toward shift participation
-      // (prevents accidental leaderboard impact when users click employee name instead of auto-assign button)
-      const noShiftParticipationTasks = ['yum-yum-close', 'ice-5pm', 'ice-close', 'peanuts-noodles-close']
-      assignees.forEach((name) => {
-        creditsAll[name] = (creditsAll[name] || 0) + taskWeight * share
-        if (!completion.autoAssigned && !noShiftParticipationTasks.includes(taskId)) {
-          creditsParticipation[name] = (creditsParticipation[name] || 0) + taskWeight * share
-          if (!tasksByPerson[name]) tasksByPerson[name] = new Set()
-          tasksByPerson[name].add(taskId)
-        }
-      })
-    }
-
-    Object.keys(windowMap).forEach((taskId) => {
-      const completion = windowMap[taskId]
-
-      // Day scoring should not count tasks deferred to close (and denominator already adjusted).
-      if (shift === 'day' && wKey === '17' && completion?.deferredToClose) return
-
-      // Only score tasks that are part of the effective task set for this date/window.
-      // This prevents newly added tasks from affecting historical dates/windows.
-      const taskWeight = taskWeightByIdByWindow[wKey]?.[taskId] ?? 0
-      applyCredits(taskId, completion, taskWeight)
-    })
-
-    // Night scoring: also include 5PM tasks deferred to close, using their 5PM weights.
-    if (shift === 'night' && wKey === '21' && deferredFrom17.length) {
-      deferredFrom17.forEach(({ taskId, completion, weight }) => {
-        applyCredits(taskId, completion, weight)
-      })
-    }
-
-    // Save raw credits and window points (0–100) for anyone who earned non-zero credit.
-    Object.keys(creditsAll).forEach((name) => {
-      const credit = creditsAll[name] || 0
-      if (credit <= 0) return
-      creditsByWindow[wKey][name] = credit
-      const points = (credit / totalWeight) * 100
-      pointsByWindow[wKey][name] = Math.max(0, Math.min(100, points))
-    })
-
-    // Save participation credits (non-autoAssigned only).
-    Object.keys(creditsParticipation).forEach((name) => {
-      const credit = creditsParticipation[name] || 0
-      if (credit <= 0) return
-      participationCreditsByWindow[wKey][name] = credit
-    })
-
-    // Save which tasks each person completed in this window
-    tasksByPersonByWindow[wKey] = tasksByPerson
-  })
-
-  // Fairness notes for your staffing model:
-  // - Day shift includes 11AM + 5PM windows, but 11AM tasks are minor and done by the same person
-  //   who also works 5PM. We treat 11AM as a small bonus so it can't dominate day-shift ranking.
-  // - Night shift is 9PM only.
-  const AM_BONUS_WEIGHT = 0.16 // 11AM can add up to +16 points to day-shift score
-
-  // Anyone with points should appear in the scoring rows (including autoAssigned bonus points).
-  const names: Record<string, true> = {}
-  SHIFT_WINDOWS[shift].forEach((w) => {
-    Object.keys(creditsByWindow[w]).forEach((n) => {
-      names[n] = true
-    })
-  })
-
-  // A person "played" the shift only if they earned any non-autoAssigned credit
-  // in at least one window in that shift.
-  // EXCEPTION: For night shift, if someone ONLY completed yum-yum-close, they shouldn't be
-  // counted as having played the shift (they just helped with yum yum sauce via split selection).
-  const played: Record<string, true> = {}
-  SHIFT_WINDOWS[shift].forEach((w) => {
-    Object.keys(participationCreditsByWindow[w]).forEach((n) => {
-      // For night shift, check if this person only did yum-yum-close
-      if (shift === 'night' && w === '21') {
-        const tasksCompleted = tasksByPersonByWindow['21'][n]
-        // If they only completed yum-yum-close, don't count as playing the shift
-        if (tasksCompleted && tasksCompleted.size === 1 && tasksCompleted.has('yum-yum-close')) {
-          return // Skip - don't mark as played
-        }
-      }
-      played[n] = true
-    })
-  })
-
-  const rows: LeaderRow[] = []
-  Object.keys(names).forEach((name) => {
-    const playedThisShift = !!played[name]
-    if (shift === 'night') {
-      const points21 = pointsByWindow['21'][name] ?? 0
-      rows.push({ name, score: Math.max(0, Math.min(100, Math.round(points21))), shiftsPlayed: playedThisShift ? 1 : 0 })
-      return
-    }
-
-    // day shift
-    const points17 = pointsByWindow['17'][name] ?? 0
-    const points11 = pointsByWindow['11'][name] ?? 0
-    const totalFloat = points17 + AM_BONUS_WEIGHT * points11
-    const total = Math.max(0, Math.min(100, Math.round(totalFloat)))
-    rows.push({ name, score: total, shiftsPlayed: playedThisShift ? 1 : 0 })
-  })
-
-  // Deterministic ordering for ties (important for the Shift HUD top-2 selection).
-  return rows.sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
-}
-
 // Shared canonical shift scoring (source of truth).
-// We keep the legacy implementation above for reference, but all callsites should use this alias.
-const computeShiftLeadersForState = computeShiftLeadersForStateShared as unknown as typeof computeShiftLeadersForStateLegacy
+const computeShiftLeadersForState = computeShiftLeadersForStateShared
 
 // Pure helper for Shift HUD: determine who actually "played" this shift.
 // We intentionally exclude `autoAssigned` completions (used by yum-yum credit)
@@ -567,17 +709,12 @@ const computeShiftHudParticipantsForState = (
   const participants = new Set<string>()
   if (!dateMap) return participants
 
-  // Track which tasks each person completed (for yum-yum-only validation)
-  const tasksByPerson: Record<string, Set<string>> = {}
-  // Track participation credits per person (excluding yum-yum-close and other no-participation tasks)
-  // This helps validate that manually assigned yum-yum-close assignees actually worked the shift
-  const participationCreditsByPerson: Record<string, number> = {}
-
-  // Tasks with "I didn't need to fill" buttons should never count toward shift participation
-  // (prevents accidental leaderboard impact when users click employee name instead of auto-assign button)
+  // Tasks with "I didn't need to fill" buttons don't count toward shift participation in scoring
+  // (prevents accidental leaderboard impact when users click employee name instead of auto-assign button),
+  // but a genuine manual fill should still surface the player in the HUD immediately (second pass below).
   const noShiftParticipationTasks = ['yum-yum-close', 'ice-5pm', 'ice-close', 'peanuts-noodles-close']
 
-  // First pass: collect participation credits (excluding yum-yum-close and other no-participation tasks)
+  // First pass: regular tasks (excluding the optional no-participation tasks above)
   SHIFT_WINDOWS[shift].forEach((wKey) => {
     const windowMap = dateMap[wKey] || {}
     Object.keys(windowMap).forEach((taskId) => {
@@ -588,97 +725,53 @@ const computeShiftHudParticipantsForState = (
       // Auto-assigned completions should not make someone appear as a shift participant in the HUD.
       if (completion.autoAssigned) return
       if (noShiftParticipationTasks.includes(taskId)) return
-      
+
       const assignees = completion.assignees || []
-      const share = assignees.length > 0 ? 1 / assignees.length : 0
       assignees.forEach((n) => {
-        // Track participation credits (excluding yum-yum-close)
-        participationCreditsByPerson[n] = (participationCreditsByPerson[n] || 0) + share
-        // Track which tasks this person completed
-        if (!tasksByPerson[n]) tasksByPerson[n] = new Set()
-        tasksByPerson[n].add(taskId)
-        // Add to participants (these are valid since they have non-yum-yum participation)
         participants.add(n)
       })
     })
   })
 
-  // Second pass: handle manually assigned yum-yum-close
-  // Only include assignees who have other participation credits for this shift
+  // Second pass: optional tasks (yum-yum, ice, peanuts). A real, manual fill earns points,
+  // so the player should appear in the HUD even if it's the only task they've completed.
+  // Auto-assigned and "didn't need to fill" completions still surface nobody.
   SHIFT_WINDOWS[shift].forEach((wKey) => {
     const windowMap = dateMap[wKey] || {}
-    const completion = windowMap['yum-yum-close']
-    if (!completion) return
-    // Late completions only count when forgiven (same rule as scoring).
-    if (completion.completedLate && !completion.lateForgiven) return
-    // Skip auto-assigned completions (they're already excluded)
-    if (completion.autoAssigned) return
-    
-    const assignees = completion.assignees || []
-    assignees.forEach((n) => {
-      // Track which tasks this person completed
-      if (!tasksByPerson[n]) tasksByPerson[n] = new Set()
-      tasksByPerson[n].add('yum-yum-close')
-      
-      // Only add to participants if they have other participation credits for this shift
-      // This prevents employees who only did yum-yum-close from appearing in the HUD
-      if (participationCreditsByPerson[n] > 0) {
+    noShiftParticipationTasks.forEach((taskId) => {
+      const completion = windowMap[taskId]
+      if (!completion || completion.status !== 'done') return
+      // Late completions only count when forgiven (same rule as scoring).
+      if (completion.completedLate && !completion.lateForgiven) return
+      if (completion.autoAssigned) return
+      if (completion.didNotNeedToComplete) return
+
+      creditedPeopleForShiftCompletion(taskId, completion).forEach((n) => {
         participants.add(n)
-      }
+      })
     })
   })
 
   return participants
 }
 
-// Compute full day leaders (combines day and night shifts, averaging scores)
-const computeFullDayLeadersForStateLegacy = (
-  state: TaskState,
-  dateKey: string,
-  SHIFT_WINDOWS: Record<'day' | 'night', WindowKey[]>,
-  windowTaskWeights: Record<WindowKey, number>,
-  taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>
-): LeaderRow[] => {
-  // Get scores for both shifts
-  const dayLeaders = computeShiftLeadersForState(state, dateKey, 'day', SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
-  const nightLeaders = computeShiftLeadersForState(state, dateKey, 'night', SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
-  
-  // Build map by person name
-  const byName: Record<string, { dayScore?: number; nightScore?: number; shifts: number }> = {}
-  
-  dayLeaders.forEach(row => {
-    // Only count "real" participation as working a shift.
-    if (!row.shiftsPlayed) return
-    if (!byName[row.name]) byName[row.name] = { shifts: 0 }
-    byName[row.name].dayScore = row.score
-    byName[row.name].shifts += row.shiftsPlayed
-  })
-  
-  nightLeaders.forEach(row => {
-    // Only count "real" participation as working a shift.
-    if (!row.shiftsPlayed) return
-    if (!byName[row.name]) byName[row.name] = { shifts: 0 }
-    byName[row.name].nightScore = row.score
-    byName[row.name].shifts += row.shiftsPlayed
-  })
-  
-  // Calculate final scores (average if worked both shifts, otherwise use single shift)
-  const rows: LeaderRow[] = Object.keys(byName).map(name => {
-    const data = byName[name]
-    const scores = [data.dayScore, data.nightScore].filter(s => s !== undefined) as number[]
-    const avgScore = scores.reduce((sum, s) => sum + s, 0) / scores.length
-    return {
-      name,
-      score: Math.round(avgScore),
-      shiftsPlayed: data.shifts
-    }
-  })
-  
-  return rows.sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
+/** Names credited for a done completion in a shift window — one task credit each. */
+const creditedPeopleForShiftCompletion = (taskId: string, completion: TaskCompletion): string[] => {
+  if (taskId === 'ice-5pm' || taskId === 'ice-close') {
+    const left = String(completion.iceSides?.left || '').trim()
+    const right = String(completion.iceSides?.right || '').trim()
+    if (left && right) return [...new Set([left, right])]
+  }
+  if (taskId === 'towels' || taskId === 'towels-5pm' || taskId === 'towels-close') {
+    const diningBar = String(completion.towelSides?.diningBar || '').trim()
+    const bowlStation = String(completion.towelSides?.bowlStation || '').trim()
+    if (diningBar && bowlStation) return [...new Set([diningBar, bowlStation])]
+  }
+  return (completion.assignees || []).map((n) => n.trim()).filter(Boolean)
 }
 
 // Shared canonical full-day scoring (source of truth).
-const computeFullDayLeadersForState = computeFullDayLeadersForStateShared as unknown as typeof computeFullDayLeadersForStateLegacy
+const computeFullDayLeadersForState = computeFullDayLeadersForStateShared
 
 /**
  * Compute a smooth gradient for the progress bar based on employee colors and their point shares.
@@ -740,6 +833,15 @@ const WINDOWS: WindowConfig[] = [
   { key: '17', label: '5PM', start: '17:00', lateAfter: '17:30', unlocksAt: '16:00' },
   { key: '21', label: '9PM', start: '21:00', lateAfter: '21:00', unlocksAt: '18:00' },
 ]
+
+const NIGHT_SHIFT_SOLO_CHECK_TASK: Task = {
+  id: 'night-shift-solo-check',
+  name: 'Night Shift Solo?',
+  icon: '🌙',
+  requirements: ['Check with manager if the night shift will also be solo.'],
+  windows: ['17'],
+  weight: 0,
+}
 
 const USERS = [
   'Ashley',
@@ -942,6 +1044,36 @@ const findLastTaskCompleter = (
   return { assignees: completion.assignees, completedAt: completion.completedAt }
 }
 
+/** Window-aware pair for Last time: close uses night HUD only; 5PM uses break selection first. */
+const resolveLastTimePair = (
+  windowKey: WindowKey,
+  breakSelection: BreakSelection | null,
+  shiftHudLeaders: { name: string }[]
+): [string, string] | null => {
+  if (windowKey === '21') {
+    if (shiftHudLeaders.length >= 2) {
+      const e0 = (shiftHudLeaders[0]?.name || '').trim()
+      const e1 = (shiftHudLeaders[1]?.name || '').trim()
+      if (e0 && e1 && e0 !== e1) return [e0, e1]
+    }
+    return null
+  }
+  if (windowKey === '17') {
+    const slots = breakSelection?.slots || []
+    if (slots.length >= 2) {
+      const e0 = (slots[0]?.employee || '').trim()
+      const e1 = (slots[1]?.employee || '').trim()
+      if (e0 && e1 && e0 !== e1) return [e0, e1]
+    }
+    if (shiftHudLeaders.length >= 2) {
+      const e0 = (shiftHudLeaders[0]?.name || '').trim()
+      const e1 = (shiftHudLeaders[1]?.name || '').trim()
+      if (e0 && e1 && e0 !== e1) return [e0, e1]
+    }
+  }
+  return null
+}
+
 // Task state is now loaded from and saved to Firestore (see useEffect hooks below)
 
 const getWindowForDate = (now: Date): WindowKey => {
@@ -1007,65 +1139,6 @@ const sendTimeOffEmailNotification = async (params: {
   }
 }
 
-const sendStockReportEmailNotification = async (params: {
-  kind: 'low' | 'out'
-  item: string
-  by?: string
-  reportedAtIso?: string
-}) => {
-  try {
-    const kindLabel = params.kind === 'out' ? 'OUT OF STOCK' : 'LOW STOCK'
-    const by = (params.by || '').trim() || 'Staff'
-    const item = String(params.item || '').trim()
-    const reportedAtIso = params.reportedAtIso || new Date().toISOString()
-
-    // Reuse the existing EmailJS template by providing its expected params,
-    // while also including extra fields (safe if the template doesn't use them).
-    const templateParams = {
-      employee: by,
-      days: `${kindLabel}: ${item}`,
-      kind: kindLabel,
-      item,
-      reported_at: reportedAtIso,
-    }
-
-    const formData = new FormData()
-    formData.append('service_id', EMAILJS_SERVICE_ID)
-    formData.append('template_id', EMAILJS_TEMPLATE_ID)
-    formData.append('user_id', EMAILJS_PUBLIC_KEY)
-    formData.append('template_params', JSON.stringify(templateParams))
-
-    const response = await fetch('https://api.emailjs.com/api/v1.0/email/send-form', {
-      method: 'POST',
-      body: formData,
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error('EmailJS stock report send failed:', response.status, errorText)
-    } else {
-      console.log('EmailJS stock report email sent successfully!')
-    }
-  } catch (e) {
-    console.error('EmailJS stock report send error:', e)
-  }
-}
-
-const DAY_OF_WEEK_KEYS: DayOfWeek[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
-const DAY_OF_WEEK_LABELS: Record<DayOfWeek, string> = {
-  sun: 'Sun',
-  mon: 'Mon',
-  tue: 'Tue',
-  wed: 'Wed',
-  thu: 'Thu',
-  fri: 'Fri',
-  sat: 'Sat',
-}
-
-const getDayOfWeekKey = (date: Date): DayOfWeek => {
-  return DAY_OF_WEEK_KEYS[date.getDay()]
-}
-
 // Restaurant shift times based on day of week
 const getShiftTimes = (dayKey: DayOfWeek): { lunch: { start: string; end: string }; dinner: { start: string; end: string } } => {
   const isFriSat = dayKey === 'fri' || dayKey === 'sat'
@@ -1080,400 +1153,13 @@ const parseDateKey = (dateKey: string): Date => {
   return new Date(year, month - 1, day)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Daily Task Scheduling (Sun–Sat, exact weekly quotas 1–3/week)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const DAILY_TASK_WEEK_GENERATOR_VERSION = 'v1'
-
-const getWeekStartDateKeySunday = (dateKey: string): string => {
-  const d = startOfDay(parseDateKey(dateKey))
-  const dow = d.getDay() // 0 = Sun
-  const weekStart = addDays(d, -dow)
-  return formatDateKey(weekStart)
-}
-
-const addDaysToDateKey = (dateKey: string, delta: number): string => {
-  return formatDateKey(addDays(parseDateKey(dateKey), delta))
-}
-
-const isDailyTaskEnabled = (t: DailyTaskDef): boolean => {
-  return !(typeof t.disabledAtMs === 'number' && Number.isFinite(t.disabledAtMs))
-}
-
-// Deterministic RNG helpers (stable schedules per weekStartDateKey)
-const hashStringToUint32 = (s: string): number => {
-  // FNV-1a 32-bit
-  let h = 2166136261
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return h >>> 0
-}
-
-const makeSeededRng = (seed: string): (() => number) => {
-  // xorshift32
-  let x = hashStringToUint32(seed) || 0x12345678
-  return () => {
-    x ^= x << 13
-    x ^= x >>> 17
-    x ^= x << 5
-    // convert to [0,1)
-    return ((x >>> 0) % 1_000_000) / 1_000_000
-  }
-}
-
-type DailyWeekGenResult = {
-  week: DailyTaskWeek | null
-  warnings: string[]
-  error?: string
-}
-
-const buildDailyTaskRecencyMap = (runs: DailyTaskRun[]): Record<string, number> => {
-  const lastByTask: Record<string, number> = {}
-  runs.forEach((r) => {
-    const taskId = String(r?.taskId || '').trim()
-    if (!taskId) return
-    const ts =
-      typeof r.completedAtMs === 'number'
-        ? r.completedAtMs
-        : typeof r.selectedAtMs === 'number'
-        ? r.selectedAtMs
-        : 0
-    if (!Number.isFinite(ts) || ts <= 0) return
-    if (!lastByTask[taskId] || ts > lastByTask[taskId]) lastByTask[taskId] = ts
-  })
-  return lastByTask
-}
-
-/**
- * Find optimal day indices for a weekly task to maximize spacing between occurrences.
- * @param quota - The number of times per week this task should occur
- * @param usedDayIndices - Day indices (0-6) where this task is already scheduled (past/overrides)
- * @param availableDayIndices - Day indices (0-6) that are free to fill
- * @param rng - Seeded RNG function for deterministic tie-breaking
- * @returns Array of day indices where the task should be scheduled
- */
-const findOptimalDaysForWeeklyTaskWithRng = (
-  quota: number,
-  usedDayIndices: number[],
-  availableDayIndices: number[],
-  rng: () => number
-): number[] => {
-  const toPlace = quota - usedDayIndices.length
-  if (toPlace <= 0) return []
-
-  const allUsed = [...usedDayIndices]
-  const result: number[] = []
-
-  for (let i = 0; i < toPlace; i++) {
-    // Find the available day with maximum minimum distance from all used days
-    let bestDays: number[] = []
-    let bestScore = -1
-
-    for (const day of availableDayIndices) {
-      if (result.includes(day)) continue // Already picked this round
-
-      // Calculate minimum distance to any already-placed occurrence
-      let minDist: number
-      if (allUsed.length === 0) {
-        // No existing placements - prefer middle of available days for better future spacing
-        minDist = 7 // Max possible score when nothing is placed yet
-      } else {
-        minDist = Math.min(...allUsed.map((used) => Math.abs(day - used)))
-      }
-
-      if (minDist > bestScore) {
-        bestScore = minDist
-        bestDays = [day]
-      } else if (minDist === bestScore) {
-        bestDays.push(day)
-      }
-    }
-
-    if (bestDays.length > 0) {
-      // Use RNG for deterministic tie-breaking
-      const randomIdx = Math.floor(rng() * bestDays.length)
-      const bestDay = bestDays[randomIdx]
-      result.push(bestDay)
-      allUsed.push(bestDay)
-    }
-  }
-
-  return result
-}
-
-const generateDailyTaskWeek = (args: {
-  weekStartDateKey: string
-  tasks: DailyTaskDef[]
-  recentRuns: DailyTaskRun[]
-  existingWeek?: DailyTaskWeek | null
-  todayDateKey?: string // Optional: if provided, preserves past days (before today)
-}): DailyWeekGenResult => {
-  const { weekStartDateKey, tasks, recentRuns, existingWeek, todayDateKey } = args
-  const warnings: string[] = []
-
-  const enabled = (tasks || []).filter(isDailyTaskEnabled)
-  if (enabled.length === 0) {
-    return {
-      week: {
-        weekStartDateKey,
-        days: {},
-        generatedAtMs: Date.now(),
-        generatorVersion: DAILY_TASK_WEEK_GENERATOR_VERSION,
-      },
-      warnings: ['No daily tasks are enabled.'],
-    }
-  }
-
-  const rng = makeSeededRng(`${DAILY_TASK_WEEK_GENERATOR_VERSION}:${weekStartDateKey}`)
-  const lastByTask = buildDailyTaskRecencyMap(recentRuns)
-  const recencyScore = (taskId: string): number => {
-    const last = lastByTask[taskId]
-    // Bigger = higher priority. If never done, treat as very old.
-    return typeof last === 'number' && Number.isFinite(last) ? (Date.now() - last) : 1e15
-  }
-
-  const dateKeys = Array.from({ length: 7 }).map((_, i) => addDaysToDateKey(weekStartDateKey, i))
-  const days: DailyTaskWeek['days'] = {}
-
-  // Seed with overrides AND preserve past days (before today) if todayDateKey is provided
-  if (existingWeek?.days && typeof existingWeek.days === 'object') {
-    Object.keys(existingWeek.days).forEach((dk) => {
-      const entry = existingWeek.days[dk]
-      if (!entry || typeof entry.taskId !== 'string') return
-      
-      const isPastDay = todayDateKey && dk < todayDateKey
-      
-      if (entry.source === 'override') {
-        // Always keep overrides
-        days[dk] = { taskId: entry.taskId, source: 'override' }
-      } else if (isPastDay && entry.taskId) {
-        // Preserve past auto-assigned days (before today)
-        days[dk] = { taskId: entry.taskId, source: 'auto' }
-      }
-    })
-  }
-
-  // Count tasks that are already locked in (overrides + preserved past days)
-  const lockedTaskCounts: Record<string, number> = {}
-  Object.keys(days).forEach((dk) => {
-    const tid = days[dk]?.taskId
-    if (!tid || tid === '__none__') return
-    lockedTaskCounts[tid] = (lockedTaskCounts[tid] || 0) + 1
-  })
-
-  // Also count completions from recentRuns for the current week toward quotas
-  const weekEndDateKey = addDaysToDateKey(weekStartDateKey, 6)
-  recentRuns.forEach((run) => {
-    if (!run.completedAtMs) return
-    if (run.dateKey >= weekStartDateKey && run.dateKey <= weekEndDateKey) {
-      const tid = run.taskId
-      if (tid && tid !== '__none__') {
-        // Only count if not already counted via locked days (avoid double counting)
-        const lockedOnThisDay = days[run.dateKey]?.taskId === tid
-        if (!lockedOnThisDay) {
-          lockedTaskCounts[tid] = (lockedTaskCounts[tid] || 0) + 1
-        }
-      }
-    }
-  })
-
-  const weeklyTasks = enabled
-    .filter((t) => t.frequency?.type === 'weekly')
-    .map((t) => ({ taskId: t.id, quota: (t.frequency as any).quotaPerWeek as 1 | 2 | 3 }))
-
-  const monthlyTasks = enabled.filter((t) => t.frequency?.type === 'monthly')
-
-  const quotaSum = weeklyTasks.reduce((sum, w) => sum + (w.quota || 0), 0)
-  if (quotaSum > 7) {
-    return {
-      week: null,
-      warnings,
-      error: `Weekly quota sum is ${quotaSum}, but a week only has 7 days. Reduce quotas before generating.`,
-    }
-  }
-
-  // Warn if locked tasks (overrides + past days + completions) already exceed quotas
-  weeklyTasks.forEach((w) => {
-    const count = lockedTaskCounts[w.taskId] || 0
-    if (count > w.quota) {
-      warnings.push(
-        `"${w.taskId}" already scheduled/completed ${count}x, exceeding its weekly quota of ${w.quota}.`
-      )
-    }
-  })
-
-  // Check monthly task completions for the months this week spans
-  const weekStartDate = parseDateKey(weekStartDateKey)
-  const weekEndDate = addDays(weekStartDate, 6)
-  const coveredMonths = new Set<string>()
-  for (let d = new Date(weekStartDate); d <= weekEndDate; d.setDate(d.getDate() + 1)) {
-    coveredMonths.add(`${d.getFullYear()}-${d.getMonth()}`)
-  }
-
-  // Track monthly completions
-  const monthlyCompletedInMonth: Record<string, Set<string>> = {} // monthKey -> Set of taskIds
-  recentRuns.forEach((run) => {
-    if (!run.completedAtMs) return
-    const d = parseDateKey(run.dateKey)
-    const monthKey = `${d.getFullYear()}-${d.getMonth()}`
-    if (!monthlyCompletedInMonth[monthKey]) monthlyCompletedInMonth[monthKey] = new Set()
-    monthlyCompletedInMonth[monthKey].add(run.taskId)
-  })
-
-  // Track which monthly tasks need to be scheduled (not yet completed this month)
-  const monthlyToSchedule: Map<string, string[]> = new Map() // monthKey -> taskIds that need scheduling
-  coveredMonths.forEach((monthKey) => {
-    const completedSet = monthlyCompletedInMonth[monthKey] || new Set()
-    const needsScheduling = monthlyTasks
-      .filter((t) => !completedSet.has(t.id))
-      .map((t) => t.id)
-    monthlyToSchedule.set(monthKey, needsScheduling)
-  })
-
-  const slotIsFree = (dk: string) => !days[dk]
-  const getAssignedTaskId = (dk: string) => (days[dk]?.taskId ? days[dk]!.taskId : '')
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // OPTIMAL SPACING: Place weekly quota tasks with maximum spacing
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // Build a map of which day indices each weekly task is already scheduled on (from locked days)
-  const weeklyTaskDayIndices: Record<string, number[]> = {}
-  dateKeys.forEach((dk, dayIdx) => {
-    const entry = days[dk]
-    if (entry?.taskId && entry.taskId !== '__none__') {
-      const wt = weeklyTasks.find((w) => w.taskId === entry.taskId)
-      if (wt) {
-        if (!weeklyTaskDayIndices[wt.taskId]) weeklyTaskDayIndices[wt.taskId] = []
-        weeklyTaskDayIndices[wt.taskId].push(dayIdx)
-      }
-    }
-  })
-
-  // Get available day indices (not locked, and not in the past if todayDateKey provided)
-  const availableDayIndices: number[] = []
-  dateKeys.forEach((dk, dayIdx) => {
-    if (slotIsFree(dk)) {
-      // Skip past days when todayDateKey is provided
-      if (todayDateKey && dk < todayDateKey) return
-      availableDayIndices.push(dayIdx)
-    }
-  })
-
-
-  // Process tasks with higher quotas first for better feasibility
-  const sortedWeeklyTasks = weeklyTasks
-    .slice()
-    .sort((a, b) => (b.quota - a.quota) || a.taskId.localeCompare(b.taskId))
-
-  const usedDayIndices = new Set<number>()
-
-  for (const { taskId, quota } of sortedWeeklyTasks) {
-    const alreadyScheduledIndices = weeklyTaskDayIndices[taskId] || []
-    const alreadyUsedCount = lockedTaskCounts[taskId] || 0
-    const stillNeeded = quota - alreadyUsedCount
-    
-    if (stillNeeded <= 0) continue // Quota already met via completions/past days
-    
-    const stillAvailable = availableDayIndices.filter((idx) => !usedDayIndices.has(idx))
-
-    if (stillAvailable.length === 0 && stillNeeded > 0) {
-      warnings.push(`Not enough free days to place quota task "${taskId}" (needs ${stillNeeded} more).`)
-      continue
-    }
-
-    // Find optimal days to place this task with maximum spacing
-    const optimalDays = findOptimalDaysForWeeklyTaskWithRng(
-      stillNeeded + alreadyScheduledIndices.length, // Total desired placements
-      alreadyScheduledIndices,
-      stillAvailable,
-      rng
-    ).slice(0, stillNeeded) // Only take what we still need
-
-    // Assign task to optimal days
-    for (const dayIdx of optimalDays) {
-      const dk = dateKeys[dayIdx]
-      days[dk] = { taskId, source: 'auto' }
-      usedDayIndices.add(dayIdx)
-    }
-  }
-
-  // Fill remaining with Normal tasks (balanced by recency; avoid repeating yesterday when possible)
-  const normalTasks = enabled.filter((t) => t.frequency?.type === 'normal')
-  if (!normalTasks.length && !monthlyTasks.length) {
-    warnings.push('No Normal daily tasks exist; remaining days may repeat quota tasks or remain empty.')
-  }
-
-  // Sort normal tasks by recency (oldest first) but with stable jitter
-  const normalSorted = normalTasks
-    .slice()
-    .sort((a, b) => {
-      const sa = recencyScore(a.id)
-      const sb = recencyScore(b.id)
-      if (sb !== sa) return sb - sa
-      return a.id.localeCompare(b.id)
-    })
-
-  // Track which monthly tasks have been scheduled in this generation
-  const monthlyScheduledThisGen: Record<string, Set<string>> = {} // monthKey -> Set of taskIds
-
-  dateKeys.forEach((dk, idx) => {
-    if (!slotIsFree(dk)) return
-    // Skip past days when todayDateKey is provided
-    if (todayDateKey && dk < todayDateKey) return
-    const prevTaskId = idx > 0 ? getAssignedTaskId(dateKeys[idx - 1]!) : ''
-
-    // Determine which month this day is in
-    const dayDate = parseDateKey(dk)
-    const dayMonthKey = `${dayDate.getFullYear()}-${dayDate.getMonth()}`
-
-    // Check if there's a monthly task that needs scheduling for this month
-    let picked: string | null = null
-    const needsMonthlyScheduling = monthlyToSchedule.get(dayMonthKey) || []
-    const alreadyScheduledThisMonth = monthlyScheduledThisGen[dayMonthKey] || new Set()
-
-    for (const monthlyTaskId of needsMonthlyScheduling) {
-      if (!alreadyScheduledThisMonth.has(monthlyTaskId)) {
-        // Schedule this monthly task
-        picked = monthlyTaskId
-        if (!monthlyScheduledThisGen[dayMonthKey]) monthlyScheduledThisGen[dayMonthKey] = new Set()
-        monthlyScheduledThisGen[dayMonthKey].add(monthlyTaskId)
-        break
-      }
-    }
-
-    if (!picked) {
-      const pickFrom = normalSorted.length ? normalSorted : enabled.filter((t) => t.frequency?.type !== 'monthly')
-      // Prefer not repeating yesterday
-      const candidates = pickFrom.filter((t) => t.id !== prevTaskId)
-      const pool = candidates.length ? candidates : pickFrom
-
-      // Choose best by recency with deterministic jitter
-      const best = pool.reduce<{ id: string; score: number } | null>((acc, t) => {
-        const base = recencyScore(t.id)
-        const jitter = rng() * 0.01
-        const score = base + jitter
-        if (!acc || score > acc.score) return { id: t.id, score }
-        return acc
-      }, null)
-      if (best) picked = best.id
-    }
-
-    if (picked) days[dk] = { taskId: picked, source: 'auto' }
-  })
-
-  return {
-    week: {
-      weekStartDateKey,
-      days,
-      generatedAtMs: Date.now(),
-      generatorVersion: DAILY_TASK_WEEK_GENERATOR_VERSION,
-    },
-    warnings,
-  }
+async function loadScheduleWeeksOverlappingDateRange(
+  fromDateKey: string,
+  toDateKey: string
+): Promise<DailyTaskWeek[]> {
+  const keys = enumerateWeekStartDateKeysInclusive(fromDateKey, toDateKey)
+  const loaded = await Promise.all(keys.map((ws) => getDailyTaskWeek(ws)))
+  return loaded.filter((w): w is DailyTaskWeek => !!w && !!(w as DailyTaskWeek).days)
 }
 
 const ensureDailyTaskWeekForDateKey = async (
@@ -1486,22 +1172,50 @@ const ensureDailyTaskWeekForDateKey = async (
     return { week: existing, warnings: [] }
   }
 
-  // Pull recent history (last ~120 days) for recency balancing
-  const from = addDaysToDateKey(weekStartDateKey, -120)
-  const to = addDaysToDateKey(weekStartDateKey, 0)
+  const today = formatDateKey(startOfDay(new Date()))
+  const from = addDaysToDateKey(today, -120)
   let recentRuns: DailyTaskRun[] = []
   try {
-    recentRuns = await listDailyTaskRunsInRange(from, to)
+    recentRuns = await listDailyTaskRunsInRange(from, today)
   } catch (e) {
     console.warn('Failed to load recent daily task runs for scheduling:', e)
     recentRuns = []
+  }
+
+  let scheduleWeeks: DailyTaskWeek[] = []
+  try {
+    scheduleWeeks = await loadScheduleWeeksOverlappingDateRange(from, today)
+  } catch (e) {
+    console.warn('Failed to load daily task weeks for recency merge:', e)
+    scheduleWeeks = []
+  }
+
+  let weeklyPlacementOverrides: Record<string, string> | undefined
+  let generatorVersion: string | undefined
+  try {
+    const { byWeek, usedAi } = await fetchValidatedWeeklyPlacements({
+      tasks,
+      recentRunsForHistory: recentRuns,
+      weeks: [{ weekStartDateKey, existingWeek: existing, todayDateKey: undefined }],
+      systemPrompt: getCachedDailyTaskScheduleSystemPrompt(),
+    })
+    const picked = byWeek[weekStartDateKey]
+    if (usedAi && picked && Object.keys(picked).length > 0) {
+      weeklyPlacementOverrides = picked
+      generatorVersion = DAILY_TASK_WEEK_GENERATOR_VERSION_AI
+    }
+  } catch (e) {
+    console.warn('AI daily schedule skipped:', e)
   }
 
   const generated = generateDailyTaskWeek({
     weekStartDateKey,
     tasks,
     recentRuns,
+    scheduleWeeksForRecency: scheduleWeeks,
     existingWeek: existing,
+    weeklyPlacementOverrides,
+    generatorVersion,
   })
   if (generated.week && !generated.error) {
     try {
@@ -1523,9 +1237,9 @@ const ensureDailyTaskRunForDateKey = async (args: {
   if (existing) return existing
 
   const wk = await ensureDailyTaskWeekForDateKey(dateKey, tasks)
-  const taskId = wk.week?.days?.[dateKey]?.taskId || ''
-  // Admin can override a day to "no task"
-  if (!taskId || taskId === '__none__') return null
+  const scheduleEntry = parseWeekDayEntry(wk.week?.days?.[dateKey])
+  if (!isDayVisibleToPlayers(scheduleEntry)) return null
+  const taskId = scheduleEntry!.taskId
 
   const run: DailyTaskRun = {
     dateKey,
@@ -1645,6 +1359,9 @@ const writeCache = (key: string, value: unknown): void => {
   }
 }
 
+/** Split panel fly-out duration before the auto-finish celebration (keep in sync with CSS). */
+const SPLIT_AUTO_FINISH_EVAC_MS = 900
+
 const getWindowLabel = (date: Date, windowKey: WindowKey): string => {
   const window = WINDOWS.find((w) => w.key === windowKey)
   if (!window) return ''
@@ -1674,52 +1391,13 @@ const getLateCutoffForWindow = (date: Date, windowKey: WindowKey): Date => {
   return combineDateTime(date, getLateAfterForWindow(date, windowKey))
 }
 
-type TaskReminderTrigger = {
-  when: Date
-  label: string
-}
-
-const nextTaskReminderTrigger = (now: Date): TaskReminderTrigger => {
-  const buildForDate = (d: Date): TaskReminderTrigger[] => {
-    const y = d.getFullYear()
-    const m = d.getMonth()
-    const day = d.getDate()
-    const dow = new Date(y, m, day).getDay()
-    // Evening reminder should fire earlier (7/8), but the label should remain the task window (9/10).
-    const eveningReminderHour = dow === 5 || dow === 6 ? 20 : 19
-
-    const mk = (hour: number, label: string): TaskReminderTrigger => ({
-      when: new Date(y, m, day, hour, 0, 0, 0),
-      label,
-    })
-
-    return [
-      mk(11, '11AM'),
-      // 4PM reminder for the 5PM task window
-      mk(16, '5PM'),
-      // 7PM (or 8PM Fri/Sat) reminder for the 9PM/10PM task window
-      mk(eveningReminderHour, dow === 5 || dow === 6 ? '10PM' : '9PM'),
-    ]
-  }
-
-  const nowMs = now.getTime()
-  const today = buildForDate(now)
-    .filter((c) => c.when.getTime() > nowMs)
-    .sort((a, b) => a.when.getTime() - b.when.getTime())
-  if (today.length) return today[0]!
-
-  const tomorrow = new Date(now)
-  tomorrow.setDate(now.getDate() + 1)
-  tomorrow.setHours(0, 0, 0, 0)
-  return buildForDate(tomorrow).sort((a, b) => a.when.getTime() - b.when.getTime())[0]!
-}
-
 const effectiveStatus = (
   taskDate: Date,
   windowKey: WindowKey,
   completion: TaskCompletion | undefined,
   now: Date,
-  taskId?: string
+  taskId?: string,
+  soloModeActive = false
 ): EffectiveStatus => {
   if (completion?.status === 'done') {
     // Ice/Towel split tasks: partial completion (one side filled) is not "done" - fall through for late/missing
@@ -1737,17 +1415,20 @@ const effectiveStatus = (
   const todayValue = startOfDay(now).getTime()
   if (dayValue < todayValue) return 'missing'
   if (dayValue > todayValue) return 'pending'
+  if (soloModeActive && (windowKey === '11' || windowKey === '17' || windowKey === '21')) return 'pending'
 
   const cutoff = getLateCutoffForWindow(taskDate, windowKey)
   return now >= cutoff ? 'late' : 'pending'
 }
 
-const getTimeOfDay = (now: Date): TimeOfDay => {
-  const hour = now.getHours()
-  if (hour >= 5 && hour < 12) return 'morning'
-  if (hour >= 12 && hour < 17) return 'afternoon'
-  if (hour >= 17 && hour < 21) return 'evening'
-  return 'night'
+/** Fullscreen “please play music” reminder: local 11:00–20:29 only (off from 8:30pm onward). */
+const isWithinMusicReminderHours = (d: Date): boolean => {
+  const h = d.getHours()
+  const m = d.getMinutes()
+  if (h < 11) return false
+  if (h > 20) return false
+  if (h === 20 && m >= 30) return false
+  return true
 }
 
 const getGreeting = (timeOfDay: TimeOfDay): string => {
@@ -2053,7 +1734,229 @@ const calculateEarnedLabels = (
   return labels
 }
 
-function App() {
+/** v3 shift HUD: border + soft tint from employee color (replaces avatar circle). `accentEdge` mirrors for right column. */
+function shiftPlayerSlotAccentStyle(
+  hex: string | undefined,
+  accentEdge: 'start' | 'end' = 'start'
+): CSSProperties | undefined {
+  if (!hex) return undefined
+  const t = hex.trim()
+  const full =
+    t.length === 4 && t.startsWith('#')
+      ? `#${t[1]}${t[1]}${t[2]}${t[2]}${t[3]}${t[3]}`
+      : t.startsWith('#')
+        ? t
+        : `#${t}`
+  if (!/^#[0-9a-fA-F]{6}$/.test(full)) {
+    return accentEdge === 'end'
+      ? { borderRight: `4px solid ${hex}` }
+      : { borderLeft: `4px solid ${hex}` }
+  }
+  if (accentEdge === 'end') {
+    return {
+      borderRight: `4px solid ${full}`,
+      background: `linear-gradient(270deg, ${full}1a 0%, rgba(255, 255, 255, 0.92) 44%)`,
+    }
+  }
+  return {
+    borderLeft: `4px solid ${full}`,
+    background: `linear-gradient(90deg, ${full}1a 0%, rgba(255, 255, 255, 0.92) 44%)`,
+  }
+}
+
+/** Leaderboard v3: initials on white circle (first + last initial, or first two letters). */
+function leaderboardDisplayInitials(name: string): string {
+  const t = name.trim()
+  if (!t) return '?'
+  const parts = t.split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) {
+    const a = parts[0][0] ?? ''
+    const b = parts[parts.length - 1][0] ?? ''
+    return (a + b).toUpperCase()
+  }
+  if (parts[0].length >= 2) return parts[0].slice(0, 2).toUpperCase()
+  return parts[0][0].toUpperCase()
+}
+
+/** Labels hidden on Day/Night shift HUD chips (still shown elsewhere, e.g. leaderboard). */
+function shiftHudSlotLabelsForDisplay(labels: EmployeeLabel[] | undefined): EmployeeLabel[] {
+  if (!labels?.length) return []
+  return labels.filter((l) => l.id !== 'perfectionist' && l.id !== 'firstFinish')
+}
+
+type RewardStarParticle = {
+  id: string
+  startX: number
+  startY: number
+  dx: number
+  dy: number
+  dxMid: number
+  dyMid: number
+  rx: number
+  delayMs: number
+  durMs: number
+  sizePx: number
+  rotDeg: number
+}
+
+const LOCAL_WINDOW_WRITE_GUARD_MS = 2000
+
+const stringArraysEqual = (a: string[] | undefined | null, b: string[] | undefined | null): boolean => {
+  const aArr = Array.isArray(a) ? a : []
+  const bArr = Array.isArray(b) ? b : []
+  return aArr.length === bArr.length && aArr.every((v, i) => v === bArr[i])
+}
+
+const numericRecordEqual = (a?: Record<string, number>, b?: Record<string, number>): boolean => {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  const aKeys = Object.keys(a)
+  if (aKeys.length !== Object.keys(b).length) return false
+  return aKeys.every((k) => a[k] === b[k])
+}
+
+/** Shallow-deep compare for Firestore window echo suppression during local celebration. */
+const taskCompletionsEqual = (a: TaskCompletion, b: TaskCompletion): boolean => {
+  if (a.status !== b.status) return false
+  if (a.completedAt !== b.completedAt) return false
+  if (!stringArraysEqual(a.assignees, b.assignees)) return false
+  if (!!a.assignedByAdmin !== !!b.assignedByAdmin) return false
+  if (!!a.completedLate !== !!b.completedLate) return false
+  if (!!a.lateForgiven !== !!b.lateForgiven) return false
+  if (!!a.completedEarly !== !!b.completedEarly) return false
+  if (!!a.autoAssigned !== !!b.autoAssigned) return false
+  if (!!a.didNotNeedToComplete !== !!b.didNotNeedToComplete) return false
+  if (a.deferredToClose !== b.deferredToClose) return false
+  if (!numericRecordEqual(a.orderReportCounts, b.orderReportCounts)) return false
+  const aIce = a.iceSides
+  const bIce = b.iceSides
+  if (!!aIce !== !!bIce) return false
+  if (aIce && bIce && (aIce.left !== bIce.left || aIce.right !== bIce.right)) return false
+  const aTowel = a.towelSides
+  const bTowel = b.towelSides
+  if (!!aTowel !== !!bTowel) return false
+  if (aTowel && bTowel && (aTowel.diningBar !== bTowel.diningBar || aTowel.bowlStation !== bTowel.bowlStation)) {
+    return false
+  }
+  return true
+}
+
+const windowTaskMapsEqual = (
+  a: Record<string, TaskCompletion>,
+  b: Record<string, TaskCompletion>,
+): boolean => {
+  // Any unexpected shape (e.g. a malformed Firestore completion) must NOT throw here:
+  // this runs inside a setTaskState updater, so a throw becomes a render-phase crash.
+  // Returning false simply means "not equal" → the normal setTaskState path runs.
+  try {
+    if (!a || !b) return false
+    const aKeys = Object.keys(a)
+    if (aKeys.length !== Object.keys(b).length) return false
+    for (let i = 0; i < aKeys.length; i++) {
+      const key = aKeys[i]
+      const aCompletion = a[key]
+      const bCompletion = b[key]
+      if (!aCompletion || !bCompletion) return false
+      if (!taskCompletionsEqual(aCompletion, bCompletion)) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Memoized score cell shared by main Shift HUD and v3 notify strip. */
+const ShiftHudScoreDisplay = memo(function ShiftHudScoreDisplay({
+  row,
+  scoreOverride,
+  showDayAmPmSplit,
+}: {
+  row: LeaderRow | undefined
+  scoreOverride: number | null
+  showDayAmPmSplit: boolean
+}) {
+  if (!row) return <>—</>
+  if (!showDayAmPmSplit) return <>{shiftHudPointsCell(scoreOverride, row)}</>
+  const pmText = shiftHudPointsCell(scoreOverride, row)
+  const amText = String(shiftHudAmDisplayScore(row))
+  return (
+    <>
+      <span className="slot-score-am" aria-label={`11AM ${amText}`}>
+        <span className="slot-score-am-label">11A</span>
+        <span className="slot-score-am-value">{amText}</span>
+      </span>
+      <span className="slot-score-pm" aria-label={`5PM ${pmText}`}>
+        {pmText}
+      </span>
+    </>
+  )
+})
+
+/**
+ * Flying-stars overlay. Memoized so the 14-18 animated nodes only reconcile when
+ * the star list itself changes, not on every unrelated App re-render (e.g. the
+ * per-second clock ticks) while the animation is on screen. Visual output is
+ * identical to the previous inline render.
+ */
+const RewardStarsOverlay = memo(({ stars }: { stars: RewardStarParticle[] }) => {
+  if (stars.length === 0) return null
+  return (
+    <div className="reward-overlay" aria-hidden>
+      {stars.map((s) => (
+        <div
+          key={s.id}
+          className="reward-star"
+          style={{
+            left: `${s.startX}px`,
+            top: `${s.startY}px`,
+            ['--dx' as any]: `${s.dx}px`,
+            ['--dy' as any]: `${s.dy}px`,
+            ['--dxMid' as any]: `${s.dxMid}px`,
+            ['--dyMid' as any]: `${s.dyMid}px`,
+            // Pre-computed intermediate values for Safari compatibility (avoids calc() in keyframes)
+            ['--dx15' as any]: `${s.dxMid * 0.2}px`,
+            ['--dy15' as any]: `${s.dyMid * 0.2}px`,
+            ['--rot15' as any]: `${s.rotDeg * 0.15}deg`,
+            ['--rot55' as any]: `${s.rotDeg * 0.5}deg`,
+            ['--delay' as any]: `${s.delayMs}ms`,
+            ['--dur' as any]: `${s.durMs}ms`,
+            ['--size' as any]: `${s.sizePx}px`,
+            ['--rot' as any]: `${s.rotDeg}deg`,
+          }}
+        >
+          ⭐
+        </div>
+      ))}
+    </div>
+  )
+})
+RewardStarsOverlay.displayName = 'RewardStarsOverlay'
+
+function App({
+  uiVariant = 'v2',
+  v3AdminPosEnabled = true,
+  v3Release = '3.0',
+  deploymentChannel = 'main',
+}: {
+  uiVariant?: 'v2' | 'v3'
+  /** Firestore `config/appUi.v3AdminPosEnabled` — v3 Home menu only; ignored for v2. */
+  v3AdminPosEnabled?: boolean
+  /** Firestore `config/appUi.v3Release` — only when `uiVariant === 'v3'`. Gate 3.1-only features with `isV31`. */
+  v3Release?: '3.0' | '3.1'
+  /** `beta` from `beta.html` entry — enables beta-only UI (ignored for v2). */
+  deploymentChannel?: 'main' | 'beta'
+}) {
+  const isV3Ui = uiVariant === 'v3'
+  /** New 3.1-only behavior: gate with `isV31` (v3 shell + Firestore `config/appUi.v3Release === '3.1'`). */
+  const isV31 = isV3Ui && v3Release === '3.1'
+  /** Main Hosting: screensaver when Firestore says 3.1. Beta Hosting: always (v3) so testers can use it without `v3ReleaseBeta`. */
+  const screensaverEnabled = isV3Ui && (isV31 || deploymentChannel === 'beta')
+  /** Beta Hosting (`deploymentChannel === 'beta'`) only — not gated on Firestore 3.1; local-only Demo Day affordance. */
+  const showBetaDemoModeFooter = deploymentChannel === 'beta' && isV3Ui
+  /** Beta-only: manual screensaver preview (same strip as Demo mode). */
+  const showBetaScreensaverPreview = showBetaDemoModeFooter && screensaverEnabled
+  /** Keep music reminder popup off on beta preview site. */
+  const musicReminderEnabled = deploymentChannel !== 'beta'
   const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()))
   const [selectedWindow, setSelectedWindow] = useState<WindowKey>(() => getCurrentWindow())
   // When true, the UI "follows" the current time window (11/17/21) while visible.
@@ -2063,10 +1966,42 @@ function App() {
   // If a user is inactive for a while, we snap back to "today" + current window.
   // (This is intentionally interaction-based, not just "tab hidden".)
   const INACTIVITY_SNAP_MS = 5 * 60_000
+  const SCREENSAVER_IDLE_MS = 120_000
+  const SCREENSAVER_POLL_MS = 5000
   const lastInteractionTsRef = useRef<number>(Date.now())
+  /** Idle screensaver opens before `handleWindowChange` exists — call via ref. */
+  const snapBrowseContextToLiveNowRef = useRef<() => void>(() => {})
+  const [screensaverOpen, setScreensaverOpen] = useState(false)
+  /** Bumps when the screensaver opens so non-AI quote lines stay stable for that session. */
+  const [screensaverSessionId, setScreensaverSessionId] = useState(0)
+  /** Beta QA: force sample quote or fake break/shift countdown (ignores live break state). */
+  const [screensaverBetaDemoOverride, setScreensaverBetaDemoOverride] = useState<
+    | null
+    | { kind: 'quote'; line: string }
+    | { kind: 'countdown'; value: ScreensaverCountdown }
+  >(null)
+  /** Brief full-screen layer after user dismisses screensaver — absorbs delayed synthetic clicks on touch (ghost taps). */
+  const [screensaverDismissShield, setScreensaverDismissShield] = useState(false)
+  /** Browser `setTimeout` id (not `NodeJS.Timeout` from Node typings). */
+  const screensaverDismissShieldTimeoutRef = useRef<number | null>(null)
   const [taskState, setTaskState] = useState<TaskState>(() => readCache<TaskState>('traq-task-state-v1', {}))
+  /** Suppresses redundant Firestore echo setTaskState during local completion celebration. */
+  const localWindowWriteGuardRef = useRef<{
+    dateKey: string
+    windowKey: WindowKey
+    expiresAt: number
+  } | null>(null)
   const [newBadgeTaskState, setNewBadgeTaskState] = useState<TaskState>({})
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const activeCardRectRef = useRef<DOMRect | null>(null)
+  const modalSheetRef = useRef<HTMLDivElement>(null)
+  const isClosingModalRef = useRef(false)
+  /** v3 success dismiss: backdrop click-through while sheet slides away (Phase 5). */
+  const [modalSuccessDismiss, setModalSuccessDismiss] = useState(false)
+  const v3NotifyP1ScoreRef = useRef<HTMLDivElement | null>(null)
+  const v3NotifyP2ScoreRef = useRef<HTMLDivElement | null>(null)
+  const v3ShiftNotifyHeaderRef = useRef<HTMLDivElement | null>(null)
+  const [v3ShiftNotifyOpen, setV3ShiftNotifyOpen] = useState(false)
   const [tick, setTick] = useState<number>(() => Date.now())
   const [assignees, setAssignees] = useState<string[]>([])
   const [splitMode, setSplitMode] = useState(false)
@@ -2084,24 +2019,20 @@ function App() {
     right: null,
   }))
   const [pendingIceSide, setPendingIceSide] = useState<'left' | 'right' | null>(null)
-  const [iceFillAnim, setIceFillAnim] = useState<null | { side: 'left' | 'right'; key: number }>(null)
-  const [icePageEmojis, setIcePageEmojis] = useState<
-    Array<{ id: string; char: '❄️' | '🧊'; x: number; y: number; dx: number; dy: number; delayMs: number; durMs: number; sizePx: number }>
-  >([])
   const iceLeftTileRef = useRef<HTMLButtonElement | null>(null)
   const iceRightTileRef = useRef<HTMLButtonElement | null>(null)
+  const icePageEmojiLayerRef = useRef<HTMLDivElement | null>(null)
+  const iceFillAnimCleanupRef = useRef<number | null>(null)
   // Towel split (Dining/Bar + Bowl Station) state
   type TowelSidesDraft = { diningBar: string | null; bowlStation: string | null }
   const [towelSidesDraftByKey, setTowelSidesDraftByKey] = useState<Record<string, TowelSidesDraft>>({})
   const [towelSidesDraftDirtyByKey, setTowelSidesDraftDirtyByKey] = useState<Record<string, boolean>>({})
   const [towelSidesDraft, setTowelSidesDraft] = useState<TowelSidesDraft>(() => ({ diningBar: null, bowlStation: null }))
   const [pendingTowelSide, setPendingTowelSide] = useState<'diningBar' | 'bowlStation' | null>(null)
-  const [towelFillAnim, setTowelFillAnim] = useState<null | { side: 'diningBar' | 'bowlStation'; key: number }>(null)
-  const [towelPageEmojis, setTowelPageEmojis] = useState<
-    Array<{ id: string; x: number; y: number; dx: number; dy: number; delayMs: number; durMs: number; sizePx: number }>
-  >([])
   const towelDiningTileRef = useRef<HTMLButtonElement | null>(null)
   const towelBowlTileRef = useRef<HTMLButtonElement | null>(null)
+  const towelPageEmojiLayerRef = useRef<HTMLDivElement | null>(null)
+  const towelFillAnimCleanupRef = useRef<number | null>(null)
   // Separate ref for the task-init effect to detect task changes (without conflicting with break-selection effect's ref).
   const prevTaskIdForInitRef = useRef<string | null>(null)
   const [showChecklistModal, setShowChecklistModal] = useState(false)
@@ -2121,18 +2052,24 @@ function App() {
   // Demo Day: sandboxed day for testing task UX without writing to Firestore.
   const [demoDayKey, setDemoDayKey] = useState<string | null>(null)
   const [demoBreakSelectionByDateKey, setDemoBreakSelectionByDateKey] = useState<Record<string, BreakSelection | null>>({})
+  const [demoSoloModeByDateKey, setDemoSoloModeByDateKey] = useState<Record<string, SoloMode | null>>({})
   // Demo Day: local-only Daily Task run(s), keyed by dateKey.
   const [demoDailyTaskRunByDateKey, setDemoDailyTaskRunByDateKey] = useState<Record<string, DailyTaskRun | null>>({})
   const demoPrevNavRef = useRef<{ date: Date; windowKey: WindowKey; follow: boolean } | null>(null)
   const [adminAvailabilityEditingEmployee, setAdminAvailabilityEditingEmployee] = useState<string | null>(null)
   const [adminTimeOffProcessing, setAdminTimeOffProcessing] = useState<string | null>(null)
-  const [showAdminLogin, setShowAdminLogin] = useState(false)
-  const [adminPin, setAdminPin] = useState('')
-  const [adminPinError, setAdminPinError] = useState<string | null>(null)
   const [employees, setEmployees] = useState<string[]>(() => {
     const cached = readCache<string[]>('traq-employees-v1', [])
     return cached.length ? cached : USERS
   })
+  const [archivedAtMs, setArchivedAtMs] = useState<EmployeeArchiveMap>(() => {
+    const roster = readCache<{ archivedAtMs?: EmployeeArchiveMap }>('traq-employee-roster-v1', {})
+    return roster?.archivedAtMs && typeof roster.archivedAtMs === 'object' ? roster.archivedAtMs : {}
+  })
+  const activeEmployees = useMemo(
+    () => getActiveEmployees(employees, archivedAtMs),
+    [employees, archivedAtMs]
+  )
   const [employeeColors, setEmployeeColors] = useState<EmployeeColors>(() =>
     readCache<EmployeeColors>('traq-employee-colors-v1', {})
   )
@@ -2148,6 +2085,12 @@ function App() {
   const [taskOrder, setTaskOrder] = useState<Record<WindowKey, string[]>>(() =>
     readCache<Record<WindowKey, string[]>>('traq-task-order-v1', {} as Record<WindowKey, string[]>)
   )
+  const [taskOrderV3, setTaskOrderV3] = useState<Record<WindowKey, string[]>>(() =>
+    readCache<Record<WindowKey, string[]>>('traq-task-order-v3-v1', {} as Record<WindowKey, string[]>)
+  )
+  const [taskStages, setTaskStages] = useState<TaskStageMap>(() =>
+    readCache<TaskStageMap>('traq-task-stages-v1', {})
+  )
   const [taskCatalog, setTaskCatalog] = useState<TaskCatalog>(() =>
     readCache<TaskCatalog>('traq-task-catalog-v1', { tasks: [] })
   )
@@ -2158,6 +2101,7 @@ function App() {
     readCache<DailyTaskCatalog>('traq-daily-task-catalog-v1', { tasks: [] })
   )
   const [todayDailyTaskRun, setTodayDailyTaskRun] = useState<DailyTaskRun | null>(null)
+  const [todayDailyTaskWeek, setTodayDailyTaskWeek] = useState<DailyTaskWeek | null>(null)
   // -1 = unrevealed, 0 = name, 1 = materials, 2 = what-to-do, 3 = employee prompt, 4 = finished
   const [dailyTaskStep, setDailyTaskStep] = useState<number>(-1)
   // Up to 2 names for split credit (equal credit).
@@ -2172,6 +2116,7 @@ function App() {
   const [adminTaskName, setAdminTaskName] = useState<string>('')
   const [adminTaskIcon, setAdminTaskIcon] = useState<string>('🧩')
   const [adminTaskWindows, setAdminTaskWindows] = useState<Record<WindowKey, boolean>>({ '11': false, '17': true, '21': false })
+  const [adminTaskStages, setAdminTaskStages] = useState<Partial<Record<WindowKey, 1 | 2>>>({})
   const [adminTaskWeight, setAdminTaskWeight] = useState<string>('1')
   const [adminTaskRequirementsText, setAdminTaskRequirementsText] = useState<string>('')
   const [adminTaskError, setAdminTaskError] = useState<string | null>(null)
@@ -2214,6 +2159,13 @@ function App() {
   const [adminDailyDebugInfo, setAdminDailyDebugInfo] = useState<string[] | null>(null)
   const [adminDailyDebugInitAtMs] = useState<number>(() => Date.now())
   const [adminDailyReclosingToday, setAdminDailyReclosingToday] = useState(false)
+  const [adminDailyRunHistoryEdit, setAdminDailyRunHistoryEdit] = useState<DailyTaskRun | null>(null)
+  const [adminDailyRunHistoryTitle, setAdminDailyRunHistoryTitle] = useState('')
+  const [adminDailyRunHistoryEmp1, setAdminDailyRunHistoryEmp1] = useState('')
+  const [adminDailyRunHistoryEmp2, setAdminDailyRunHistoryEmp2] = useState('')
+  const [adminDailyRunHistoryCreditTaskId, setAdminDailyRunHistoryCreditTaskId] = useState('')
+  const [adminDailyRunHistorySaving, setAdminDailyRunHistorySaving] = useState(false)
+  const [adminDailyRunHistoryError, setAdminDailyRunHistoryError] = useState<string | null>(null)
 
   const [selectionLogs, setSelectionLogs] = useState<SelectionLogEntry[]>(() =>
     readCache<SelectionLogEntry[]>('traq-logs-v1', [])
@@ -2231,11 +2183,17 @@ function App() {
       return idx % 2 === 1 ? <strong key={idx}>{part}</strong> : <span key={idx}>{part}</span>
     })
   }, [])
-  const [breakSelection, setBreakSelection] = useState<BreakSelection | null>(null)
+  // Internal: holds the break selection along with the dateKey it belongs to.
+  // Use the derived `breakSelection` (defined after `selectedDateKey`) instead of reading this directly,
+  // so date-sensitive code can't accidentally act on a stale value captured during a date navigation re-render.
+  const [breakSelectionState, setBreakSelectionState] = useState<{ dateKey: string; value: BreakSelection | null } | null>(null)
+  const [soloMode, setSoloMode] = useState<SoloMode | null>(null)
   // Today's break selection for countdown (independent of selectedDate)
   const [todayBreakSelection, setTodayBreakSelection] = useState<BreakSelection | null>(null)
   // 1-second countdown clock (only active when countdown is visible)
   const [countdownNowMs, setCountdownNowMs] = useState<number>(() => Date.now())
+  // 1-second clock for the window-unlock countdown (only active in the final ~30 min before unlock)
+  const [unlockCountdownNowMs, setUnlockCountdownNowMs] = useState<number>(() => Date.now())
   // Break celebration overlay state
   const [breakCelebration, setBreakCelebration] = useState<{ show: boolean; employee: string } | null>(null)
   const breakCelebrationTimeoutRef = useRef<number | null>(null)
@@ -2280,6 +2238,8 @@ function App() {
   // Music reminder: avoid flashing between-track / buffering blips by requiring music to be
   // continuously not-playing for a short grace window before showing the reminder.
   const MUSIC_REMINDER_IDLE_GRACE_MS = 30_000
+  /** Poll often; long intervals + background throttling can leave the overlay up well past 8:30pm. */
+  const MUSIC_REMINDER_EVAL_INTERVAL_MS = 20_000
   const [musicNotPlayingSinceMs, setMusicNotPlayingSinceMs] = useState<number | null>(() => {
     return musicIsActuallyPlaying ? null : Date.now()
   })
@@ -2289,10 +2249,15 @@ function App() {
   const [lbMonthTaskState, setLbMonthTaskState] = useState<TaskState>({})
   const [lbMonthLoading, setLbMonthLoading] = useState(false)
   const [lbMonthLoadError, setLbMonthLoadError] = useState<string | null>(null)
-  // Time-based atmosphere features
-  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(() => getTimeOfDay(new Date()))
-  const [currentQuoteIndex, setCurrentQuoteIndex] = useState(0)
-  const [celebrateShake, setCelebrateShake] = useState(false)
+  // Time-based atmosphere (sun-aligned to Hermitage, TN local solar times)
+  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(() =>
+    getTimeOfDaySolar(new Date(), DEFAULT_SOLAR_COORDS)
+  )
+  const [aiShiftContent, setAiShiftContent] = useState<ShiftQuoteResponse | null>(null)
+  const [taskCardsJiggle, setTaskCardsJiggle] = useState(false)
+  const [taskGridEntered, setTaskGridEntered] = useState(false)
+  const [manualWindowUnlockKeys, setManualWindowUnlockKeys] = useState<Set<string>>(() => new Set())
+  const [windowUnlockToast, setWindowUnlockToast] = useState<string | null>(null)
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null)
   const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null)
   const [isLoadingData, setIsLoadingData] = useState<boolean>(() => !hasBootstrapCache())
@@ -2302,7 +2267,54 @@ function App() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [isLoadingWindow, setIsLoadingWindow] = useState(false)
   const [showCalculator, setShowCalculator] = useState(false)
+  const [taskSplitInlinePhase, setTaskSplitInlinePhase] = useState<TaskSplitInlinePhase | null>(null)
+  const [taskSplitEmpA, setTaskSplitEmpA] = useState('')
+  const [taskSplitEmpB, setTaskSplitEmpB] = useState('')
+  const [taskSplitResult, setTaskSplitResult] = useState<TaskSplitSuggestResult | null>(null)
+  const [taskSplitErrorBanner, setTaskSplitErrorBanner] = useState<string | null>(null)
+  const [taskSplitIceSplitChoice, setTaskSplitIceSplitChoice] = useState(false)
+  /** Dice flow is using the shared employee grid overlay to pick the split pair (not to complete a task). */
+  const [splitSetupSelecting, setSplitSetupSelecting] = useState(false)
+  /** Post-pick "Split Ice?" step shown before generating the dice split. */
+  const [splitIcePromptOpen, setSplitIcePromptOpen] = useState(false)
+  /** User chose team split in the current split-required modal session (resets when modal closes or task changes). */
+  const [nightSplitChoseTeamSplit, setNightSplitChoseTeamSplit] = useState(false)
+  /** Panel cards are flying out before the auto-finish celebration. */
+  const [splitEvacuating, setSplitEvacuating] = useState(false)
+  /** Allow the window-complete celebration to show after an auto-finished split even if non-split tasks remain. */
+  const [splitAutoCelebration, setSplitAutoCelebration] = useState(false)
+  const taskSplitSuggestGenRef = useRef(0)
+  /** Blocks stale Firestore snapshots from re-opening a split until Undo delete is confirmed. */
+  const taskSplitUndoneKeyRef = useRef<string | null>(null)
+  /** View whose split auto-finished: keep the panel hidden (contract kept) without an Undo delete. */
+  const taskSplitCompletedKeyRef = useRef<string | null>(null)
+  /** Guards the one-shot auto-finish sequence + holds its pending evacuation timer. */
+  const splitAutoFinishStartedRef = useRef(false)
+  const splitAutoFinishTimerRef = useRef<number | null>(null)
+  /** Ignore transient Firestore null snapshots while a contract write is in flight. */
+  const fairSplitPendingWriteRef = useRef<'17' | '21' | null>(null)
+  const taskSplitResultRef = useRef<TaskSplitSuggestResult | null>(null)
+  const taskSplitOpenPrefillRef = useRef<{
+    taskId: string
+    assignees?: string[]
+    iceSides?: { left: string; right: string }
+    /** Open the combined-ice drawer pre-pointed at this side picker (split-ice virtual cards). */
+    iceSide?: 'left' | 'right'
+  } | null>(null)
+  const [fairSplitContract17, setFairSplitContract17] = useState<FairSplitContractDoc | null>(null)
+  const [fairSplitContract21, setFairSplitContract21] = useState<FairSplitContractDoc | null>(null)
+  /** Secret training mode: windows of the selected date currently marked as training. */
+  const [trainingWindowsForSelectedDate, setTrainingWindowsForSelectedDate] = useState<Set<WindowKey>>(
+    () => new Set()
+  )
+  /** Training markers across the leaderboard month range, keyed `${dateKey}__${windowKey}`. */
+  const [trainingDocsInRange, setTrainingDocsInRange] = useState<Set<string>>(() => new Set())
+  /** Counts rapid taps on the locked Training tile; 5 within the window toggles training. */
+  const trainingTapCountRef = useRef(0)
+  const trainingTapResetTimerRef = useRef<number | null>(null)
   const [showMenu, setShowMenu] = useState(false)
+  /** v3 settings sheet (refresh app); opened from bottom-right Settings or logo when screensaver is off. */
+  const [showAppSettingsMenu, setShowAppSettingsMenu] = useState(false)
   const [showPointsExplanation, setShowPointsExplanation] = useState(false)
   const [showCalculationModal, setShowCalculationModal] = useState(false)
   const [calculationEmployee, setCalculationEmployee] = useState<string | null>(null)
@@ -2310,7 +2322,10 @@ function App() {
   // Time Off feature state
   const [showTimeOff, setShowTimeOff] = useState(false)
   const [timeOffRequests, setTimeOffRequests] = useState<TimeOffRequest[]>([])
-  const [availabilityMap, setAvailabilityMap] = useState<AvailabilityMap>({})
+  const [availabilityState, setAvailabilityState] = useState<AvailabilityState>({
+    patterns: {},
+    metaByEmployee: {},
+  })
   
   // Job Applications (Bonfire portal) - admin only
   const [applications, setApplications] = useState<Application[]>([])
@@ -2320,7 +2335,7 @@ function App() {
   // OUT / LOW STOCK feature state
   const [showStockReports, setShowStockReports] = useState(false)
   const [stockReports, setStockReports] = useState<StockReport[]>([])
-  const [stockWizardStep, setStockWizardStep] = useState<'who' | 'kind' | 'item' | null>(null)
+  const [stockWizardStep, setStockWizardStep] = useState<'kind' | 'item' | null>(null)
   const [stockReporterName, setStockReporterName] = useState<string | null>(null)
   const [stockKind, setStockKind] = useState<StockReportKind | null>(null)
   const [stockItem, setStockItem] = useState('')
@@ -2331,6 +2346,8 @@ function App() {
   const stockSendFxTimeoutRef = useRef<number | null>(null)
   const [stockFinishingId, setStockFinishingId] = useState<string | null>(null)
   const [stockDeletingId, setStockDeletingId] = useState<string | null>(null)
+
+  const showStockCheckTaskModal = activeTaskId === 'stock-check'
 
   // Notify Management feature state
   type ManagementReportKind = 'leak' | 'broken' | 'insect' | 'custom'
@@ -2420,20 +2437,19 @@ function App() {
       if (ov.imagePath !== undefined) {
         next.imagePath = (ov.imagePath && ov.imagePath.trim()) || undefined
       }
+      if (typeof ov.weight === 'number') {
+        next.weight = ov.weight
+      }
+      if (typeof ov.requiresSplit === 'boolean') {
+        next.requiresSplit = ov.requiresSplit
+      }
       byId[taskId] = next
     })
 
     return Object.values(byId)
   }, [taskCatalog, taskOverrides])
 
-  // Timed task reminders (11AM, 4PM, and 9PM/10PM Fri+Sat)
-  const [reminderActive, setReminderActive] = useState(false)
-  const [reminderVisible, setReminderVisible] = useState(false)
-  const [reminderLabel, setReminderLabel] = useState('')
-  const reminderTimeoutRef = useRef<number | null>(null)
-  const armNextReminderRef = useRef<() => void>(() => {})
-
-  // Music missing reminder (11AM–9PM): full-screen flashing alert until snoozed/dismissed.
+  // Music missing reminder (local 11:00–20:29, off from 8:30pm): full-screen alert until snoozed/dismissed.
   // If music is still not playing, it can re-appear multiple times per day.
   const LS_MUSIC_MISSING_REMINDER_DISMISSED_UNTIL_KEY = 'traq-music-missing-reminder-dismissed-until-ms-v1'
   const [musicReminderDismissedUntilMs, setMusicReminderDismissedUntilMs] = useState<number>(() => {
@@ -2473,11 +2489,22 @@ function App() {
     Record<string, { status: 'sending' | 'sent' | 'error'; error?: string }>
   >({})
 
+  // Good Morning (10:00 local) overlay + post-dismiss entrance
+  const [goodMorningEpoch, setGoodMorningEpoch] = useState(0)
+  const [goodMorningLocal, setGoodMorningLocal] = useState<GoodMorningLocalState | null>(() =>
+    readGoodMorningLocal()
+  )
+  const [goodMorningTick, setGoodMorningTick] = useState(() => Date.now())
+  const [goodMorningRevealPhase, setGoodMorningRevealPhase] = useState(false)
+  const [goodMorningOverlayClock, setGoodMorningOverlayClock] = useState(() => Date.now())
+  const goodMorningSessionIdRef = useRef<string>(getOrCreateGoodMorningSessionId())
+
   // Task modal: requirements auto-scroll (view-only hint for long requirement lists)
   const requirementsScrollRef = useRef<HTMLDivElement | null>(null)
 
   // Reward animation: star burst + points count-up (self-selection only)
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false)
+  const celebrationTiming = useMemo(() => getCelebrationTiming(prefersReducedMotion), [prefersReducedMotion])
   const rewardTargetRef = useRef<HTMLElement | null>(null)
   const p1ScoreRef = useRef<HTMLDivElement | null>(null)
   const p2ScoreRef = useRef<HTMLDivElement | null>(null)
@@ -2487,6 +2514,11 @@ function App() {
   const [shiftHudPulse, setShiftHudPulse] = useState(false)
   const [p1ScoreOverride, setP1ScoreOverride] = useState<number | null>(null)
   const [p2ScoreOverride, setP2ScoreOverride] = useState<number | null>(null)
+  // Authoritative override value while the count-up animation runs. Updated per frame
+  // without setState (the value is written straight to the score DOM node); render call
+  // sites read `ref.current ?? state` so incidental re-renders stay consistent.
+  const p1ScoreOverrideRef = useRef<number | null>(null)
+  const p2ScoreOverrideRef = useRef<number | null>(null)
   const [scoreAnim, setScoreAnim] = useState<{
     slot: 'p1' | 'p2'
     from: number
@@ -2501,100 +2533,144 @@ function App() {
   const [progressGradient, setProgressGradient] = useState<string | null>(null)
   const [pendingGradient, setPendingGradient] = useState<string | null>(null)
 
-  // Window completion celebration: confetti + toast (100% tasks)
+  // Window completion celebration
   const topProgressRef = useRef<HTMLDivElement | null>(null)
-  const [windowCompleteToast, setWindowCompleteToast] = useState<string | null>(null)
-  const [windowCompleteConfetti, setWindowCompleteConfetti] = useState<ConfettiPiece[]>([])
-  const toastTimeoutRef = useRef<number | null>(null)
-  const confettiTimeoutRef = useRef<number | null>(null)
-  type WindowCompleteOverlayState = { windowLabel: string; participants: string[] }
-  const [windowCompleteOverlay, setWindowCompleteOverlay] = useState<WindowCompleteOverlayState | null>(null)
-  const windowCompleteOverlayTimeoutRef = useRef<number | null>(null)
+  const completedTasksAnchorRef = useRef<HTMLDivElement | null>(null)
+  const completedTasksStageRef = useRef<HTMLDivElement | null>(null)
+  /** Scroll to card in pending grid after completed-task reset closes the modal. */
+  const pendingScrollToTaskIdRef = useRef<string | null>(null)
+  const [taskGridCelebrating, setTaskGridCelebrating] = useState(false)
+  const taskGridCelebratingRef = useRef(false)
+  const cardJiggleStartTimeoutRef = useRef<number | null>(null)
+  const cardJiggleEndTimeoutRef = useRef<number | null>(null)
+  const taskGridEnterTimeoutRef = useRef<number | null>(null)
+  const poweredByTapRef = useRef<{ count: number; lastMs: number }>({ count: 0, lastMs: 0 })
+  const windowUnlockToastTimeoutRef = useRef<number | null>(null)
+  /** v3 staged windows: collapse Stage 1/2 strip before task evacuation so completed cards slide up. */
+  const [windowCompleteStageCollapse, setWindowCompleteStageCollapse] = useState(false)
+  const [windowCompleteCelebration, setWindowCompleteCelebration] = useState<WindowCompleteCelebrationViewModel | null>(null)
+  const [windowCompleteBetaPreview, setWindowCompleteBetaPreview] = useState(false)
+  const [pendingBetaWindowCompleteSeed, setPendingBetaWindowCompleteSeed] = useState(false)
+  const windowCompleteBetaPreviewRef = useRef(false)
+  const windowCompleteScopeKeyRef = useRef<string | null>(null)
+  const headlineRotationRef = useRef(0)
+  /** Reuse window-complete headline when switching between windows in the same shift + date. */
+  const shiftCompleteHeadlineByDayShiftRef = useRef<Map<string, string>>(new Map())
   const windowCompleteStartTimeoutRef = useRef<number | null>(null)
+  const windowCompleteStartScheduledRef = useRef(false)
+  const windowCompletePhaseTimeoutsRef = useRef<number[]>([])
+  /** Latest staged two-window model for window-complete timing (declared before callbacks that read it). */
+  const stagedTasksRefForEvac = useRef<{
+    stage1: Task[]
+    stage2: Task[]
+    label1: string
+    label2: string
+  } | null>(null)
+  const lastWindowCompleteAiFetchKeyRef = useRef<string | null>(null)
+  /** Persists AI completion copy per completion fingerprint so switching timeframe tabs does not refetch. */
+  const windowCompleteCompletionMessageByKeyRef = useRef<Map<string, string>>(new Map())
+  const lastKnownWindowCompleteMessageKeyRef = useRef<string | null>(null)
+  const windowCompleteCelebrationRef = useRef(windowCompleteCelebration)
+
+  useEffect(() => {
+    taskGridCelebratingRef.current = taskGridCelebrating
+  }, [taskGridCelebrating])
 
   useEffect(() => {
     return () => {
-      if (toastTimeoutRef.current) window.clearTimeout(toastTimeoutRef.current)
-      if (confettiTimeoutRef.current) window.clearTimeout(confettiTimeoutRef.current)
-      if (windowCompleteOverlayTimeoutRef.current) window.clearTimeout(windowCompleteOverlayTimeoutRef.current)
       if (windowCompleteStartTimeoutRef.current) window.clearTimeout(windowCompleteStartTimeoutRef.current)
+      windowCompletePhaseTimeoutsRef.current.forEach((t) => window.clearTimeout(t))
+      windowCompletePhaseTimeoutsRef.current = []
+      if (cardJiggleStartTimeoutRef.current) window.clearTimeout(cardJiggleStartTimeoutRef.current)
+      if (cardJiggleEndTimeoutRef.current) window.clearTimeout(cardJiggleEndTimeoutRef.current)
+      if (taskGridEnterTimeoutRef.current) window.clearTimeout(taskGridEnterTimeoutRef.current)
+      if (windowUnlockToastTimeoutRef.current) window.clearTimeout(windowUnlockToastTimeoutRef.current)
     }
   }, [])
 
-  const startReminder = useCallback((label: string) => {
-    setReminderLabel(label)
-    setReminderActive(true)
-    setReminderVisible(true)
-    if (reminderTimeoutRef.current) window.clearTimeout(reminderTimeoutRef.current)
-
-    // Flash 3 times: on 1s, off 300ms, on 1s, off 300ms, on 1s, then auto-dismiss
-    const FLASH_ON_MS = 1000
-    const FLASH_OFF_MS = 300
-    let flashCount = 1 // First flash starts immediately
-
-    const scheduleNextFlash = () => {
-      reminderTimeoutRef.current = window.setTimeout(() => {
-        setReminderVisible(false)
-        if (flashCount < 3) {
-          // Wait briefly then flash again
-          reminderTimeoutRef.current = window.setTimeout(() => {
-            flashCount++
-            setReminderVisible(true)
-            scheduleNextFlash()
-          }, FLASH_OFF_MS)
-        } else {
-          // Done flashing, auto-dismiss
-          setReminderActive(false)
-          armNextReminderRef.current()
-        }
-      }, FLASH_ON_MS)
-    }
-
-    // Start the sequence (already visible for flash 1)
-    scheduleNextFlash()
+  useEffect(() => {
+    return subscribeToGoodMorningConfig((c) => setGoodMorningEpoch(c.forceEpoch))
   }, [])
 
-  const armNextReminder = useCallback(() => {
-    if (reminderTimeoutRef.current) window.clearTimeout(reminderTimeoutRef.current)
-    const next = nextTaskReminderTrigger(new Date())
-    const delayMs = Math.max(0, next.when.getTime() - Date.now())
-    reminderTimeoutRef.current = window.setTimeout(() => startReminder(next.label), delayMs)
-  }, [startReminder])
-
-  // Keep ref in sync so startReminder can call it without circular dependency
-  armNextReminderRef.current = armNextReminder
-
-  // Arm the next reminder on mount (missed times are skipped by selecting only future times).
   useEffect(() => {
-    armNextReminder()
-    return () => {
-      if (reminderTimeoutRef.current) window.clearTimeout(reminderTimeoutRef.current)
+    let t: number | null = null
+    const schedule = () => {
+      const now = new Date()
+      const ten = new Date(now)
+      ten.setHours(10, 0, 0, 0)
+      let delay: number
+      if (now.getTime() < ten.getTime()) {
+        delay = Math.max(0, ten.getTime() - now.getTime()) + 1
+      } else {
+        const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0)
+        delay = Math.max(0, nextMidnight.getTime() - now.getTime()) + 1
+      }
+      t = window.setTimeout(() => {
+        setGoodMorningTick(Date.now())
+        schedule()
+      }, delay)
     }
-  }, [armNextReminder])
+    schedule()
+    return () => {
+      if (t !== null) window.clearTimeout(t)
+    }
+  }, [])
 
-  // Stop the flashing reminder on keyboard interaction (auto-dismisses after 3 flashes anyway).
+  const showGoodMorning = useMemo(() => {
+    if (!isPastTenAmLocal(new Date(goodMorningTick))) return false
+    const todayKey = formatDateKey(startOfDay(new Date()))
+    const local = goodMorningLocal ?? readGoodMorningLocal()
+    const epoch = goodMorningEpoch
+    if (!local) return true
+    if (local.dismissedDateKey === todayKey && local.lastCompletedEpoch >= epoch) return false
+    return true
+  }, [goodMorningTick, goodMorningLocal, goodMorningEpoch])
+
   useEffect(() => {
-    if (!reminderActive) return
-    let stopped = false
-    const stop = () => {
-      if (stopped) return
-      stopped = true
-      setReminderActive(false)
-      setReminderVisible(false)
-      if (reminderTimeoutRef.current) window.clearTimeout(reminderTimeoutRef.current)
-      armNextReminder()
-    }
+    if (!showGoodMorning) return
+    const id = window.setInterval(() => setGoodMorningOverlayClock(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [showGoodMorning])
 
-    window.addEventListener('keydown', stop, true)
-    return () => {
-      window.removeEventListener('keydown', stop, true)
+  useEffect(() => {
+    if (!showGoodMorning) return
+    const sid = goodMorningSessionIdRef.current
+    const beat = () => {
+      const todayKey = formatDateKey(startOfDay(new Date()))
+      void upsertGoodMorningSession(sid, {
+        lastSeenAtMs: Date.now(),
+        dateKey: todayKey,
+        deviceInfo: getGoodMorningDeviceInfo(),
+      })
     }
-  }, [armNextReminder, reminderActive])
+    beat()
+    const id = window.setInterval(beat, 5000)
+    return () => {
+      window.clearInterval(id)
+      void clearGoodMorningSession(sid)
+    }
+  }, [showGoodMorning])
+
+  const dismissGoodMorning = useCallback(() => {
+    const todayKey = formatDateKey(startOfDay(new Date()))
+    const sid = goodMorningSessionIdRef.current
+    void appendGoodMorningLog({
+      dateKey: todayKey,
+      sessionId: sid,
+      deviceInfo: getGoodMorningDeviceInfo(),
+    })
+    const next: GoodMorningLocalState = { dismissedDateKey: todayKey, lastCompletedEpoch: goodMorningEpoch }
+    writeGoodMorningLocal(next)
+    setGoodMorningLocal(next)
+    void clearGoodMorningSession(sid)
+    setGoodMorningRevealPhase(true)
+    window.setTimeout(() => setGoodMorningRevealPhase(false), 1200)
+  }, [goodMorningEpoch])
 
   const dismissMusicReminder = useCallback(() => {
     const now = new Date()
     const end = new Date(now)
-    end.setHours(21, 0, 0, 0) // today 9:00pm local
+    end.setHours(20, 30, 0, 0) // today 8:30pm local (reminder window end)
     const SNOOZE_MS = 10 * 60 * 1000
     const untilMs = Math.min(end.getTime(), now.getTime() + SNOOZE_MS)
     setMusicReminderDismissedUntilMs(untilMs)
@@ -2621,26 +2697,44 @@ function App() {
 
   const evaluateMusicReminder = useCallback(
     (d: Date) => {
-      const minutes = d.getHours() * 60 + d.getMinutes()
-      const inWindow = minutes >= 11 * 60 && minutes < 21 * 60
+      const inWindow = isWithinMusicReminderHours(d)
       const dismissed = musicReminderDismissedUntilMs > d.getTime()
       const idleLongEnough =
         !musicIsActuallyPlaying &&
         musicNotPlayingSinceMs !== null &&
         d.getTime() - musicNotPlayingSinceMs >= MUSIC_REMINDER_IDLE_GRACE_MS
-      const shouldBeActive = inWindow && idleLongEnough && !dismissed
+      const shouldBeActive = musicReminderEnabled && inWindow && idleLongEnough && !dismissed
       setMusicReminderActive(shouldBeActive)
       if (!shouldBeActive) setMusicReminderFlashOn(true)
     },
-    [musicIsActuallyPlaying, musicNotPlayingSinceMs, musicReminderDismissedUntilMs]
+    [musicIsActuallyPlaying, musicNotPlayingSinceMs, musicReminderDismissedUntilMs, musicReminderEnabled]
   )
 
-  // Evaluate frequently so the reminder can start near 11:00 exactly without reload.
   useEffect(() => {
     evaluateMusicReminder(new Date())
-    const id = window.setInterval(() => evaluateMusicReminder(new Date()), 5 * 60_000)
+    const id = window.setInterval(() => evaluateMusicReminder(new Date()), MUSIC_REMINDER_EVAL_INTERVAL_MS)
     return () => window.clearInterval(id)
   }, [evaluateMusicReminder])
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') evaluateMusicReminder(new Date())
+    }
+    const onFocus = () => evaluateMusicReminder(new Date())
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [evaluateMusicReminder])
+
+  // Screensaver often opens after long idle; timers may be throttled — re-check so we don’t pop
+  // “PLEASE PLAY MUSIC” over the screensaver after 8:30pm.
+  useEffect(() => {
+    if (!screensaverOpen) return
+    evaluateMusicReminder(new Date())
+  }, [evaluateMusicReminder, screensaverOpen])
 
   // Flash while active.
   useEffect(() => {
@@ -2660,20 +2754,7 @@ function App() {
     }
   }, [musicReminderActive])
 
-  type StarParticle = {
-    id: string
-    startX: number
-    startY: number
-    dx: number
-    dy: number
-    dxMid: number
-    dyMid: number
-    rx: number
-    delayMs: number
-    durMs: number
-    sizePx: number
-    rotDeg: number
-  }
+  type StarParticle = RewardStarParticle
   const [rewardStars, setRewardStars] = useState<StarParticle[]>([])
 
   // iOS 9: reduce perceived tap delay by handling touchstart
@@ -2683,10 +2764,11 @@ function App() {
     lastTouchTsRef.current = Date.now()
   }, [])
   const shouldIgnoreClick = useCallback(() => {
-    return Date.now() - lastTouchTsRef.current < 700
+    return Date.now() - lastTouchTsRef.current < CELEBRATION_TIMING.clickGuardMs
   }, [])
 
-  const reloadForUpdate = useCallback(async () => {
+  const reloadForUpdate = useCallback(async (reason = 'manual-refresh') => {
+    markIntentionalReload(reason)
     try {
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations()
@@ -2716,7 +2798,7 @@ function App() {
       if (next <= 0) {
         if (forceRefreshIntervalRef.current) window.clearInterval(forceRefreshIntervalRef.current)
         forceRefreshIntervalRef.current = null
-        void reloadForUpdate()
+        void reloadForUpdate('force-refresh')
       }
     }, 250)
   }, [FORCE_REFRESH_COUNTDOWN_SEC, reloadForUpdate])
@@ -2725,9 +2807,6 @@ function App() {
     setIsAdmin(false)
     setShowAdminPanel(false)
     setAdminView('employees')
-    setAdminPin('')
-    setAdminPinError(null)
-    setShowAdminLogin(false)
   }, [])
 
   const addAdminTask = useCallback(async () => {
@@ -2800,13 +2879,24 @@ function App() {
       return next
     })
 
+    // Save stage assignments (v3) if any are set
+    const stageEntry: Partial<Record<WindowKey, 1 | 2>> = {}
+    if (adminTaskStages['11'] && windows.includes('11')) stageEntry['11'] = adminTaskStages['11']
+    if (adminTaskStages['21'] && windows.includes('21')) stageEntry['21'] = adminTaskStages['21']
+    if (Object.keys(stageEntry).length > 0) {
+      const next = { ...taskStages, [id]: stageEntry }
+      setTaskStages(next)
+      saveTaskStages(next).catch(() => {})
+    }
+
     // Reset draft
     setAdminTaskName('')
     setAdminTaskIcon('🧩')
     setAdminTaskWindows({ '11': false, '17': true, '21': false })
+    setAdminTaskStages({})
     setAdminTaskWeight('1')
     setAdminTaskRequirementsText('')
-  }, [adminTaskIcon, adminTaskName, adminTaskRequirementsText, adminTaskWeight, adminTaskWindows, isAdmin, taskCatalog])
+  }, [adminTaskIcon, adminTaskName, adminTaskRequirementsText, adminTaskStages, adminTaskWeight, adminTaskWindows, isAdmin, taskCatalog, taskStages])
 
   const resetAdminDailyDraft = useCallback(() => {
     setAdminDailyEditingId(null)
@@ -2870,16 +2960,7 @@ function App() {
     const isEditing = !!adminDailyEditingId
     const existing = isEditing ? tasks.find((t) => t.id === adminDailyEditingId) || null : null
 
-    const baseId = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+/, '')
-      .replace(/-+$/, '')
-
-    const exists = (id: string) => (tasks || []).some((t) => t.id === id)
-    let id = existing?.id || baseId || `daily-${Date.now()}`
-    if (!existing && exists(id)) id = `${id}-${Math.random().toString(36).slice(2, 6)}`
+    const id = existing?.id ?? createNewDailyTaskId()
 
     setAdminDailySaving(true)
     setAdminDailyUploadPct({})
@@ -2914,10 +2995,11 @@ function App() {
         createdAtMs: existing?.createdAtMs ?? Date.now(),
         updatedAtMs: Date.now(),
         ...(existing?.disabledAtMs ? { disabledAtMs: existing.disabledAtMs } : {}),
+        ...(existing?.archivedAtMs ? { archivedAtMs: existing.archivedAtMs } : {}),
       }
 
       const nextTasks = existing
-        ? tasks.map((t) => (t.id === existing.id ? nextTask : t))
+        ? [...tasks.filter((t) => t.id !== existing.id), nextTask]
         : [...tasks, nextTask]
 
       const nextCatalog: DailyTaskCatalog = { tasks: nextTasks }
@@ -2948,7 +3030,7 @@ function App() {
 
   const startEditAdminDailyTask = useCallback(
     (id: string) => {
-      const t = (dailyTaskCatalog?.tasks || []).find((x) => x.id === id) || null
+      const t = resolveDailyTaskDefFromCatalog(dailyTaskCatalog?.tasks, id)
       if (!t) return
       setAdminDailyEditingId(t.id)
       setAdminDailyName(t.name || '')
@@ -2984,7 +3066,7 @@ function App() {
   const computeDailyTaskWeekQuotaWarnings = useCallback(
     (week: DailyTaskWeek | null): string[] => {
       if (!week) return []
-      const tasks = (dailyTaskCatalog?.tasks || []).filter(isDailyTaskEnabled)
+      const tasks = (dailyTaskCatalog?.tasks || []).filter(isDailyTaskSchedulable)
       const weekly = tasks.filter((t) => t.frequency?.type === 'weekly') as DailyTaskDef[]
       if (!weekly.length) return []
 
@@ -3014,7 +3096,6 @@ function App() {
       const dk = String(dateKey || '').trim()
       const tid = String(taskId || '').trim()
       if (!dk || !tid) return
-      const todayKeyAtCall = formatDateKey(startOfDay(new Date()))
       setAdminDailyOverrideSaving(dk)
       try {
         const weekStart = getWeekStartDateKeySunday(dk)
@@ -3026,7 +3107,7 @@ function App() {
         if (!week) return
 
         const nextDays: DailyTaskWeek['days'] = { ...(week.days || {}) }
-        nextDays[dk] = { taskId: tid, source: 'override' }
+        nextDays[dk] = createOverrideDayEntry(tid)
         const nextWeek: DailyTaskWeek = {
           ...week,
           weekStartDateKey: weekStart,
@@ -3037,27 +3118,29 @@ function App() {
         await upsertDailyTaskWeek(weekStart, nextWeek)
         setAdminDailyWeeksByStart((prev) => ({ ...prev, [weekStart]: nextWeek }))
 
-        // If overriding today, force the shared run to match (so the golden card updates immediately).
-        // We do NOT override if already completed.
-        if (dk === todayKeyAtCall && !todayDailyTaskRun?.completedAtMs) {
-          await upsertDailyTaskRun(todayKeyAtCall, {
+        // Sync `dailyTaskRuns/{dk}` for any overridden day (including `__none__`) so Recent Runs lists it
+        // and Edit history works. Never clobber a completed run.
+        const existingRun = await getDailyTaskRun(dk)
+        if (!existingRun?.completedAtMs) {
+          await upsertDailyTaskRun(dk, {
             taskId: tid,
-            selectedAtMs: Date.now(),
+            selectedAtMs:
+              typeof existingRun?.selectedAtMs === 'number' && Number.isFinite(existingRun.selectedAtMs)
+                ? existingRun.selectedAtMs
+                : Date.now(),
             override: { taskId: tid, atMs: Date.now(), by: 'admin' },
           })
         }
+        const toKey = formatDateKey(startOfDay(new Date()))
+        const runs = await listDailyTaskRunsInRange(addDaysToDateKey(toKey, -30), toKey)
+        setAdminDailyRunsRecent(runs)
       } catch (e) {
         console.error('Failed to set daily task override:', e)
       } finally {
         setAdminDailyOverrideSaving(null)
       }
     },
-    [
-      adminDailyWeeksByStart,
-      dailyTaskCatalog.tasks,
-      isAdmin,
-      todayDailyTaskRun,
-    ]
+    [adminDailyWeeksByStart, dailyTaskCatalog.tasks, isAdmin]
   )
 
   const regenerateDailyTaskSchedule = useCallback(async () => {
@@ -3068,7 +3151,7 @@ function App() {
     setAdminDailyRegenerating(true)
     setAdminDailyDebugInfo(['Starting regeneration...'])
     try {
-      const tasks = (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled)
+      const tasks = (dailyTaskCatalog.tasks || []).filter(isDailyTaskSchedulable)
       if (!tasks.length) {
         setAdminDailyDebugInfo(['ERROR: No enabled daily tasks to schedule.'])
         setAdminDailyRegenerating(false)
@@ -3087,22 +3170,60 @@ function App() {
 
       // Regenerate schedules for next 7 days (may span 2 weeks)
       const next7 = Array.from({ length: 7 }).map((_, i) => addDaysToDateKey(today, i))
-      const weekStarts = Array.from(new Set(next7.map((dk) => getWeekStartDateKeySunday(dk))))
+      const weekStarts = Array.from(new Set(next7.map((dk) => getWeekStartDateKeySunday(dk)))).sort()
+
+      let scheduleWeeks: DailyTaskWeek[] = []
+      try {
+        scheduleWeeks = await loadScheduleWeeksOverlappingDateRange(historyFrom, today)
+      } catch (e) {
+        console.warn('Failed to load daily task weeks for recency merge:', e)
+      }
+
+      let aiByWeek: Record<string, Record<string, string>> = {}
+      let scheduleUsedAi = false
+      try {
+        const weeksPayload = await Promise.all(
+          weekStarts.map(async (weekStart) => ({
+            weekStartDateKey: weekStart,
+            existingWeek: adminDailyWeeksByStart[weekStart] || (await getDailyTaskWeek(weekStart)) || null,
+            todayDateKey: today,
+          }))
+        )
+        const aiResult = await fetchValidatedWeeklyPlacements({
+          tasks,
+          recentRunsForHistory: recentRuns,
+          weeks: weeksPayload,
+          systemPrompt: getCachedDailyTaskScheduleSystemPrompt(),
+        })
+        aiByWeek = aiResult.byWeek
+        scheduleUsedAi = aiResult.usedAi
+      } catch (e) {
+        console.warn('AI daily schedule batch skipped:', e)
+      }
 
       const updatedWeeks: Record<string, DailyTaskWeek> = {}
       const allWarnings: string[] = []
+      const weeksForRecency = [...scheduleWeeks]
 
       for (const weekStart of weekStarts) {
-        // Get existing week to preserve overrides
         const existing = adminDailyWeeksByStart[weekStart] || (await getDailyTaskWeek(weekStart)) || null
 
-        // Generate new schedule (preserves overrides + past days, fills rest with algorithm)
+        const picked = aiByWeek[weekStart]
+        const weeklyPlacementOverrides =
+          scheduleUsedAi && picked && Object.keys(picked).length > 0 ? picked : undefined
+        const generatorVersion = weeklyPlacementOverrides
+          ? DAILY_TASK_WEEK_GENERATOR_VERSION_AI
+          : undefined
+
         const result = generateDailyTaskWeek({
           weekStartDateKey: weekStart,
           tasks,
           recentRuns,
+          scheduleWeeksForRecency: weeksForRecency,
           existingWeek: existing,
-          todayDateKey: today, // Preserve past days, only fill today+future
+          todayDateKey: today,
+          weeklyPlacementOverrides,
+          generatorVersion,
         })
 
         if (result.warnings.length) {
@@ -3112,6 +3233,10 @@ function App() {
         if (result.week) {
           await upsertDailyTaskWeek(weekStart, result.week)
           updatedWeeks[weekStart] = result.week
+          const idx = weeksForRecency.findIndex((w) => w.weekStartDateKey === weekStart)
+          const merged: DailyTaskWeek = { ...result.week, weekStartDateKey: weekStart }
+          if (idx >= 0) weeksForRecency[idx] = merged
+          else weeksForRecency.push(merged)
         }
       }
 
@@ -3121,23 +3246,40 @@ function App() {
       // Build debug info to show on screen
       const debugLines: string[] = []
       debugLines.push(`Loaded ${recentRuns.length} task runs from history (last 120 days)`)
+      debugLines.push(
+        scheduleUsedAi
+          ? 'Weekly quota day picks: AI-assisted (validated); monthly/normal fill uses algorithm + run history.'
+          : 'Weekly quota day picks: algorithm only (AI unavailable, timed out, or invalid response).'
+      )
       debugLines.push('')
       
-      const normalTasks = tasks.filter(t => t.frequency?.type === 'normal')
-      const lastByTask = buildDailyTaskRecencyMap(recentRuns)
-      
-      debugLines.push('NORMAL TASK RECENCY (higher score = older = picked first):')
-      normalTasks
-        .map(t => {
+      const lastByTask = buildMergedRecencyMap(recentRuns, scheduleWeeks)
+      const freqLabel = (t: DailyTaskDef): string => {
+        switch (t.frequency.type) {
+          case 'normal':
+            return 'normal'
+          case 'monthly':
+            return 'monthly'
+          case 'weekly':
+            return `weekly×${t.frequency.quotaPerWeek}`
+        }
+      }
+
+      debugLines.push(
+        'TASK RECENCY (runs + scheduled weeks; higher score = older; normal-slot ties favor oldest):'
+      )
+      tasks
+        .map((t) => {
           const last = lastByTask[t.id]
-          const score = last ? (Date.now() - last) : 1e15
+          const score = last ? Date.now() - last : 1e15
           const lastDate = last ? new Date(last).toLocaleDateString() : 'NEVER'
-          return { name: t.name || t.id, last, score, lastDate }
+          return { name: t.name || t.id, freq: freqLabel(t), last, score, lastDate }
         })
         .sort((a, b) => b.score - a.score)
-        .forEach(({ name, score, lastDate }) => {
-          const scoreStr = score === 1e15 ? 'MAX (never done)' : Math.round(score / (1000 * 60 * 60 * 24)) + ' days ago'
-          debugLines.push(`  • ${name}: ${lastDate} (${scoreStr})`)
+        .forEach(({ name, freq, score, lastDate }) => {
+          const scoreStr =
+            score === 1e15 ? 'MAX (never done)' : Math.round(score / (1000 * 60 * 60 * 24)) + ' days ago'
+          debugLines.push(`  • [${freq}] ${name}: ${lastDate} (${scoreStr})`)
         })
       
       debugLines.push('')
@@ -3193,6 +3335,83 @@ function App() {
       setAdminDailyReclosingToday(false)
     }
   }, [adminRecloseDailyTaskRun, isAdmin, todayDailyTaskRun?.completedAtMs, todayDailyTaskRun?.revealedAtMs])
+
+  const openAdminDailyRunHistoryEdit = useCallback(
+    (run: DailyTaskRun) => {
+      if (!isAdmin) return
+      const isNoTask = run.taskId === '__none__'
+      const isCompleted = typeof run.completedAtMs === 'number' && Number.isFinite(run.completedAtMs)
+      if (!isNoTask && !isCompleted) return
+      setAdminDailyRunHistoryError(null)
+      setAdminDailyRunHistoryEdit(run)
+      setAdminDailyRunHistoryTitle(getDailyTaskRunHistoryTitle(run, dailyTaskCatalog.tasks))
+      const list = (run.completedByList || []).map((s) => (s || '').trim()).filter(Boolean)
+      const splitLegacy = (run.completedBy || '').split(/\s*\+\s*/)
+      setAdminDailyRunHistoryEmp1(list[0] || splitLegacy[0]?.trim() || '')
+      setAdminDailyRunHistoryEmp2(list[1] || splitLegacy[1]?.trim() || '')
+      setAdminDailyRunHistoryCreditTaskId(
+        run.taskId === '__none__' ? (run.schedulingCreditTaskId || '').trim() : ''
+      )
+    },
+    [dailyTaskCatalog.tasks, isAdmin]
+  )
+
+  const saveAdminDailyRunHistoryEdit = useCallback(async () => {
+    if (!isAdmin || !adminDailyRunHistoryEdit) return
+    const defaultTitle =
+      adminDailyRunHistoryEdit.taskId === '__none__'
+        ? NO_TASK_DAILY_RUN_LABEL
+        : resolveDailyTaskDefFromCatalog(dailyTaskCatalog.tasks, adminDailyRunHistoryEdit.taskId)?.name ||
+          adminDailyRunHistoryEdit.taskId
+    const titleTrim = adminDailyRunHistoryTitle.trim()
+    const titleForApi = titleTrim === defaultTitle.trim() ? '' : titleTrim
+    setAdminDailyRunHistorySaving(true)
+    setAdminDailyRunHistoryError(null)
+    try {
+      const creditTrim = adminDailyRunHistoryCreditTaskId.trim()
+      if (adminDailyRunHistoryEdit.taskId === '__none__' && creditTrim) {
+        const found = resolveDailyTaskDefFromCatalog(dailyTaskCatalog.tasks, creditTrim)
+        if (!found) {
+          setAdminDailyRunHistoryError('Scheduling credit: pick a valid catalog task id from the list.')
+          setAdminDailyRunHistorySaving(false)
+          return
+        }
+      }
+      await adminPatchDailyTaskRunHistory(adminDailyRunHistoryEdit.dateKey, {
+        historyDisplayName: titleForApi,
+        completedBy1: adminDailyRunHistoryEmp1,
+        completedBy2: adminDailyRunHistoryEmp2,
+        ...(adminDailyRunHistoryEdit.taskId === '__none__'
+          ? { schedulingCreditTaskId: creditTrim }
+          : {}),
+      })
+      setAdminDailyRunHistoryEdit(null)
+      const toKey = formatDateKey(startOfDay(new Date()))
+      const runs = await listDailyTaskRunsInRange(addDaysToDateKey(toKey, -30), toKey)
+      setAdminDailyRunsRecent(runs)
+    } catch (e) {
+      const code = e instanceof Error ? e.message : ''
+      const msg =
+        code === 'daily-task-run-missing'
+          ? 'No run document for that day.'
+          : code === 'daily-task-run-not-completed'
+            ? 'That day is not marked completed yet.'
+            : code === 'daily-task-run-completers-required'
+              ? 'Enter at least one completer name.'
+              : 'Save failed. Check connection and try again.'
+      setAdminDailyRunHistoryError(msg)
+    } finally {
+      setAdminDailyRunHistorySaving(false)
+    }
+  }, [
+    adminDailyRunHistoryEdit,
+    adminDailyRunHistoryEmp1,
+    adminDailyRunHistoryEmp2,
+    adminDailyRunHistoryCreditTaskId,
+    adminDailyRunHistoryTitle,
+    dailyTaskCatalog.tasks,
+    isAdmin,
+  ])
 
   const startEditRequirements = useCallback((taskId: string) => {
     const t = allTasks.find((x) => x.id === taskId)
@@ -3349,7 +3568,7 @@ function App() {
     if (adminApplyingIceCombine) return
     setAdminApplyingIceCombine(true)
     try {
-      const effectiveAtMs = Date.now()
+      const effectiveAtMs = ICE_COMBINED_CREATED_AT_MS
       const idsToRemove = ['left-ice-5pm', 'right-ice-5pm', 'left-ice-close', 'right-ice-close']
       const current = taskOverrides?.overrides || {}
       const nextOverrides: Record<string, unknown> = { ...current }
@@ -3366,6 +3585,9 @@ function App() {
       })
 
       const next: TaskOverrides = { ...taskOverrides, overrides: nextOverrides as any }
+      if (typeof next.towelsSplitEffectiveAtMs !== 'number' || next.towelsSplitEffectiveAtMs <= 0) {
+        next.towelsSplitEffectiveAtMs = effectiveAtMs
+      }
       await saveTaskOverrides(next)
     } catch (e) {
       console.error('Failed to apply Ice Combine overrides:', e)
@@ -3390,6 +3612,24 @@ function App() {
       setAdminApplyingTowelsSplit(false)
     }
   }, [adminApplyingTowelsSplit, isAdmin, taskOverrides])
+
+  const [adminTogglingDice, setAdminTogglingDice] = useState(false)
+  const toggleDiceEnabled = useCallback(async () => {
+    if (!isAdmin) return
+    if (adminTogglingDice) return
+    setAdminTogglingDice(true)
+    try {
+      const enabled = taskOverrides?.diceEnabled === true
+      const base: TaskOverrides = taskOverrides ?? { overrides: {} }
+      const next: TaskOverrides = { ...base, diceEnabled: !enabled }
+      await saveTaskOverrides(next)
+    } catch (e) {
+      console.error('Failed to toggle dice button:', e)
+      alert('Failed to update setting. Check connection and try again.')
+    } finally {
+      setAdminTogglingDice(false)
+    }
+  }, [adminTogglingDice, isAdmin, taskOverrides])
 
   const saveEditedRequirements = useCallback(async () => {
     if (!isAdmin) return
@@ -3623,12 +3863,12 @@ function App() {
           const last = window.localStorage.getItem(STORAGE_KEY)
           if (last !== today) {
             window.localStorage.setItem(STORAGE_KEY, today)
-            void reloadForUpdate()
+            void reloadForUpdate('nightly-update')
             return
           }
         } catch {
           // ignore and still reload
-          void reloadForUpdate()
+          void reloadForUpdate('nightly-update')
           return
         }
         // If we already auto-updated today, just schedule the next run.
@@ -3672,8 +3912,33 @@ function App() {
     }
   }, [])
 
-  const spawnRewardStars = useCallback((targetEl: HTMLElement | null, opts?: { origin?: 'bottom' | 'left' | 'right'; count?: number; append?: boolean }) => {
-    if (prefersReducedMotion) return
+  const isElMostlyVisible = useCallback((el: HTMLElement | null, opts?: { threshold?: number }): boolean => {
+    if (!el) return false
+    const rect = el.getBoundingClientRect()
+    // If element has no box, treat as not visible.
+    if (!rect.width || !rect.height) return false
+
+    const vpH = window.innerHeight || document.documentElement?.clientHeight || 0
+    if (!vpH) return false
+
+    const visibleTop = Math.max(0, rect.top)
+    const visibleBottom = Math.min(vpH, rect.bottom)
+    const visibleH = Math.max(0, visibleBottom - visibleTop)
+
+    const thresholdRaw = typeof opts?.threshold === 'number' ? opts.threshold : 0.6
+    const threshold = Math.max(0, Math.min(1, thresholdRaw))
+    return visibleH / rect.height >= threshold
+  }, [])
+
+  const isMainShiftHudMostlyVisible = useCallback((): boolean => {
+    // The header is a stable ref; use its parent (the full card) for the visibility ratio.
+    const header = shiftHudHeaderRef.current
+    const card = (header?.parentElement as HTMLElement | null) || null
+    return isElMostlyVisible(card, { threshold: 0.6 })
+  }, [isElMostlyVisible])
+
+  const spawnRewardStars = useCallback((targetEl: HTMLElement | null, opts?: { origin?: 'bottom' | 'left' | 'right'; count?: number; append?: boolean; bypassReducedMotion?: boolean }) => {
+    if (prefersReducedMotion && !opts?.bypassReducedMotion) return
     if (!targetEl) return
     const rect = targetEl.getBoundingClientRect()
     const targetX = rect.left + rect.width / 2
@@ -3718,159 +3983,318 @@ function App() {
         dxMid,
         dyMid,
         rx,
-        delayMs: i * 28,
-        durMs: 950 + Math.floor(Math.random() * 300),
+        delayMs: i * celebrationTiming.starStaggerMs,
+        durMs: celebrationTiming.starDurMinMs + Math.floor(Math.random() * celebrationTiming.starDurRangeMs),
         sizePx: 44 + Math.floor(Math.random() * 24),
         rotDeg: Math.floor(Math.random() * 180 - 90),
       })
     }
     setRewardStars((prev) => (opts?.append ? [...prev, ...next] : next))
-  }, [prefersReducedMotion])
 
-  const dismissWindowCompleteOverlay = useCallback(() => {
-    // Prevent synthetic click/touchend from landing on an element underneath after we remove the overlay.
-    const swallow = (ev: Event) => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(ev as any).preventDefault?.()
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(ev as any).stopPropagation?.()
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(ev as any).stopImmediatePropagation?.()
-      } catch {
-        // ignore
+    if (!prefersReducedMotion || opts?.bypassReducedMotion) {
+      if (!taskGridCelebratingRef.current) {
+        if (cardJiggleStartTimeoutRef.current) window.clearTimeout(cardJiggleStartTimeoutRef.current)
+        if (cardJiggleEndTimeoutRef.current) window.clearTimeout(cardJiggleEndTimeoutRef.current)
+
+        cardJiggleStartTimeoutRef.current = window.setTimeout(() => {
+          cardJiggleStartTimeoutRef.current = null
+          setTaskCardsJiggle(true)
+          cardJiggleEndTimeoutRef.current = window.setTimeout(() => {
+            cardJiggleEndTimeoutRef.current = null
+            setTaskGridEntered(true)
+            setTaskCardsJiggle(false)
+          }, celebrationTiming.cardJiggleDurationMs + celebrationTiming.cardJiggleStaggerCapMs)
+        }, celebrationTiming.starDurMinMs)
       }
     }
-    window.addEventListener('click', swallow, true)
-    window.addEventListener('mouseup', swallow, true)
-    window.addEventListener('touchend', swallow, true)
-    window.addEventListener('pointerup', swallow, true)
-    window.setTimeout(() => {
-      window.removeEventListener('click', swallow, true)
-      window.removeEventListener('mouseup', swallow, true)
-      window.removeEventListener('touchend', swallow, true)
-      window.removeEventListener('pointerup', swallow, true)
-    }, 400)
+  }, [
+    celebrationTiming.cardJiggleDurationMs,
+    celebrationTiming.cardJiggleStaggerCapMs,
+    celebrationTiming.starDurMinMs,
+    celebrationTiming.starDurRangeMs,
+    celebrationTiming.starStaggerMs,
+    prefersReducedMotion,
+  ])
 
-    if (windowCompleteOverlayTimeoutRef.current) window.clearTimeout(windowCompleteOverlayTimeoutRef.current)
-    windowCompleteOverlayTimeoutRef.current = null
-    setWindowCompleteOverlay(null)
+  /** v3: wait for scroll unlock + modal unmount paint before reading target rect for stars. */
+  const spawnRewardStarsAfterLayoutSettle = useCallback(
+    (
+      targetEl: HTMLElement | null,
+      opts?: Parameters<typeof spawnRewardStars>[1],
+    ) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => spawnRewardStars(targetEl, opts))
+      })
+    },
+    [spawnRewardStars],
+  )
+
+  const clearWindowCompletePhaseTimeouts = useCallback(() => {
+    windowCompletePhaseTimeoutsRef.current.forEach((t) => window.clearTimeout(t))
+    windowCompletePhaseTimeoutsRef.current = []
   }, [])
 
-  const triggerWindowCompleteCelebration = useCallback((opts?: { intensity?: 'normal' | 'big' }) => {
-    // Toast always (even for reduced motion)
-    setWindowCompleteToast('All tasks complete — 100%')
-    if (toastTimeoutRef.current) window.clearTimeout(toastTimeoutRef.current)
-    toastTimeoutRef.current = window.setTimeout(() => setWindowCompleteToast(null), 2400)
-
-    if (prefersReducedMotion) return
-
-    const el = topProgressRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const startX = rect.left + rect.width / 2
-    const startY = rect.top + rect.height / 2
-
-    const colors = ['#22c55e', '#16a34a', '#f59e0b', '#3b82f6', '#a855f7', '#ef4444']
-    const intensity = opts?.intensity || 'normal'
-    const count = intensity === 'big' ? 84 : 34
-    const now = Date.now()
-    const next: ConfettiPiece[] = []
-    for (let i = 0; i < count; i++) {
-      const spread = intensity === 'big' ? Math.PI * 1.55 : Math.PI * 1.2
-      const angle = (-Math.PI / 2) + (Math.random() * spread - spread / 2)
-      const speed = (intensity === 'big' ? 560 : 420) + Math.random() * (intensity === 'big' ? 760 : 520)
-      const dx = Math.cos(angle) * speed + (Math.random() * (intensity === 'big' ? 220 : 120) - (intensity === 'big' ? 110 : 60))
-      const dy = Math.sin(angle) * speed + (intensity === 'big' ? 740 : 520) + Math.random() * (intensity === 'big' ? 340 : 260)
-      const w = 6 + Math.floor(Math.random() * 8)
-      const h = 3 + Math.floor(Math.random() * 6)
-      next.push({
-        id: `${now}-${i}-${Math.random().toString(16).slice(2)}`,
-        x: startX,
-        y: startY,
-        dx,
-        dy,
-        rotDeg: Math.floor(Math.random() * 720 - 360),
-        delayMs: i * 10,
-        durMs: 950 + Math.floor(Math.random() * 500),
-        w,
-        h,
-        br: Math.random() < 0.25 ? 999 : 2,
-        color: colors[i % colors.length],
-      })
+  const buildWindowCompleteCelebration = (
+    args: { state: TaskState; windowLabel: string; participants: string[] }
+  ): WindowCompleteCelebrationViewModel => {
+    const soloScoreCap = isSoloScoreCappedForShift(selectedDateKey, selectedShift)
+    const soloCelebrationLayout = isSoloModeActiveForWindow(selectedDateKey, selectedWindow)
+    const headlineCacheKey = `${selectedDateKey}:${selectedShift}`
+    const headlineMap = shiftCompleteHeadlineByDayShiftRef.current
+    let headline = headlineMap.get(headlineCacheKey)
+    if (!headline) {
+      headline = COMPLETE_HEADLINES[headlineRotationRef.current % COMPLETE_HEADLINES.length]!
+      headlineRotationRef.current += 1
+      headlineMap.set(headlineCacheKey, headline)
     }
 
-    // Extra burst for "big" celebrations: a second wave from center-screen to use more of the display.
-    if (intensity === 'big') {
-      const cx = window.innerWidth / 2
-      const cy = window.innerHeight * 0.48
-      const extraCount = 44
-      for (let i = 0; i < extraCount; i++) {
-        const angle = (-Math.PI / 2) + (Math.random() * Math.PI * 2 - Math.PI)
-        const speed = 380 + Math.random() * 680
-        const dx = Math.cos(angle) * speed
-        const dy = Math.sin(angle) * speed + 520 + Math.random() * 260
-        const w = 6 + Math.floor(Math.random() * 8)
-        const h = 3 + Math.floor(Math.random() * 6)
-        next.push({
-          id: `${now}-extra-${i}-${Math.random().toString(16).slice(2)}`,
-          x: cx,
-          y: cy,
-          dx,
-          dy,
-          rotDeg: Math.floor(Math.random() * 720 - 360),
-          delayMs: 120 + i * 10,
-          durMs: 950 + Math.floor(Math.random() * 600),
-          w,
-          h,
-          br: Math.random() < 0.25 ? 999 : 2,
-          color: colors[(i + 2) % colors.length],
-        })
+    const tilesByName: Record<string, Array<{ taskId: string; icon: string; taskName?: string }>> = {}
+
+    currentTasks.forEach((task) => {
+      const completion = args.state[selectedDateKey]?.[selectedWindow]?.[task.id]
+      if (!completion) return
+      const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, soloCelebrationLayout)
+      if (status !== 'done') return
+      const uniqueAssignees = Array.from(new Set((completion.assignees || []).filter(Boolean)))
+      uniqueAssignees.forEach((assignee) => {
+        if (!tilesByName[assignee]) tilesByName[assignee] = []
+        tilesByName[assignee].push({ taskId: task.id, icon: task.icon, taskName: task.name })
+      })
+    })
+
+    const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
+    const rows = computeShiftLeadersForState(
+      args.state,
+      selectedDateKey,
+      selectedShift,
+      SHIFT_WINDOWS,
+      windowTaskWeights,
+      taskWeightByIdByWindow,
+      soloScoreCap,
+      fairSplitForSelectedDateAndShift,
+      trainingKeysForDate(selectedDateKey)
+    )
+    const rowByName = rows.reduce<Record<string, LeaderRow>>((acc, row) => {
+      acc[row.name] = row
+      return acc
+    }, {})
+
+    // Secret training mode: every participant of the window gets 50 points on a dedicated screen.
+    if (selectedWindowIsTraining) {
+      const TRAINING_SCORE = 50
+      const trainingNames = Array.from(
+        new Set([...Object.keys(tilesByName), ...args.participants].filter(Boolean))
+      ).slice(0, 4)
+      const players: WindowCompleteCelebrationViewModel['players'] = trainingNames.map((name) => ({
+        name,
+        color: employeeColors[name],
+        score: TRAINING_SCORE,
+        tiles: tilesByName[name] || [],
+        isWinner: true,
+      }))
+      return {
+        windowLabel: args.windowLabel,
+        headline: 'TRAINING SHIFT',
+        phase: 'evacuate',
+        players,
+        layout: 'pair',
+        trainingShift: true,
       }
     }
-    setWindowCompleteConfetti(next)
 
-    if (confettiTimeoutRef.current) window.clearTimeout(confettiTimeoutRef.current)
-    const maxMs = next.reduce((m, p) => Math.max(m, p.delayMs + p.durMs), 0) + 100
-    confettiTimeoutRef.current = window.setTimeout(() => setWindowCompleteConfetti([]), maxMs)
-  }, [prefersReducedMotion])
+    // v2.2: on/after cutover, the 11AM window's completion celebration shows the standalone
+    // 11AM number, since `score` (5PM-only) will be 0 at 11AM completion. 5PM/9PM windows keep
+    // the leaderboard score. Pre-cutover behavior is unchanged.
+    const useAmScoreForCelebration =
+      useSeparateDayAmPmForSelected && selectedShift === 'day' && selectedWindow === '11'
+    const celebrationScoreForRow = (r: LeaderRow | undefined): number =>
+      useAmScoreForCelebration
+        ? (r?.dayAmScoreFloat ?? r?.dayAmScore ?? 0)
+        : shiftHudScoreForCelebration(r)
 
-  // Star animation duration: 14 stars × 28ms stagger + max 1250ms animation = ~1650ms
-  // Add buffer for smooth sequencing = 1700ms total
-  const STAR_ANIMATION_DURATION_MS = 1700
+    if (soloCelebrationLayout) {
+      const soloTiles: Array<{ taskId: string; icon: string; taskName?: string }> = []
+      currentTasks.forEach((task) => {
+        const completion = args.state[selectedDateKey]?.[selectedWindow]?.[task.id]
+        if (!completion) return
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, true)
+        if (status !== 'done') return
+        soloTiles.push({ taskId: task.id, icon: task.icon, taskName: task.name })
+      })
+      const soloPlayed = rows.filter((r) => shiftHudHasAnyPoints(r))
+      const soloName =
+        (soloPlayed[0]?.name || '').trim() ||
+        (args.participants.find((p) => (p || '').trim()) || '').trim() ||
+        'Solo shift'
+      const soloScore = soloPlayed[0] ? Math.round(celebrationScoreForRow(soloPlayed[0]) * 10) / 10 : 0
+      const players: WindowCompleteCelebrationViewModel['players'] = [
+        {
+          name: soloName,
+          color: employeeColors[soloName],
+          score: soloScore,
+          tiles: soloTiles,
+          isWinner: true,
+        },
+      ]
+      return {
+        windowLabel: args.windowLabel,
+        headline,
+        phase: 'evacuate',
+        players,
+        layout: 'solo',
+      }
+    }
 
-  const scheduleWindowCompleteCelebrationAfterScroll = useCallback(
-    (args: { windowLabel: string; participants: string[]; alsoScrollToTop?: boolean; waitForStars?: boolean }) => {
+    const rankedNames = rows.filter((r) => shiftHudHasAnyPoints(r)).map((r) => r.name)
+    const assigneeNames = Object.keys(tilesByName)
+    const mergedNames = Array.from(new Set([...rankedNames, ...args.participants, ...assigneeNames])).filter(Boolean)
+    const playerNames = mergedNames.slice(0, 2)
+    while (playerNames.length < 2) playerNames.push(playerNames.length === 0 ? 'Player One' : 'Player Two')
+
+    const p1Raw = celebrationScoreForRow(rowByName[playerNames[0]])
+    const p2Raw = celebrationScoreForRow(rowByName[playerNames[1]])
+    const p1Score = Math.round(p1Raw * 10) / 10
+    const p2Score = Math.round(p2Raw * 10) / 10
+    const tie = p1Score === p2Score
+
+    const players = playerNames.map((name, idx) => {
+      const score = idx === 0 ? p1Score : p2Score
+      const isWinner = tie ? score > 0 : idx === 0 ? p1Score > p2Score : p2Score > p1Score
+      return {
+        name,
+        color: employeeColors[name],
+        score,
+        tiles: tilesByName[name] || [],
+        isWinner,
+      }
+    })
+
+    if (tie && p1Score > 0) {
+      players[0].isWinner = true
+      players[1].isWinner = true
+    }
+
+    return {
+      windowLabel: args.windowLabel,
+      headline,
+      phase: 'evacuate',
+      players,
+      layout: 'pair',
+    }
+  }
+
+  const STAR_ANIMATION_DURATION_MS = celebrationTiming.starAnimationDurationMs
+  // Must match `.task-grid.task-grid--evacuating` animation duration + max stagger (TaskCard + App.css).
+  const WINDOW_COMPLETE_EVAC_STAGGER_CAP_MS = 720
+  const WINDOW_COMPLETE_EVAC_DURATION_MS = 1080
+  const WINDOW_COMPLETE_EVAC_TO_HEADLINE_MS =
+    WINDOW_COMPLETE_EVAC_STAGGER_CAP_MS + WINDOW_COMPLETE_EVAC_DURATION_MS + 160
+  /** Time for Stage 1/2 strip height collapse before evacuation (v3 staged windows only). */
+  const WINDOW_COMPLETE_STAGE_COLLAPSE_MS = 380
+
+  const startWindowCompleteCelebration = useCallback(
+    (args: { state: TaskState; windowLabel: string; participants: string[]; waitForStars?: boolean; skipEvacuation?: boolean }) => {
       if (windowCompleteStartTimeoutRef.current) window.clearTimeout(windowCompleteStartTimeoutRef.current)
       windowCompleteStartTimeoutRef.current = null
+      clearWindowCompletePhaseTimeouts()
+      setTaskGridCelebrating(false)
+      setWindowCompleteStageCollapse(false)
+      setWindowCompleteCelebration(null)
 
-      // Optionally reuse the same "scroll to top" mechanic used after completing a task.
-      if (args.alsoScrollToTop) {
-        window.setTimeout(() => {
-          window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
-        }, 100)
+      // Auto-finish from the split panel: the grid is hidden (so there are no grid cards to
+      // evacuate) and the panel already played its own fly-out. Go straight to the cinematic
+      // card starting at the headline phase.
+      if (args.skipEvacuation) {
+        const model = buildWindowCompleteCelebration(args)
+        const queuePhase = (delayMs: number, phase: WindowCompleteCelebrationPhase) => {
+          const id = window.setTimeout(() => {
+            setWindowCompleteCelebration((prev) => (prev ? { ...prev, phase } : prev))
+          }, delayMs)
+          windowCompletePhaseTimeoutsRef.current.push(id)
+        }
+        windowCompleteStartScheduledRef.current = false
+        setWindowCompleteCelebration({ ...model, phase: 'headline' })
+        queuePhase(680, 'boardIn')
+        queuePhase(1660, 'settle')
+        return
       }
 
-      // Wait for the scroll-to-top to finish, then start the big FX + shake.
-      // If waitForStars is true, add extra delay to let the star animation finish first.
-      const afterScrollDelay = prefersReducedMotion ? 150 : 650
+      const afterScrollDelay = celebrationTiming.windowCompleteScrollDelayMs
       const starDelay = args.waitForStars && !prefersReducedMotion ? STAR_ANIMATION_DURATION_MS : 0
-      const totalDelay = afterScrollDelay + starDelay
+      const launchDelay = afterScrollDelay + starDelay
 
       windowCompleteStartTimeoutRef.current = window.setTimeout(() => {
-        // Full-screen overlay (tap also dismisses)
-        setWindowCompleteOverlay({ windowLabel: args.windowLabel, participants: args.participants })
-        if (windowCompleteOverlayTimeoutRef.current) window.clearTimeout(windowCompleteOverlayTimeoutRef.current)
-        windowCompleteOverlayTimeoutRef.current = window.setTimeout(() => setWindowCompleteOverlay(null), 3600)
+        const stageTarget = completedTasksStageRef.current || completedTasksAnchorRef.current
+        if (stageTarget) {
+          stageTarget.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth', block: 'center' })
+          if (prefersReducedMotion) {
+            const rect = stageTarget.getBoundingClientRect()
+            const deltaY = rect.top + rect.height / 2 - window.innerHeight / 2
+            if (Math.abs(deltaY) > 4) window.scrollBy({ top: deltaY, behavior: 'auto' })
+          }
+        } else {
+          window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
+        }
 
-        // Shake should happen at the same time the confetti starts.
-        setCelebrateShake(true)
-        window.setTimeout(() => setCelebrateShake(false), 500)
+        windowCompleteStartTimeoutRef.current = window.setTimeout(() => {
+          windowCompleteStartTimeoutRef.current = null
+          const settleTarget = completedTasksStageRef.current || completedTasksAnchorRef.current
+          if (settleTarget) {
+            const rect = settleTarget.getBoundingClientRect()
+            const deltaY = rect.top + rect.height / 2 - window.innerHeight / 2
+            if (Math.abs(deltaY) > 4) window.scrollBy({ top: deltaY, behavior: 'auto' })
+          }
 
-        triggerWindowCompleteCelebration({ intensity: 'big' })
-      }, totalDelay)
+          const runEvacAndPhases = () => {
+            const model = buildWindowCompleteCelebration(args)
+            const queuePhase = (delayMs: number, phase: WindowCompleteCelebrationPhase) => {
+              const id = window.setTimeout(() => {
+                if (phase !== 'evacuate') setTaskGridCelebrating(false)
+                if (phase === 'headline') setWindowCompleteStageCollapse(false)
+                setWindowCompleteCelebration((prev) => (prev ? { ...prev, phase } : prev))
+              }, delayMs)
+              windowCompletePhaseTimeoutsRef.current.push(id)
+            }
+
+            setTaskGridCelebrating(!prefersReducedMotion)
+            setWindowCompleteCelebration({ ...model, phase: prefersReducedMotion ? 'headline' : 'evacuate' })
+            windowCompleteStartScheduledRef.current = false
+
+            if (prefersReducedMotion) {
+              queuePhase(260, 'boardIn')
+              queuePhase(1400, 'settle')
+              return
+            }
+
+            const headlineAt = WINDOW_COMPLETE_EVAC_TO_HEADLINE_MS
+            queuePhase(headlineAt, 'headline')
+            queuePhase(headlineAt + 680, 'boardIn')
+            queuePhase(headlineAt + 1660, 'settle')
+          }
+
+          const useStripCollapse = !prefersReducedMotion && isV3Ui && stagedTasksRefForEvac.current != null
+          if (useStripCollapse) {
+            setWindowCompleteStageCollapse(true)
+            const collapseId = window.setTimeout(() => {
+              runEvacAndPhases()
+            }, WINDOW_COMPLETE_STAGE_COLLAPSE_MS)
+            windowCompletePhaseTimeoutsRef.current.push(collapseId)
+          } else {
+            runEvacAndPhases()
+          }
+        }, afterScrollDelay)
+      }, launchDelay)
     },
-    [prefersReducedMotion, triggerWindowCompleteCelebration]
+    [
+      STAR_ANIMATION_DURATION_MS,
+      WINDOW_COMPLETE_EVAC_TO_HEADLINE_MS,
+      WINDOW_COMPLETE_STAGE_COLLAPSE_MS,
+      buildWindowCompleteCelebration,
+      clearWindowCompletePhaseTimeouts,
+      celebrationTiming.windowCompleteScrollDelayMs,
+      prefersReducedMotion,
+      isV3Ui,
+    ]
   )
 
   useEffect(() => {
@@ -3881,30 +4305,63 @@ function App() {
     return () => window.clearTimeout(t)
   }, [rewardStars])
 
+  // Count-up writer: format identical to shiftHudPointsCell's override path and write the
+  // number straight to the score DOM node(s) so the per-frame animation does not trigger a
+  // full App re-render. Targets both the main HUD ref and the v3 notify ref for the slot
+  // (writing to an unmounted/hidden ref is a harmless no-op).
+  const writeScoreToDom = useCallback((slot: 'p1' | 'p2', v: number) => {
+    const text = Number.isFinite(v)
+      ? (() => {
+          const s = v.toFixed(1)
+          return s.endsWith('.0') ? s.slice(0, -2) : s
+        })()
+      : '—'
+    const els =
+      slot === 'p1'
+        ? [p1ScoreRef.current, v3NotifyP1ScoreRef.current]
+        : [p2ScoreRef.current, v3NotifyP2ScoreRef.current]
+    for (const el of els) {
+      if (!el) continue
+      const pm = el.querySelector('.slot-score-pm') // split mode: only the PM value animates
+      if (pm) pm.textContent = text
+      else el.textContent = text // non-split: the div holds only the number
+    }
+  }, [])
+
   useEffect(() => {
     const anim = scoreAnim
     if (!anim) return
 
     if (prefersReducedMotion) {
-      if (anim.slot === 'p1') setP1ScoreOverride(null)
-      if (anim.slot === 'p2') setP2ScoreOverride(null)
+      if (anim.slot === 'p1') {
+        p1ScoreOverrideRef.current = null
+        setP1ScoreOverride(null)
+      }
+      if (anim.slot === 'p2') {
+        p2ScoreOverrideRef.current = null
+        setP2ScoreOverride(null)
+      }
       setScoreAnim(null)
       return
     }
 
-    const durationMs = 900
+    const overrideRef = anim.slot === 'p1' ? p1ScoreOverrideRef : p2ScoreOverrideRef
+    const setOverride = anim.slot === 'p1' ? setP1ScoreOverride : setP2ScoreOverride
+    const durationMs = celebrationTiming.scoreCountUpMs
     let raf = 0
     const tick = () => {
       const elapsed = Date.now() - anim.startedAt
       const t = Math.min(1, elapsed / durationMs)
       // easeOutCubic
       const eased = 1 - Math.pow(1 - t, 3)
-      const v = Math.round(anim.from + (anim.to - anim.from) * eased)
-      if (anim.slot === 'p1') setP1ScoreOverride(v)
-      if (anim.slot === 'p2') setP2ScoreOverride(v)
+      const raw = anim.from + (anim.to - anim.from) * eased
+      const v = Math.round(raw * 10) / 10
+      // Write straight to the DOM (no setState) so the count-up does not re-render the App.
+      overrideRef.current = v
+      writeScoreToDom(anim.slot, v)
       if (t >= 1) {
-        if (anim.slot === 'p1') setP1ScoreOverride(null)
-        if (anim.slot === 'p2') setP2ScoreOverride(null)
+        overrideRef.current = null
+        setOverride(null) // single render to settle on the real committed score
         setScoreAnim(null)
         return
       }
@@ -3912,25 +4369,29 @@ function App() {
     }
     raf = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(raf)
-  }, [prefersReducedMotion, scoreAnim])
+  }, [celebrationTiming.scoreCountUpMs, prefersReducedMotion, scoreAnim, writeScoreToDom])
 
   useEffect(() => {
     const anim = scoreAnimP1
     if (!anim) return
     if (prefersReducedMotion) {
+      p1ScoreOverrideRef.current = null
       setP1ScoreOverride(null)
       setScoreAnimP1(null)
       return
     }
-    const durationMs = 1050
+    const durationMs = celebrationTiming.scoreCountUpOrderReportMs
     let raf = 0
     const tick = () => {
       const elapsed = Date.now() - anim.startedAt
       const t = Math.min(1, elapsed / durationMs)
       const eased = 1 - Math.pow(1 - t, 3)
-      const v = Math.round(anim.from + (anim.to - anim.from) * eased)
-      setP1ScoreOverride(v)
+      const raw = anim.from + (anim.to - anim.from) * eased
+      const v = Math.round(raw * 10) / 10
+      p1ScoreOverrideRef.current = v
+      writeScoreToDom('p1', v)
       if (t >= 1) {
+        p1ScoreOverrideRef.current = null
         setP1ScoreOverride(null)
         setScoreAnimP1(null)
         return
@@ -3939,25 +4400,29 @@ function App() {
     }
     raf = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(raf)
-  }, [prefersReducedMotion, scoreAnimP1])
+  }, [celebrationTiming.scoreCountUpOrderReportMs, prefersReducedMotion, scoreAnimP1, writeScoreToDom])
 
   useEffect(() => {
     const anim = scoreAnimP2
     if (!anim) return
     if (prefersReducedMotion) {
+      p2ScoreOverrideRef.current = null
       setP2ScoreOverride(null)
       setScoreAnimP2(null)
       return
     }
-    const durationMs = 1050
+    const durationMs = celebrationTiming.scoreCountUpOrderReportMs
     let raf = 0
     const tick = () => {
       const elapsed = Date.now() - anim.startedAt
       const t = Math.min(1, elapsed / durationMs)
       const eased = 1 - Math.pow(1 - t, 3)
-      const v = Math.round(anim.from + (anim.to - anim.from) * eased)
-      setP2ScoreOverride(v)
+      const raw = anim.from + (anim.to - anim.from) * eased
+      const v = Math.round(raw * 10) / 10
+      p2ScoreOverrideRef.current = v
+      writeScoreToDom('p2', v)
       if (t >= 1) {
+        p2ScoreOverrideRef.current = null
         setP2ScoreOverride(null)
         setScoreAnimP2(null)
         return
@@ -3966,7 +4431,14 @@ function App() {
     }
     raf = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(raf)
-  }, [prefersReducedMotion, scoreAnimP2])
+  }, [celebrationTiming.scoreCountUpOrderReportMs, prefersReducedMotion, scoreAnimP2, writeScoreToDom])
+
+  /** Hold HUD at pre-reward score until stars + count-up; avoids flashing afterScore while taskState is already updated. */
+  const applyShiftHudCelebrationScoreHold = useCallback((slot: 'p1' | 'p2', beforeScore: number) => {
+    setScoreAnim(null)
+    if (slot === 'p1') setP1ScoreOverride(beforeScore)
+    else setP2ScoreOverride(beforeScore)
+  }, [])
 
   useEffect(() => {
     if (!shiftHudPulse) return
@@ -3995,7 +4467,15 @@ function App() {
         const next: SelectionLogEntry[] = [{ ...entry, ts: new Date().toISOString() }, ...prev]
         // Cap to keep localStorage small on iOS 9
         if (next.length > 500) next.length = 500
-        writeCache('traq-logs-v1', next)
+        // Persist off the tap path: serializing up to 500 entries to localStorage
+        // synchronously inside the handler adds main-thread time to every selection.
+        // In-memory state stays immediate; the cache write happens shortly after.
+        const ric =
+          typeof (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback ===
+          'function'
+            ? (window as unknown as { requestIdleCallback: (cb: () => void) => number }).requestIdleCallback
+            : (cb: () => void) => window.setTimeout(cb, 0)
+        ric(() => writeCache('traq-logs-v1', next))
         return next
       })
       // Write to Firestore for cross-device sync (fire-and-forget)
@@ -4016,7 +4496,44 @@ function App() {
   const now = useMemo(() => new Date(tick), [tick])
   const todayDateKey = useMemo(() => formatDateKey(startOfDay(now)), [now])
   const selectedDateKey = useMemo(() => formatDateKey(selectedDate), [selectedDate])
+
+  // Date-filtered view over breakSelectionState. Returns null whenever the stored value
+  // does not belong to the currently selected date, so effects/handlers that key off
+  // `selectedDateKey` can't act on a stale value captured during a date navigation render.
+  const breakSelection = useMemo<BreakSelection | null>(
+    () =>
+      breakSelectionState && breakSelectionState.dateKey === selectedDateKey
+        ? breakSelectionState.value
+        : null,
+    [breakSelectionState, selectedDateKey]
+  )
+
+  useEffect(() => {
+    shiftCompleteHeadlineByDayShiftRef.current.clear()
+  }, [selectedDateKey])
+
+  /** Allow fadeInUp once per window/date; block replay when jiggle class is removed. */
+  useEffect(() => {
+    setTaskGridEntered(false)
+    if (taskGridEnterTimeoutRef.current) window.clearTimeout(taskGridEnterTimeoutRef.current)
+    taskGridEnterTimeoutRef.current = window.setTimeout(() => {
+      taskGridEnterTimeoutRef.current = null
+      setTaskGridEntered(true)
+    }, 450)
+    return () => {
+      if (taskGridEnterTimeoutRef.current) window.clearTimeout(taskGridEnterTimeoutRef.current)
+    }
+  }, [selectedDateKey, selectedWindow])
+
   const todayDate = useMemo(() => startOfDay(now), [now])
+  const leaderboardMonthRoster = useMemo(
+    () => filterEmployeesForLeaderboardMonth(employees, archivedAtMs, startOfMonth(leaderboardMonth)),
+    [employees, archivedAtMs, leaderboardMonth]
+  )
+  const leaderboardTodayRoster = useMemo(
+    () => filterEmployeesForLeaderboardMonth(employees, archivedAtMs, startOfMonth(todayDate)),
+    [employees, archivedAtMs, todayDate]
+  )
   const todayKey = useMemo(() => formatDateKey(todayDate), [todayDate])
   const publicTimeOffRequests = useMemo(
     () => timeOffRequests.filter((req) => isTimeOffVisibleOnPublicList(req, todayKey)),
@@ -4046,23 +4563,211 @@ function App() {
 
   const currentMonthStartKey = useMemo(() => formatDateKey(startOfMonth(todayDate)), [todayDate])
   const isDemoDaySelected = useMemo(() => demoDayKey !== null && selectedDateKey === demoDayKey, [demoDayKey, selectedDateKey])
+  const isSoloModeActiveForDateKey = useCallback(
+    (dateKey: string): boolean => {
+      if (!dateKey) return false
+      if (isDemoDaySelected) return !!demoSoloModeByDateKey[dateKey]?.active
+      if (dateKey === selectedDateKey) return !!soloMode?.active
+      return false
+    },
+    [demoSoloModeByDateKey, isDemoDaySelected, selectedDateKey, soloMode]
+  )
+
+  /** Shift-aware solo score cap: day solo caps day shift; night solo caps night shift only. */
+  const isSoloScoreCappedForShift = useCallback(
+    (dateKey: string, shift: 'day' | 'night'): boolean => {
+      if (!dateKey) return false
+      const mode =
+        isDemoDaySelected && dateKey === selectedDateKey
+          ? demoSoloModeByDateKey[dateKey]
+          : dateKey === selectedDateKey
+            ? soloMode
+            : null
+      if (!mode) return false
+      if (shift === 'night') return !!(mode.active || mode.nightActive)
+      return !!mode.active
+    },
+    [demoSoloModeByDateKey, isDemoDaySelected, selectedDateKey, soloMode]
+  )
+
+  const getSoloModeForDateKey = useCallback(
+    (dateKey: string): SoloMode | null => {
+      if (!dateKey) return null
+      if (isDemoDaySelected && dateKey === selectedDateKey) return demoSoloModeByDateKey[dateKey] ?? null
+      if (dateKey === selectedDateKey) return soloMode
+      return null
+    },
+    [demoSoloModeByDateKey, isDemoDaySelected, selectedDateKey, soloMode]
+  )
+
+  const isSoloModeActiveForWindow = useCallback(
+    (dateKey: string, windowKey: WindowKey): boolean => {
+      const mode = getSoloModeForDateKey(dateKey)
+      if (!mode) return false
+      if (windowKey === '21') return !!mode.active || !!mode.nightActive
+      return !!mode.active
+    },
+    [getSoloModeForDateKey]
+  )
+
+  const startRandomDemoDay = useCallback(() => {
+    lastInteractionTsRef.current = Date.now()
+    if (!demoPrevNavRef.current) {
+      demoPrevNavRef.current = { date: selectedDate, windowKey: selectedWindow, follow: followCurrentWindow }
+    }
+    const key = generateRandomDemoDateKey(todayKey)
+    setDemoDayKey(key)
+    setSelectedDate(startOfDay(parseDateKey(key)))
+    setSelectedWindow('11')
+    setFollowCurrentWindow(false)
+    setActiveTaskId(null)
+    setShowEmployeeSelector(false)
+    setShowChecklistModal(false)
+    setShowDailyTaskModal(false)
+    setShowDailyTaskEmployeeSelector(false)
+    setDailyTaskEmployees([])
+    setDailyTaskStep(-1)
+    setDailyTaskRevealing(false)
+    setDemoDailyTaskRunByDateKey((prev) => {
+      const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskSchedulable)
+      if (!enabled.length) return prev
+      const picked = enabled[Math.floor(Math.random() * enabled.length)]
+      return {
+        ...prev,
+        [key]: {
+          dateKey: key,
+          taskId: picked.id,
+          selectedAtMs: Date.now(),
+          selectedBy: 'demo',
+        },
+      }
+    })
+    setShowAdminPanel(false)
+  }, [
+    dailyTaskCatalog.tasks,
+    followCurrentWindow,
+    selectedDate,
+    selectedWindow,
+    todayKey,
+  ])
+
+  const exitDemoDay = useCallback(() => {
+    const key = demoDayKey
+    setDemoDayKey(null)
+    setDemoBreakSelectionByDateKey((prev) => {
+      const next = { ...prev }
+      if (key) delete next[key]
+      return next
+    })
+    setDemoSoloModeByDateKey((prev) => {
+      const next = { ...prev }
+      if (key) delete next[key]
+      return next
+    })
+    setDemoDailyTaskRunByDateKey((prev) => {
+      const next = { ...prev }
+      if (key) delete next[key]
+      return next
+    })
+    setTaskState((prev) => {
+      if (!key) return prev
+      const next: TaskState = { ...prev }
+      delete next[key]
+      return next
+    })
+    setBreakSelectionState(null)
+    setSoloMode(null)
+    setActiveTaskId(null)
+    setShowEmployeeSelector(false)
+    setShowChecklistModal(false)
+    setShowDailyTaskModal(false)
+    setShowDailyTaskEmployeeSelector(false)
+    setDailyTaskEmployees([])
+    setDailyTaskStep(-1)
+    setDailyTaskRevealing(false)
+    const restore = demoPrevNavRef.current
+    demoPrevNavRef.current = null
+    if (restore) {
+      setSelectedDate(startOfDay(restore.date))
+      setSelectedWindow(restore.windowKey)
+      setFollowCurrentWindow(restore.follow)
+    } else {
+      setSelectedDate(startOfDay(new Date()))
+      setSelectedWindow(getCurrentWindow())
+      setFollowCurrentWindow(true)
+    }
+    setShowAdminPanel(false)
+  }, [demoDayKey])
+
+  const reshuffleDemoDailyTask = useCallback(() => {
+    if (!demoDayKey) return
+    setShowDailyTaskModal(false)
+    setShowDailyTaskEmployeeSelector(false)
+    setDailyTaskEmployees([])
+    setDailyTaskStep(-1)
+    setDailyTaskRevealing(false)
+    setDemoDailyTaskRunByDateKey((prev) => {
+      const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskSchedulable)
+      if (!enabled.length) return prev
+      const picked = enabled[Math.floor(Math.random() * enabled.length)]
+      return {
+        ...prev,
+        [demoDayKey]: {
+          dateKey: demoDayKey,
+          taskId: picked.id,
+          selectedAtMs: Date.now(),
+          selectedBy: 'demo',
+        },
+      }
+    })
+    setShowAdminPanel(false)
+  }, [demoDayKey, dailyTaskCatalog.tasks])
+
+  // Keep sandbox date pinned while Demo Day is active (guards against stray snap-back).
+  useEffect(() => {
+    if (!demoDayKey) return
+    if (selectedDateKey !== demoDayKey) {
+      setSelectedDate(startOfDay(parseDateKey(demoDayKey)))
+    }
+  }, [demoDayKey, selectedDateKey])
+
   // Break Selection: per-day editable plan (stored separately from task completions)
   useEffect(() => {
     if (isDemoDaySelected) {
-      setBreakSelection(demoBreakSelectionByDateKey[selectedDateKey] ?? null)
+      setBreakSelectionState({
+        dateKey: selectedDateKey,
+        value: demoBreakSelectionByDateKey[selectedDateKey] ?? null,
+      })
       return
     }
-    // Clear stale data immediately when date changes to prevent race conditions
-    // (ensures self-heal effect doesn't create deferred tasks with wrong employees)
-    setBreakSelection(null)
+    // Tag the state with the dateKey it belongs to so date-sensitive consumers
+    // (e.g. 5PM self-heal) can ignore stale values captured during a date-change render.
+    const subscribedDateKey = selectedDateKey
+    setBreakSelectionState({ dateKey: subscribedDateKey, value: null })
     return subscribeToBreakSelection(
-      selectedDateKey,
-      (sel) => setBreakSelection(sel),
+      subscribedDateKey,
+      (sel) => setBreakSelectionState({ dateKey: subscribedDateKey, value: sel }),
       () => {
         // Non-fatal: still usable via localStorage fallback
       }
     )
   }, [demoBreakSelectionByDateKey, isDemoDaySelected, selectedDateKey])
+
+  // Solo Mode: per-day setting (stored separately from task completions)
+  useEffect(() => {
+    if (isDemoDaySelected) {
+      setSoloMode(demoSoloModeByDateKey[selectedDateKey] ?? null)
+      return
+    }
+    setSoloMode(null)
+    return subscribeToSoloMode(
+      selectedDateKey,
+      (mode) => setSoloMode(mode),
+      () => {
+        // Non-fatal: still usable via localStorage fallback
+      }
+    )
+  }, [demoSoloModeByDateKey, isDemoDaySelected, selectedDateKey])
 
   // Subscribe to today's break selection for countdown (independent of selectedDate)
   useEffect(() => {
@@ -4147,6 +4852,22 @@ function App() {
     shiftChangeMsRemaining > 0 && 
     shiftChangeMsRemaining <= COUNTDOWN_WINDOW_MS
 
+  const screensaverCountdown = useMemo((): ScreensaverCountdown | null => {
+    if (showBreakCountdown && countdownMsRemaining !== null && countdownEmployee) {
+      return { kind: 'break', remainingMs: countdownMsRemaining, employee: countdownEmployee }
+    }
+    if (showShiftChangeCountdown) {
+      return { kind: 'shift', remainingMs: shiftChangeMsRemaining }
+    }
+    return null
+  }, [
+    showBreakCountdown,
+    showShiftChangeCountdown,
+    countdownMsRemaining,
+    shiftChangeMsRemaining,
+    countdownEmployee,
+  ])
+
   // Clear demo shift change when it hits 0
   useEffect(() => {
     if (demoShiftChangeEndMs !== null && shiftChangeMsRemaining === 0) {
@@ -4215,6 +4936,14 @@ function App() {
     async (dateKey: string, selection: BreakSelection | null): Promise<void> => {
       if (isDemoDaySelected && dateKey === selectedDateKey) return
       await saveBreakSelection(dateKey, selection)
+    },
+    [isDemoDaySelected, selectedDateKey]
+  )
+
+  const persistSoloModeOrNoop = useCallback(
+    async (dateKey: string, mode: SoloMode | null): Promise<void> => {
+      if (isDemoDaySelected && dateKey === selectedDateKey) return
+      await saveSoloMode(dateKey, mode)
     },
     [isDemoDaySelected, selectedDateKey]
   )
@@ -4339,17 +5068,20 @@ function App() {
         setIsInitialSyncing(true)
       }
       try {
-        const [employeesData, taskOrderData, taskCatalogData, taskOverridesData, dailyTaskCatalogData] = await Promise.all([
-          getEmployees(),
+        const [employeeRoster, taskOrderData, taskOrderV3Data, taskCatalogData, taskOverridesData, dailyTaskCatalogData, taskStagesData] = await Promise.all([
+          getEmployeeRoster(),
           getTaskOrder(),
+          getTaskOrderV3(),
           getTaskCatalog(),
           getTaskOverrides(),
           getDailyTaskCatalog(),
+          getTaskStages(),
         ])
         
-        if (employeesData.length > 0) {
-          setEmployees(employeesData)
+        if (employeeRoster.list.length > 0) {
+          setEmployees(employeeRoster.list)
         }
+        setArchivedAtMs(employeeRoster.archivedAtMs)
         if (Object.keys(taskOrderData).length > 0) {
           setTaskOrder(taskOrderData)
         }
@@ -4361,6 +5093,12 @@ function App() {
         }
         if (dailyTaskCatalogData?.tasks?.length) {
           setDailyTaskCatalogState(dailyTaskCatalogData)
+        }
+        if (Object.keys(taskStagesData).length > 0) {
+          setTaskStages(taskStagesData)
+        }
+        if (Object.keys(taskOrderV3Data).length > 0) {
+          setTaskOrderV3(taskOrderV3Data)
         }
       } catch (error) {
         console.error('Error loading initial data:', error)
@@ -4376,10 +5114,11 @@ function App() {
 
   // Subscribe to real-time updates for employees
   useEffect(() => {
-    const unsubscribe = subscribeToEmployees((updatedEmployees) => {
-      if (updatedEmployees.length > 0) {
-        setEmployees(updatedEmployees)
+    const unsubscribe = subscribeToEmployeeRoster((roster) => {
+      if (roster.list.length > 0) {
+        setEmployees(roster.list)
       }
+      setArchivedAtMs(roster.archivedAtMs)
     })
     
     return () => unsubscribe()
@@ -4414,6 +5153,21 @@ function App() {
     return () => unsubscribe()
   }, [])
 
+  useEffect(() => {
+    const unsubscribe = subscribeToTaskOrderV3((orderV3) => {
+      setTaskOrderV3(orderV3)
+    })
+    return () => unsubscribe()
+  }, [])
+
+  // Subscribe to real-time updates for task stages (v3 stage grouping)
+  useEffect(() => {
+    const unsubscribe = subscribeToTaskStages((stages) => {
+      setTaskStages(stages)
+    })
+    return () => unsubscribe()
+  }, [])
+
   // Subscribe to real-time updates for task catalog (admin-added tasks)
   useEffect(() => {
     const unsubscribe = subscribeToTaskCatalog((catalog) => {
@@ -4430,12 +5184,28 @@ function App() {
     return () => unsubscribe()
   }, [])
 
+  useEffect(() => {
+    const unsubscribe = subscribeToDailyTaskScheduleAiSettings(() => {})
+    return () => unsubscribe()
+  }, [])
+
   // Subscribe to today's Daily Task run (shared)
   useEffect(() => {
     const unsubscribe = subscribeToDailyTaskRun(
       todayDateKey,
       (run) => setTodayDailyTaskRun(run),
       (err) => console.warn('Daily task run subscription error:', err)
+    )
+    return () => unsubscribe()
+  }, [todayDateKey])
+
+  // Subscribe to this week's schedule (approval gate for today's assignment)
+  useEffect(() => {
+    const weekStart = getWeekStartDateKeySunday(todayDateKey)
+    const unsubscribe = subscribeToDailyTaskWeek(
+      weekStart,
+      (week) => setTodayDailyTaskWeek(week),
+      (err) => console.warn('Daily task week subscription error:', err)
     )
     return () => unsubscribe()
   }, [todayDateKey])
@@ -4448,25 +5218,14 @@ function App() {
     return () => unsubscribe()
   }, [])
 
-  // Update time of day and rotate motivational quotes
+  // Update time-of-day band (Hermitage, TN solar)
   useEffect(() => {
-    // Update time of day every minute
     const updateTimeOfDay = () => {
-      setTimeOfDay(getTimeOfDay(new Date()))
+      setTimeOfDay(getTimeOfDaySolar(new Date(), DEFAULT_SOLAR_COORDS))
     }
-    
-    // Rotate quotes every 10 seconds
-    const rotateQuote = () => {
-      setCurrentQuoteIndex((prev) => (prev + 1) % MOTIVATIONAL_QUOTES.length)
-    }
-    
-    const timeInterval = setInterval(updateTimeOfDay, 60_000) // Every minute
-    const quoteInterval = setInterval(rotateQuote, 10_000) // Every 10 seconds
-    
-    return () => {
-      clearInterval(timeInterval)
-      clearInterval(quoteInterval)
-    }
+    updateTimeOfDay()
+    const timeInterval = setInterval(updateTimeOfDay, 60_000)
+    return () => clearInterval(timeInterval)
   }, [])
 
   // Subscribe to force refresh events from admin
@@ -4502,8 +5261,8 @@ function App() {
 
   // Subscribe to availability map (for time off feature)
   useEffect(() => {
-    const unsubscribe = subscribeToAvailability((map) => {
-      setAvailabilityMap(map)
+    const unsubscribe = subscribeToAvailability((state) => {
+      setAvailabilityState(state)
     })
     return () => unsubscribe()
   }, [])
@@ -4564,21 +5323,21 @@ function App() {
     }
   }, [adminView, dailyTaskCatalog.tasks, isAdmin, showAdminPanel, todayDateKey])
 
-  // Subscribe to stock reports when the modal is open
+  // Subscribe to stock reports when any stock UI is open
   useEffect(() => {
-    if (!showStockReports) return
+    if (!showStockReports && !showStockCheckTaskModal) return
     const unsubscribe = subscribeToStockReports((reports) => {
       setStockReports(reports)
     })
     return () => unsubscribe()
-  }, [showStockReports])
+  }, [showStockCheckTaskModal, showStockReports])
 
   const beginStockReportFlow = useCallback(() => {
     setStockReporterName(null)
     setStockKind(null)
     setStockItem('')
     setStockError(null)
-    setStockWizardStep('who')
+    setStockWizardStep('kind')
   }, [])
 
   const resetStockWizardToList = useCallback(() => {
@@ -4589,6 +5348,22 @@ function App() {
     setStockError(null)
     setStockSending(false)
   }, [])
+
+  const stockReportsPending = useMemo(
+    () => stockReports.filter((r) => r.status === 'pending'),
+    [stockReports]
+  )
+  const stockReportsOutPendingCount = useMemo(
+    () => countOutPending(stockReportsPending),
+    [stockReportsPending]
+  )
+  const stockReportsFinished = useMemo(
+    () =>
+      stockReports
+        .filter((r) => r.status === 'finished')
+        .sort((a, b) => (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)),
+    [stockReports]
+  )
 
   // Cleanup stock send FX timers on unmount
   useEffect(() => {
@@ -4743,6 +5518,57 @@ function App() {
       setStockSending(false)
     }
   }, [stockKind, stockItem, stockReporterName, resetStockWizardToList])
+
+  const stockCheckCreateItem = useCallback(
+    async (args: { kind: StockReportKind; item: string }) => {
+      const kind = args.kind
+      const item = String(args.item || '').trim()
+      if (!item) throw new Error('missing-item')
+      const actor =
+        assignees.length >= 2
+          ? `${String(assignees[0] || '').trim()} & ${String(assignees[1] || '').trim()}`.trim()
+          : String(assignees[0] || '').trim()
+      await createStockReport({ kind, item, createdBy: actor || undefined })
+      void sendStockReportEmailNotification({
+        kind,
+        item,
+        by: actor || undefined,
+        reportedAtIso: new Date().toISOString(),
+      })
+      // Play confirmation FX (paper plane + message)
+      setStockSendFxNonce((n) => n + 1)
+      setStockSendFxVisible(true)
+      if (stockSendFxTimeoutRef.current) window.clearTimeout(stockSendFxTimeoutRef.current)
+      stockSendFxTimeoutRef.current = window.setTimeout(() => {
+        setStockSendFxVisible(false)
+      }, 1600)
+    },
+    [assignees]
+  )
+
+  const stockCheckDeleteItem = useCallback(async (id: string) => {
+    const report = stockReports.find((r) => r.id === id) || null
+    const actor =
+      assignees.length >= 2
+        ? `${String(assignees[0] || '').trim()} & ${String(assignees[1] || '').trim()}`.trim()
+        : String(assignees[0] || '').trim()
+    await deleteStockReport(id, { actor: actor || undefined })
+    // Notify management that stock changed (best-effort)
+    if (report) {
+      void sendStockReportEmailNotification({
+        kind: report.kind,
+        item: `${report.item} (deleted)`,
+        by: actor || undefined,
+        reportedAtIso: new Date().toISOString(),
+      })
+    }
+    setStockSendFxNonce((n) => n + 1)
+    setStockSendFxVisible(true)
+    if (stockSendFxTimeoutRef.current) window.clearTimeout(stockSendFxTimeoutRef.current)
+    stockSendFxTimeoutRef.current = window.setTimeout(() => {
+      setStockSendFxVisible(false)
+    }, 1600)
+  }, [assignees, stockReports])
 
   // Subscribe to notifications (always active for employee notification overlay)
   useEffect(() => {
@@ -5017,6 +5843,24 @@ function App() {
     return () => unsubscribe()
   }, [leaderboardMonth, leaderboardView, showLeaderboard])
 
+  // Training markers for the leaderboard month range, so month aggregation reflects training shifts.
+  useEffect(() => {
+    if (!showLeaderboard) return
+    if (leaderboardView !== 'month') return
+
+    const today = startOfDay(new Date())
+    const monthStart = startOfMonth(leaderboardMonth)
+    const monthEnd = isSameMonth(monthStart, today) ? today : endOfMonth(monthStart)
+    const fromKey = formatDateKey(monthStart)
+    const toKey = formatDateKey(monthEnd)
+
+    const unsubscribe = subscribeTrainingWindowsInRange(fromKey, toKey, (ids) => {
+      setTrainingDocsInRange(ids)
+    })
+
+    return () => unsubscribe()
+  }, [leaderboardMonth, leaderboardView, showLeaderboard])
+
   // Live-sync the currently viewed window (supports browsing older history outside the 30-day leaderboard range)
   useEffect(() => {
     if (isDemoDaySelected) {
@@ -5029,6 +5873,23 @@ function App() {
       selectedWindow,
       (windowMap) => {
         setTaskState((prev) => {
+          const guard = localWindowWriteGuardRef.current
+          const nowMs = Date.now()
+          if (guard && nowMs >= guard.expiresAt) {
+            localWindowWriteGuardRef.current = null
+          }
+          const activeGuard = localWindowWriteGuardRef.current
+          if (
+            activeGuard &&
+            nowMs < activeGuard.expiresAt &&
+            activeGuard.dateKey === selectedDateKey &&
+            activeGuard.windowKey === selectedWindow
+          ) {
+            const prevWindow = prev[selectedDateKey]?.[selectedWindow] ?? {}
+            if (windowTaskMapsEqual(prevWindow, windowMap)) {
+              return prev
+            }
+          }
           const next: TaskState = { ...prev }
           const day = { ...(next[selectedDateKey] ?? {}) }
           day[selectedWindow] = windowMap
@@ -5071,6 +5932,10 @@ function App() {
     const taskChanged = activeTaskId !== prevTaskIdForInitRef.current
     prevTaskIdForInitRef.current = activeTaskId
 
+    if (taskChanged) {
+      setNightSplitChoseTeamSplit(false)
+    }
+
     if (!activeTaskId) {
       setShowEmployeeSelector(false)
       setShowChecklistModal(false)
@@ -5083,8 +5948,17 @@ function App() {
       setShowUnsplitOptions(false)
       return
     }
+    const pre = taskSplitOpenPrefillRef.current
+    const splitPrefillActive = !!(pre && pre.taskId === activeTaskId)
+    if (splitPrefillActive) {
+      taskSplitOpenPrefillRef.current = null
+    }
     const existing = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
-    setAssignees(existing?.assignees ?? [])
+    if (splitPrefillActive && pre?.assignees?.length) {
+      setAssignees(pre.assignees)
+    } else {
+      setAssignees(existing?.assignees ?? [])
+    }
     const isCombinedIce = activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close'
     const effectiveAt = taskOverrides?.towelsSplitEffectiveAtMs
     const isTowelsSplitEffectiveHere =
@@ -5106,35 +5980,66 @@ function App() {
       })()
     if (isCombinedIce) {
       const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
-      const dirty = !!iceSidesDraftDirtyByKey[key]
-      const cached = iceSidesDraftByKey[key]
-      if (dirty && cached) {
-        setIceSidesDraft(cached)
-      } else if (taskChanged) {
-        // Only reset the draft when opening a different task, not on taskState sync.
-        const existingSides = existing?.iceSides
-        setIceSidesDraft({
-          left:
-            (existingSides?.left && String(existingSides.left).trim()) ||
-            (existing?.assignees?.[0] ? String(existing.assignees[0]).trim() : '') ||
-            null,
-          right:
-            (existingSides?.right && String(existingSides.right).trim()) ||
-            (existing?.assignees?.[1] ? String(existing.assignees[1]).trim() : '') ||
-            null,
-        })
-        // Fresh seed: not a user-modified draft.
-        setIceSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
-        setIceSidesDraftByKey((prev) => {
-          if (!prev[key]) return prev
-          const { [key]: _, ...rest } = prev
-          return rest
-        })
-      }
-      if (taskChanged) {
+      if (splitPrefillActive && pre?.iceSides) {
+        setIceSidesDraft({ left: pre.iceSides.left, right: pre.iceSides.right })
+        setIceSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: true }))
+        setIceSidesDraftByKey((prev) => ({
+          ...prev,
+          [key]: { left: pre.iceSides!.left, right: pre.iceSides!.right },
+        }))
         setPendingIceSide(null)
-        setSplitMode(false)
+        setSplitMode(true)
         setShowUnsplitOptions(false)
+      } else if (splitPrefillActive && pre?.iceSide) {
+        // Virtual "Left Ice" / "Right Ice" card from the split panel: open the
+        // combined-ice drawer pre-pointed at this side's picker so the user just
+        // taps a name and it auto-saves into iceSidesDraft.{left|right}.
+        const dirty = !!iceSidesDraftDirtyByKey[key]
+        const cached = iceSidesDraftByKey[key]
+        if (dirty && cached) {
+          setIceSidesDraft(cached)
+        } else {
+          const existingSides = existing?.iceSides
+          setIceSidesDraft({
+            left: existingSides?.left ?? null,
+            right: existingSides?.right ?? null,
+          })
+        }
+        setSplitMode(true)
+        setPendingIceSide(pre.iceSide)
+        setShowUnsplitOptions(false)
+        setShowEmployeeSelector(true)
+      } else {
+        const dirty = !!iceSidesDraftDirtyByKey[key]
+        const cached = iceSidesDraftByKey[key]
+        if (dirty && cached) {
+          setIceSidesDraft(cached)
+        } else if (taskChanged) {
+          // Only reset the draft when opening a different task, not on taskState sync.
+          const existingSides = existing?.iceSides
+          setIceSidesDraft({
+            left:
+              (existingSides?.left && String(existingSides.left).trim()) ||
+              (existing?.assignees?.[0] ? String(existing.assignees[0]).trim() : '') ||
+              null,
+            right:
+              (existingSides?.right && String(existingSides.right).trim()) ||
+              (existing?.assignees?.[1] ? String(existing.assignees[1]).trim() : '') ||
+              null,
+          })
+          // Fresh seed: not a user-modified draft.
+          setIceSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
+          setIceSidesDraftByKey((prev) => {
+            if (!prev[key]) return prev
+            const { [key]: _, ...rest } = prev
+            return rest
+          })
+        }
+        if (taskChanged) {
+          setPendingIceSide(null)
+          setSplitMode(false)
+          setShowUnsplitOptions(false)
+        }
       }
     } else if (isTowelsSplitEffectiveHere) {
       const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
@@ -5166,7 +6071,15 @@ function App() {
       }
     } else {
       if (taskChanged) {
-        setSplitMode((existing?.assignees?.length ?? 1) > 1)
+        const aiShared =
+          taskSplitInlinePhase === 'active' &&
+          !!activeTaskId &&
+          (taskSplitResult?.finalSharedTaskIds || []).includes(activeTaskId)
+        if (aiShared) {
+          setSplitMode(true)
+        } else {
+          setSplitMode((existing?.assignees?.length ?? 1) > 1)
+        }
         setPendingIceSide(null)
         setIceSidesDraft({ left: null, right: null })
         setPendingTowelSide(null)
@@ -5180,139 +6093,72 @@ function App() {
       setCheckedItems(new Set())
       setSaveError(null)
     }
-  }, [activeTaskId, iceSidesDraftByKey, iceSidesDraftDirtyByKey, selectedDateKey, selectedWindow, taskState, taskOverrides?.towelsSplitEffectiveAtMs, towelSidesDraftByKey, towelSidesDraftDirtyByKey])
-
-  // Auto-scroll requirements slowly if they overflow (starts after opening a task).
-  useEffect(() => {
-    if (!activeTaskId) return
-    if (prefersReducedMotion) return
-
-    let stopped = false
-    let raf = 0
-    let startTimeout = 0
-    let mountRetryTimeout = 0
-    let pauseTimeout = 0
-    let lastTs = 0
-    const speedPxPerSec = 22 // gentle (a bit more noticeable on small overflows)
-    const openedAt = Date.now()
-    const STOP_GRACE_MS = 900 // iPad: opening tap/click can land inside the scroll area; don't cancel instantly.
-    const BOTTOM_PAUSE_MS = 900
-    const MOUNT_RETRY_MS = 80
-    const MOUNT_RETRY_MAX = 30 // ~2.4s max
-
-    let el: HTMLDivElement | null = null
-
-    const stop = () => {
-      stopped = true
-      if (raf) window.cancelAnimationFrame(raf)
-      if (startTimeout) window.clearTimeout(startTimeout)
-      if (mountRetryTimeout) window.clearTimeout(mountRetryTimeout)
-      if (pauseTimeout) window.clearTimeout(pauseTimeout)
-      if (el) {
-        el.removeEventListener('wheel', onUserIntent)
-        el.removeEventListener('touchmove', onUserIntentImmediate)
-      }
-    }
-
-    const onUserIntent = () => {
-      if (Date.now() - openedAt < STOP_GRACE_MS) return
-      stop()
-    }
-    const onUserIntentImmediate = () => stop()
-
-    const tick = (ts: number) => {
-      if (stopped) return
-      if (!el) return
-      if (!lastTs) lastTs = ts
-      const dt = (ts - lastTs) / 1000
-      lastTs = ts
-
-      const maxScrollTop = el.scrollHeight - el.clientHeight
-      const next = Math.min(maxScrollTop, el.scrollTop + speedPxPerSec * dt)
-      el.scrollTop = next
-
-      if (next >= maxScrollTop - 1) {
-        // Loop back: pause briefly at the bottom, then jump to top and continue.
-        pauseTimeout = window.setTimeout(() => {
-          if (stopped || !el) return
-          el.scrollTop = 0
-          lastTs = 0
-          raf = window.requestAnimationFrame(tick)
-        }, BOTTOM_PAUSE_MS)
-        return
-      }
-      raf = window.requestAnimationFrame(tick)
-    }
-
-    const attachAndStart = () => {
-      if (stopped) return
-      if (!el) return
-
-      // Stop auto-scroll only on *real scroll intent*.
-      // (iPad/desktop can fire pointer/touchstart events as part of the opening click/tap; don't treat that as intent.)
-      el.addEventListener('wheel', onUserIntent, { passive: true })
-      el.addEventListener('touchmove', onUserIntentImmediate, { passive: true })
-
-      // Give the modal a moment to render before starting.
-      startTimeout = window.setTimeout(() => {
-        if (stopped || !el) return
-        el.scrollTop = 0
-        // Wait 2 frames so fonts/layout settle before measuring.
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            if (stopped || !el) return
-            const overflowPx = el.scrollHeight - el.clientHeight
-            // If it can be manually scrolled at all, we should treat it as overflow.
-            if (overflowPx <= 1) {
-              stop()
-              return
-            }
-            lastTs = 0
-            raf = window.requestAnimationFrame(tick)
-          })
-        })
-      }, 650)
-    }
-
-    const waitForMount = (attempt: number) => {
-      if (stopped) return
-      el = requirementsScrollRef.current
-      if (el) {
-        attachAndStart()
-        return
-      }
-      if (attempt >= MOUNT_RETRY_MAX) return
-      mountRetryTimeout = window.setTimeout(() => waitForMount(attempt + 1), MOUNT_RETRY_MS)
-    }
-
-    waitForMount(0)
-
-    return stop
-  }, [activeTaskId, prefersReducedMotion])
+  }, [
+    activeTaskId,
+    iceSidesDraftByKey,
+    iceSidesDraftDirtyByKey,
+    selectedDateKey,
+    selectedWindow,
+    taskSplitInlinePhase,
+    taskSplitResult,
+    taskState,
+    taskOverrides?.towelsSplitEffectiveAtMs,
+    towelSidesDraftByKey,
+    towelSidesDraftDirtyByKey,
+  ])
 
   const activeTask = useMemo(() => {
     if (!activeTaskId) return null
+    // Injected only when solo mode is on (see getOrderedTasksForDateKeyWindow); not in allTasks catalog.
+    if (activeTaskId === 'night-shift-solo-check') {
+      return NIGHT_SHIFT_SOLO_CHECK_TASK
+    }
     return allTasks.find((t) => t.id === activeTaskId) ?? null
   }, [activeTaskId, allTasks])
 
-  // Shared: prevent background scroll when any overlay/modal is open.
-  const isAnyModalOpen =
+  const isOrderReportTaskId = activeTaskId === 'order-report-5pm' || activeTaskId === 'order-report-close'
+  const isTaskCardModalOpen = Boolean(activeTask) && !isOrderReportTaskId
+  // Shared overlays keep the existing body-fixed lock behavior.
+  const isAnySharedModalOpen =
     showCalculator ||
     showMenu ||
     showTimeOff ||
     showStockReports ||
     showNotifyManagement ||
     showDailyTaskModal ||
-    Boolean(activeTask) ||
+    (Boolean(activeTask) && isOrderReportTaskId) ||
     Boolean(printRequest)
+  const isAnyModalOpen = isAnySharedModalOpen || isTaskCardModalOpen
+  /** Floating daily-task promo hides under any modal overlay (z-index above task modals). */
+  const suppressDailyTaskFloating = isAnyModalOpen || showDailyTaskEmployeeSelector
+  /** Inline grid card unmounts for shared overlays only; task card modals layout-lock instead. */
+  const suppressDailyTaskInlineUnmount = isAnySharedModalOpen || showDailyTaskEmployeeSelector
   // Capture scroll position at the moment we *intend* to open a modal (click/tap handler),
   // because iOS Safari can transiently report 0 during the render/lock transition.
   const pendingLockScrollYRef = useRef<number | null>(null)
-  const captureScrollYForNextLock = useCallback(() => {
-    // Defensive: prefer window scroll, fall back to documentElement.
-    pendingLockScrollYRef.current =
-      window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0
+  const getCurrentScrollY = useCallback(() => {
+    const winY = window.scrollY
+    if (Number.isFinite(winY)) return winY
+    const pageY = window.pageYOffset
+    if (Number.isFinite(pageY)) return pageY
+    return document.documentElement.scrollTop || 0
   }, [])
+  const captureScrollYForNextLock = useCallback(() => {
+    pendingLockScrollYRef.current = getCurrentScrollY()
+  }, [getCurrentScrollY])
+
+  const scrollToTaskCardInGrid = useCallback(
+    (taskId: string): boolean => {
+      const el = document.querySelector<HTMLElement>(`[data-task-id="${taskId}"]`)
+      if (!el) return false
+      el.scrollIntoView({
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+        block: 'center',
+      })
+      return true
+    },
+    [prefersReducedMotion]
+  )
   const scrollLockRef = useRef<{
     locked: boolean
     scrollY: number
@@ -5328,7 +6174,17 @@ function App() {
     prevHtmlClass: '',
     prevBodyClass: '',
   })
-
+  const taskModalScrollLockRef = useRef<{
+    locked: boolean
+    scrollY: number
+    prevBodyCssText: string
+    prevHtmlCssText: string
+  }>({
+    locked: false,
+    scrollY: 0,
+    prevBodyCssText: '',
+    prevHtmlCssText: '',
+  })
   useLayoutEffect(() => {
     const body = document.body
     const html = document.documentElement
@@ -5341,8 +6197,15 @@ function App() {
       pendingLockScrollYRef.current = null
       // Force layout calculation to ensure we get accurate scroll position when falling back.
       void body.offsetHeight
-      const scrollY = captured ?? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0)
+      const scrollY = captured ?? getCurrentScrollY()
       const scrollbarWidth = window.innerWidth - html.clientWidth
+
+      // iOS Safari: cancel tiny residual scroll momentum before freezing.
+      // If we don't, the captured scrollY can be off by a few pixels, causing a visible bump on unlock.
+      const prevScrollBehavior = html.style.scrollBehavior
+      html.style.scrollBehavior = 'auto'
+      window.scrollTo(0, scrollY)
+      html.style.scrollBehavior = prevScrollBehavior
 
       scrollLockRef.current.locked = true
       scrollLockRef.current.scrollY = scrollY
@@ -5379,32 +6242,178 @@ function App() {
       const { scrollY, prevBodyCssText } = scrollLockRef.current
       scrollLockRef.current.locked = false
 
+      // Read the actual locked offset before restoring body styles (which clears it).
+      // This is more accurate than relying on the captured scrollY on iOS Safari.
+      const topRaw = body.style.top || ''
+      const parsed = Number.parseFloat(topRaw)
+      const lockedY = Number.isFinite(parsed) ? Math.abs(parsed) : null
+
       // Never animate the "restore scroll position" step (global CSS can enable smooth scrolling).
       const prevScrollBehavior = html.style.scrollBehavior
       html.style.scrollBehavior = 'auto'
 
-      // First restore body styles (removes position:fixed).
+      // Restore body styles (removes position:fixed).
       body.style.cssText = prevBodyCssText
 
       html.classList.remove('scroll-locked')
       body.classList.remove('scroll-locked')
 
-      // Restore scroll position synchronously to avoid a visible "jump to top then back down".
-      // A forced layout read helps Safari apply the style changes before scrollTo.
+      const y = lockedY ?? scrollY
+      // Restore scroll BEFORE the forced layout reflow so the browser
+      // computes element positions at the correct scroll offset, not scroll=0.
+      window.scrollTo(0, y)
+      // Some WebKit builds need explicit scrollTop on the scrolling element.
+      html.scrollTop = y
+      if (document.body) document.body.scrollTop = y
       void document.documentElement.offsetHeight
-      window.scrollTo(0, scrollY)
 
       html.style.scrollBehavior = prevScrollBehavior
+
     }
 
-    if (isAnyModalOpen) lock()
+    if (isAnySharedModalOpen) lock()
     else unlock()
 
     return () => {
       // Ensure we never leave the page locked if App unmounts.
       unlock()
     }
-  }, [isAnyModalOpen])
+  }, [getCurrentScrollY, isAnySharedModalOpen])
+
+  useLayoutEffect(() => {
+    const body = document.body
+    const html = document.documentElement
+
+    const lockTaskModal = () => {
+      if (taskModalScrollLockRef.current.locked) return
+      const captured = pendingLockScrollYRef.current
+      pendingLockScrollYRef.current = null
+      const scrollY = captured ?? getCurrentScrollY()
+      const scrollbarWidth = window.innerWidth - html.clientWidth
+
+      taskModalScrollLockRef.current.locked = true
+      taskModalScrollLockRef.current.scrollY = scrollY
+      taskModalScrollLockRef.current.prevBodyCssText = body.style.cssText
+      taskModalScrollLockRef.current.prevHtmlCssText = html.style.cssText
+
+      const prevScrollBehavior = html.style.scrollBehavior
+      html.style.scrollBehavior = 'auto'
+      window.scrollTo(0, scrollY)
+      html.style.scrollBehavior = prevScrollBehavior
+
+      // Safari-safe task modal lock: avoid body fixed/top shifts.
+      html.classList.add('scroll-locked')
+      body.classList.add('scroll-locked')
+      html.style.overflow = 'hidden'
+      body.style.overflow = 'hidden'
+
+      if (scrollbarWidth > 0) {
+        const computedPR = window.getComputedStyle(body).paddingRight
+        if (computedPR === '0px') body.style.paddingRight = `${scrollbarWidth}px`
+      }
+
+      void document.documentElement.offsetHeight
+    }
+
+    const unlockTaskModal = () => {
+      if (!taskModalScrollLockRef.current.locked) return
+      const { scrollY, prevBodyCssText, prevHtmlCssText } = taskModalScrollLockRef.current
+      taskModalScrollLockRef.current.locked = false
+
+      const prevScrollBehavior = html.style.scrollBehavior
+      html.style.scrollBehavior = 'auto'
+
+      body.style.cssText = prevBodyCssText
+      html.style.cssText = prevHtmlCssText
+      html.classList.remove('scroll-locked')
+      body.classList.remove('scroll-locked')
+
+      const y = scrollY
+      window.scrollTo(0, y)
+      html.scrollTop = y
+      if (document.body) document.body.scrollTop = y
+      void document.documentElement.offsetHeight
+      html.style.scrollBehavior = prevScrollBehavior
+
+      // Correct occasional post-unlock drift on Safari compositor frame.
+      window.requestAnimationFrame(() => {
+        const cur = getCurrentScrollY()
+        if (Math.abs(cur - y) > 0.5) {
+          window.scrollTo(0, y)
+          html.scrollTop = y
+          if (document.body) document.body.scrollTop = y
+        }
+      })
+    }
+
+    if (isTaskCardModalOpen) lockTaskModal()
+    else unlockTaskModal()
+
+    return () => {
+      unlockTaskModal()
+    }
+  }, [getCurrentScrollY, isTaskCardModalOpen])
+
+  // After reset modal unlock, scroll to the task card in its new pending position.
+  useLayoutEffect(() => {
+    const taskId = pendingScrollToTaskIdRef.current
+    if (!taskId || activeTaskId !== null) return
+
+    pendingScrollToTaskIdRef.current = null
+
+    const scrollOnce = (allowRetry: boolean) => {
+      if (scrollToTaskCardInGrid(taskId)) return
+      if (allowRetry) {
+        window.setTimeout(() => scrollOnce(false), 50)
+      }
+    }
+
+    const runAfterUnlock = () => {
+      if (windowCompleteStageCollapse) {
+        setWindowCompleteStageCollapse(false)
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => scrollOnce(true))
+        })
+        return
+      }
+      scrollOnce(true)
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(runAfterUnlock)
+    })
+  }, [activeTaskId, scrollToTaskCardInGrid, windowCompleteStageCollapse])
+
+  // FLIP morph: animate modal-sheet from card position on open.
+  useLayoutEffect(() => {
+    if (!activeTaskId || isClosingModalRef.current) return
+    const cardRect = activeCardRectRef.current
+    const sheet = modalSheetRef.current
+    if (!cardRect || !sheet || typeof sheet.animate !== 'function') return
+    if (prefersReducedMotion) return
+
+    const sheetRect = sheet.getBoundingClientRect()
+    const scaleX = cardRect.width / sheetRect.width
+    const scaleY = cardRect.height / sheetRect.height
+    const translateX = (cardRect.left + cardRect.width / 2) - (sheetRect.left + sheetRect.width / 2)
+    const translateY = (cardRect.top + cardRect.height / 2) - (sheetRect.top + sheetRect.height / 2)
+
+    sheet.animate([
+      {
+        transform: `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`,
+        borderRadius: '16px',
+        opacity: '0.4',
+      },
+      {
+        transform: 'translate(0, 0) scale(1, 1)',
+        borderRadius: '24px',
+        opacity: '1',
+      },
+    ], {
+      duration: 320,
+      easing: 'cubic-bezier(0.32, 0.72, 0, 1)',
+    })
+  }, [activeTaskId, prefersReducedMotion])
 
   // Initialize Break Selection draft when opening the modal.
   useEffect(() => {
@@ -5484,6 +6493,122 @@ function App() {
     [taskOverrides?.towelsSplitEffectiveAtMs, windowCloseMsForDateKey]
   )
 
+  // Auto-scroll requirements slowly if they overflow (starts after opening a task).
+  // Skip for combined ice / split towel modals — primary tiles should stay in view without animation fighting the user.
+  useEffect(() => {
+    if (!activeTaskId) return
+    if (prefersReducedMotion) return
+
+    const isCombinedIceOrTowelSplit =
+      activeTaskId === 'ice-5pm' ||
+      activeTaskId === 'ice-close' ||
+      ((activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+        isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow))
+    if (isCombinedIceOrTowelSplit) return
+
+    let stopped = false
+    let raf = 0
+    let startTimeout = 0
+    let mountRetryTimeout = 0
+    let pauseTimeout = 0
+    let lastTs = 0
+    const speedPxPerSec = 22 // gentle (a bit more noticeable on small overflows)
+    const openedAt = Date.now()
+    const STOP_GRACE_MS = 900 // iPad: opening tap/click can land inside the scroll area; don't cancel instantly.
+    const BOTTOM_PAUSE_MS = 900
+    const MOUNT_RETRY_MS = 80
+    const MOUNT_RETRY_MAX = 30 // ~2.4s max
+
+    let el: HTMLDivElement | null = null
+
+    const stop = () => {
+      stopped = true
+      if (raf) window.cancelAnimationFrame(raf)
+      if (startTimeout) window.clearTimeout(startTimeout)
+      if (mountRetryTimeout) window.clearTimeout(mountRetryTimeout)
+      if (pauseTimeout) window.clearTimeout(pauseTimeout)
+      if (el) {
+        el.removeEventListener('wheel', onUserIntent)
+        el.removeEventListener('touchmove', onUserIntentImmediate)
+      }
+    }
+
+    const onUserIntent = () => {
+      if (Date.now() - openedAt < STOP_GRACE_MS) return
+      stop()
+    }
+    const onUserIntentImmediate = () => stop()
+
+    const tick = (ts: number) => {
+      if (stopped) return
+      if (!el) return
+      if (!lastTs) lastTs = ts
+      const dt = (ts - lastTs) / 1000
+      lastTs = ts
+
+      const maxScrollTop = el.scrollHeight - el.clientHeight
+      const next = Math.min(maxScrollTop, el.scrollTop + speedPxPerSec * dt)
+      el.scrollTop = next
+
+      if (next >= maxScrollTop - 1) {
+        pauseTimeout = window.setTimeout(() => {
+          if (stopped || !el) return
+          el.scrollTop = 0
+          lastTs = 0
+          raf = window.requestAnimationFrame(tick)
+        }, BOTTOM_PAUSE_MS)
+        return
+      }
+      raf = window.requestAnimationFrame(tick)
+    }
+
+    const attachAndStart = () => {
+      if (stopped) return
+      if (!el) return
+
+      el.addEventListener('wheel', onUserIntent, { passive: true })
+      el.addEventListener('touchmove', onUserIntentImmediate, { passive: true })
+
+      startTimeout = window.setTimeout(() => {
+        if (stopped || !el) return
+        el.scrollTop = 0
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            if (stopped || !el) return
+            const overflowPx = el.scrollHeight - el.clientHeight
+            if (overflowPx <= 1) {
+              stop()
+              return
+            }
+            lastTs = 0
+            raf = window.requestAnimationFrame(tick)
+          })
+        })
+      }, 650)
+    }
+
+    const waitForMount = (attempt: number) => {
+      if (stopped) return
+      el = requirementsScrollRef.current
+      if (el) {
+        attachAndStart()
+        return
+      }
+      if (attempt >= MOUNT_RETRY_MAX) return
+      mountRetryTimeout = window.setTimeout(() => waitForMount(attempt + 1), MOUNT_RETRY_MS)
+    }
+
+    waitForMount(0)
+
+    return stop
+  }, [
+    activeTaskId,
+    isTowelsSplitEffectiveForDateKey,
+    prefersReducedMotion,
+    selectedDateKey,
+    selectedWindow,
+  ])
+
   const getEffectiveTasksByWindowForDateKey = useCallback((dateKey: string): Record<WindowKey, Task[]> => {
     return getEffectiveTasksByWindowForDateKeyShared({
       dateKey,
@@ -5514,26 +6639,119 @@ function App() {
     []
   )
 
+  // Training windows that apply to a given date. Merges the live selected-date markers with the
+  // leaderboard month-range markers so both the selected view and month aggregation reflect training.
+  const trainingKeysForDate = useCallback(
+    (dateKey: string): WindowKey[] => {
+      const keys: WindowKey[] = []
+      ;(['11', '17', '21'] as WindowKey[]).forEach((wk) => {
+        if (dateKey === selectedDateKey && trainingWindowsForSelectedDate.has(wk)) {
+          keys.push(wk)
+          return
+        }
+        if (trainingDocsInRange.has(`${dateKey}__${wk}`)) keys.push(wk)
+      })
+      return keys
+    },
+    [selectedDateKey, trainingWindowsForSelectedDate, trainingDocsInRange]
+  )
+
   const computeShiftLeaders = useCallback(
     (dateKey: string, shift: 'day' | 'night'): LeaderRow[] => {
       const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(dateKey)
-      return computeShiftLeadersForState(taskState, dateKey, shift, SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
+      const fair =
+        shift === 'day'
+          ? fairSplitContract17?.dateKey === dateKey
+            ? fairSplitContract17
+            : null
+          : fairSplitContract21?.dateKey === dateKey
+            ? fairSplitContract21
+            : null
+      return computeShiftLeadersForState(
+        taskState,
+        dateKey,
+        shift,
+        SHIFT_WINDOWS,
+        windowTaskWeights,
+        taskWeightByIdByWindow,
+        isSoloScoreCappedForShift(dateKey, shift),
+        fair,
+        trainingKeysForDate(dateKey)
+      )
     },
-    [SHIFT_WINDOWS, getWeightsForDateKey, taskState]
+    [SHIFT_WINDOWS, getWeightsForDateKey, isSoloScoreCappedForShift, taskState, fairSplitContract17, fairSplitContract21, trainingKeysForDate]
   )
 
   const computeFullDayLeaders = useCallback(
     (dateKey: string): LeaderRow[] => {
       const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(dateKey)
-      return computeFullDayLeadersForState(taskState, dateKey, SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
+      return computeFullDayLeadersForState(
+        taskState,
+        dateKey,
+        SHIFT_WINDOWS,
+        windowTaskWeights,
+        taskWeightByIdByWindow,
+        fairSplitContract17?.dateKey === dateKey ? fairSplitContract17 : null,
+        fairSplitContract21?.dateKey === dateKey ? fairSplitContract21 : null,
+        trainingKeysForDate(dateKey)
+      )
     },
-    [SHIFT_WINDOWS, getWeightsForDateKey, taskState]
+    [SHIFT_WINDOWS, getWeightsForDateKey, taskState, fairSplitContract17, fairSplitContract21, trainingKeysForDate]
   )
 
   const selectedShift: 'day' | 'night' = useMemo(
     () => (selectedWindow === '21' ? 'night' : 'day'),
     [selectedWindow]
   )
+
+  const fairSplitForSelectedDateAndShift = useMemo((): FairSplitContractDoc | null => {
+    if (selectedShift === 'day') {
+      return fairSplitContract17?.dateKey === selectedDateKey ? fairSplitContract17 : null
+    }
+    return fairSplitContract21?.dateKey === selectedDateKey ? fairSplitContract21 : null
+  }, [selectedShift, selectedDateKey, fairSplitContract17, fairSplitContract21])
+
+  /** Secret training mode is active for the window currently being viewed. */
+  const selectedWindowIsTraining = useMemo(
+    () => trainingWindowsForSelectedDate.has(selectedWindow),
+    [trainingWindowsForSelectedDate, selectedWindow]
+  )
+
+  // Secret unlock: 5 taps within ~3s on the (still visually locked) Training tile toggles
+  // training mode for the selected date + window. No visible feedback on the tile.
+  const handleTrainingSecretTap = useCallback(() => {
+    if (trainingTapResetTimerRef.current !== null) {
+      window.clearTimeout(trainingTapResetTimerRef.current)
+    }
+    trainingTapCountRef.current += 1
+    if (trainingTapCountRef.current >= 5) {
+      trainingTapCountRef.current = 0
+      trainingTapResetTimerRef.current = null
+      const enable = !trainingWindowsForSelectedDate.has(selectedWindow)
+      void (enable
+        ? setTrainingWindow(selectedDateKey, selectedWindow)
+        : deleteTrainingWindow(selectedDateKey, selectedWindow))
+      setShowMenu(false)
+      return
+    }
+    trainingTapResetTimerRef.current = window.setTimeout(() => {
+      trainingTapCountRef.current = 0
+      trainingTapResetTimerRef.current = null
+    }, 3000)
+  }, [selectedDateKey, selectedWindow, trainingWindowsForSelectedDate])
+
+  /**
+   * True when the selected date is on/after the May 13, 2026 cutover that splits 11AM and 5PM
+   * scoring in the HUD and drops 11AM from leaderboard totals (see
+   * {@link SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS}). Past dates keep blended day scores.
+   */
+  const useSeparateDayAmPmForSelected = useMemo(() => {
+    const dateMs = new Date(`${selectedDateKey}T00:00:00`).getTime()
+    return dateMs >= SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS
+  }, [selectedDateKey])
+
+  /** Day-shift + cutover means each HUD slot shows two numbers (11AM and 5PM). */
+  const showDayAmPmSplit = selectedShift === 'day' && useSeparateDayAmPmForSelected
 
   // Helper to determine active shift from current time
   const getActiveShiftFromTime = useCallback((): 'day' | 'night' => {
@@ -5548,20 +6766,716 @@ function App() {
     return shift === 'day' ? '17' : '21' // 5PM for day, 9PM for night
   }, [])
 
+  // Unfiltered leaders for the selected date/shift. Memoized so completion handlers can
+  // reuse it for their "before" celebration rows instead of recomputing a full scoring
+  // pass synchronously on every tap.
+  const shiftLeadersForSelected = useMemo(
+    () => computeShiftLeaders(selectedDateKey, selectedShift),
+    [computeShiftLeaders, selectedDateKey, selectedShift]
+  )
+
   // Shift HUD should only show people who actually participated this shift (exclude autoAssigned yum-yum credit).
   const shiftHudLeaders = useMemo(() => {
-    const rows = computeShiftLeaders(selectedDateKey, selectedShift)
     const participants = computeShiftHudParticipantsForState(taskState, selectedDateKey, selectedShift, SHIFT_WINDOWS)
-    return rows.filter((r) => participants.has(r.name))
-  }, [SHIFT_WINDOWS, computeShiftLeaders, selectedDateKey, selectedShift, taskState])
+    return shiftLeadersForSelected.filter((r) => participants.has(r.name))
+  }, [SHIFT_WINDOWS, shiftLeadersForSelected, selectedDateKey, selectedShift, taskState])
 
-  // Employee Selector quick list: use the same two people shown in the Shift HUD slots (top 2 with score > 0).
+  /** Split column order for HUD slots while the split panel is open (employeeA = p1, employeeB = p2). */
+  const activeSplitHudPair = useMemo(
+    () =>
+      resolveActiveSplitHudPair({
+        phase: taskSplitInlinePhase,
+        windowKey: selectedWindow,
+        empA: taskSplitEmpA,
+        empB: taskSplitEmpB,
+        contract: fairSplitForSelectedDateAndShift,
+      }),
+    [taskSplitInlinePhase, selectedWindow, taskSplitEmpA, taskSplitEmpB, fairSplitForSelectedDateAndShift],
+  )
+
+  const shiftHudDisplaySlots = useMemo(() => {
+    const played = shiftHudLeaders.filter((r) =>
+      showDayAmPmSplit ? shiftHudHasAnyPoints(r) : shiftHudScoreForCelebration(r) > 0,
+    )
+    return resolveShiftHudDisplaySlots({
+      played,
+      allLeaders: shiftLeadersForSelected,
+      splitPair: activeSplitHudPair,
+    })
+  }, [shiftHudLeaders, shiftLeadersForSelected, activeSplitHudPair, showDayAmPmSplit])
+
+  // Employee Selector quick list: use the same two people shown in the Shift HUD slots
+  // (top 2 with any points — 5PM, or post-cutover 11AM-standalone).
   const selectorShiftEmployees = useMemo<string[]>(() => {
-    const played = shiftHudLeaders.filter((r) => r.score > 0)
+    const played = shiftHudLeaders.filter((r) => shiftHudHasAnyPoints(r))
     const top2 = played.slice(0, 2).map((r) => String(r.name || '').trim()).filter(Boolean)
     const unique = Array.from(new Set(top2))
     return unique.filter((n) => employees.includes(n))
   }, [employees, shiftHudLeaders])
+
+  // Quick-select order is score-ranked, so completing a task re-ranks the two
+  // names and visibly swaps the buttons mid-press. Freeze the order while the
+  // selector is open: snapshot on open, and render from the snapshot so positions
+  // stay put until the picker closes/reopens. Same names/styling, no reordering.
+  const frozenSelectorEmployeesRef = useRef<string[] | null>(null)
+  useEffect(() => {
+    if (showEmployeeSelector) {
+      frozenSelectorEmployeesRef.current = selectorShiftEmployees
+    } else {
+      frozenSelectorEmployeesRef.current = null
+    }
+    // Only re-snapshot on open/close, not on every score change while open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showEmployeeSelector])
+  const displaySelectorEmployees = useMemo<string[]>(() => {
+    const frozen = frozenSelectorEmployeesRef.current
+    if (!showEmployeeSelector || !frozen) return selectorShiftEmployees
+    // Keep the frozen order but drop names no longer present, and append any new
+    // names so membership stays correct even if the roster changes mid-open.
+    const live = selectorShiftEmployees
+    const stable = frozen.filter((n) => live.includes(n))
+    const added = live.filter((n) => !stable.includes(n))
+    return [...stable, ...added]
+  }, [showEmployeeSelector, selectorShiftEmployees])
+
+  const taskSplitResolvedEmployees = useMemo<[string, string] | null>(() => {
+    const slots = breakSelection?.slots || []
+    if (slots.length >= 2) {
+      const e0 = (slots[0]?.employee || '').trim()
+      const e1 = (slots[1]?.employee || '').trim()
+      if (e0 && e1 && e0 !== e1) return [e0, e1]
+    }
+    if (shiftHudLeaders.length >= 2) {
+      const e0 = (shiftHudLeaders[0]?.name || '').trim()
+      const e1 = (shiftHudLeaders[1]?.name || '').trim()
+      if (e0 && e1 && e0 !== e1) return [e0, e1]
+    }
+    return null
+  }, [breakSelection?.slots, shiftHudLeaders])
+
+  // "Last time: [name] ×N" line for the employee selector. Out of the two
+  // employees working right now, who completed the active task the last time
+  // those two worked together, and their consecutive shared-shift streak.
+  const lastTogetherStreak = useMemo<
+    { kind: 'solo' | 'split'; names: string[]; count: number } | null
+  >(() => {
+    if (selectedWindow !== '17' && selectedWindow !== '21') return null
+    if (!activeTaskId) return null
+    if (activeTask?.requiresSplit && !isSoloModeActiveForWindow(selectedDateKey, selectedWindow)) return null
+    // When a split is active for this window, the two split players ARE the pair — show "Last time"
+    // accurately for both 5PM and 9PM without needing a break selection or any completed tasks today.
+    const splitPair: [string, string] | null = (() => {
+      const a = (fairSplitForSelectedDateAndShift?.employeeA || '').trim()
+      const b = (fairSplitForSelectedDateAndShift?.employeeB || '').trim()
+      return a && b && a !== b ? [a, b] : null
+    })()
+    const pair = splitPair || resolveLastTimePair(selectedWindow, breakSelection, shiftHudLeaders)
+    if (!pair) return null
+    const sharedDates = findSharedShiftDates(taskState, selectedWindow, pair, selectedDateKey)
+    if (sharedDates.length === 0) return null
+    const last = findLastTogetherCompleter(taskState, activeTaskId, selectedWindow, pair, sharedDates)
+    if (!last) return null
+
+    if (last.wasSplit) {
+      const count = computeSplitTogetherStreak(
+        taskState,
+        activeTaskId,
+        selectedWindow,
+        pair,
+        sharedDates,
+        last.dateKey
+      )
+      if (count < 1) return null
+      return { kind: 'split', names: last.completers, count }
+    }
+
+    const name = last.completers[0]
+    if (!name) return null
+    const count = computeTogetherStreak(
+      taskState,
+      activeTaskId,
+      selectedWindow,
+      name,
+      pair,
+      sharedDates,
+      last.dateKey
+    )
+    if (count < 1) return null
+    return { kind: 'solo', names: [name], count }
+  }, [
+    selectedWindow,
+    activeTaskId,
+    activeTask?.requiresSplit,
+    isSoloModeActiveForWindow,
+    selectedDateKey,
+    breakSelection,
+    shiftHudLeaders,
+    taskState,
+    fairSplitForSelectedDateAndShift,
+  ])
+
+  const taskSplitEffectiveWindowTaskIds = useMemo(() => {
+    if (selectedWindow !== '17' && selectedWindow !== '21') return [] as string[]
+    return getSplitWindowEffectiveTaskIds({
+      dateKey: selectedDateKey,
+      windowKey: selectedWindow,
+      taskState,
+      allTasks,
+      taskOverrides,
+      windowMs: { windowStartMsForDateKey, windowCloseMsForDateKey },
+    })
+  }, [
+    selectedDateKey,
+    selectedWindow,
+    taskState,
+    allTasks,
+    taskOverrides?.overrides,
+    windowStartMsForDateKey,
+    windowCloseMsForDateKey,
+  ])
+
+  const taskSplitCandidateIds = useMemo(() => {
+    if (selectedWindow !== '17' && selectedWindow !== '21') return [] as string[]
+    const windowMap = taskState[selectedDateKey]?.[selectedWindow] || {}
+    return taskSplitEffectiveWindowTaskIds.filter((id) => !isTaskDoneForSplit(id, windowMap[id]))
+  }, [selectedDateKey, selectedWindow, taskSplitEffectiveWindowTaskIds, taskState])
+
+  useEffect(() => {
+    taskSplitResultRef.current = taskSplitResult
+  }, [taskSplitResult])
+
+  useEffect(() => {
+    setFairSplitContract17(readFairSplitContractLocalCache(selectedDateKey, '17'))
+    setFairSplitContract21(readFairSplitContractLocalCache(selectedDateKey, '21'))
+
+    const applyFairSplitContract17 = (incoming: FairSplitContractDoc | null) => {
+      if (incoming === null && fairSplitPendingWriteRef.current === '17') return
+      setFairSplitContract17(incoming)
+    }
+    const applyFairSplitContract21 = (incoming: FairSplitContractDoc | null) => {
+      if (incoming === null && fairSplitPendingWriteRef.current === '21') return
+      setFairSplitContract21(incoming)
+    }
+
+    const u17 = subscribeFairSplitContract(selectedDateKey, '17', applyFairSplitContract17)
+    const u21 = subscribeFairSplitContract(selectedDateKey, '21', applyFairSplitContract21)
+    return () => {
+      u17()
+      u21()
+    }
+  }, [selectedDateKey])
+
+  // Secret training mode: subscribe to all three windows of the selected date.
+  useEffect(() => {
+    setTrainingWindowsForSelectedDate(new Set())
+    const applyTraining = (windowKey: WindowKey, enabled: boolean) => {
+      setTrainingWindowsForSelectedDate((prev) => {
+        const next = new Set(prev)
+        if (enabled) next.add(windowKey)
+        else next.delete(windowKey)
+        return next
+      })
+    }
+    const unsubs = (['11', '17', '21'] as WindowKey[]).map((wk) =>
+      subscribeTrainingWindow(selectedDateKey, wk, (doc) => applyTraining(wk, !!doc?.enabled))
+    )
+    return () => unsubs.forEach((u) => u())
+  }, [selectedDateKey])
+
+  useEffect(() => {
+    taskSplitSuggestGenRef.current += 1
+    setNightSplitChoseTeamSplit(false)
+  }, [selectedDateKey, selectedWindow])
+
+  useEffect(() => {
+    const clearTaskSplitPanelUi = () => {
+      setTaskSplitInlinePhase(null)
+      setTaskSplitResult(null)
+      setTaskSplitErrorBanner(null)
+      setTaskSplitEmpA('')
+      setTaskSplitEmpB('')
+      setSplitIcePromptOpen(false)
+      setTaskSplitIceSplitChoice(false)
+    }
+
+    const restoreTaskSplitPanelFromContract = (contract: FairSplitContractDoc) => {
+      setTaskSplitResult(fairSplitContractToSuggestResult(contract))
+      setTaskSplitEmpA(contract.employeeA)
+      setTaskSplitEmpB(contract.employeeB)
+      setTaskSplitIceSplitChoice(contract.finalIceMode === 'split')
+      setTaskSplitInlinePhase('active')
+      setSplitIcePromptOpen(false)
+      setTaskSplitErrorBanner(null)
+    }
+
+    const decision = resolveTaskSplitPanelRestore({
+      selectedDateKey,
+      selectedWindow,
+      contract17: fairSplitContract17,
+      contract21: fairSplitContract21,
+      phase: taskSplitInlinePhase,
+      undoneViewKey: taskSplitUndoneKeyRef.current,
+      completedViewKey: taskSplitCompletedKeyRef.current,
+    })
+
+    if (decision.action === 'skip') return
+
+    if (decision.action === 'restore') {
+      restoreTaskSplitPanelFromContract(decision.contract)
+      return
+    }
+
+    const viewKey = `${selectedDateKey}:${selectedWindow}`
+    if (taskSplitUndoneKeyRef.current === viewKey) {
+      const contract = selectedWindow === '17' ? fairSplitContract17 : fairSplitContract21
+      if (!contract) taskSplitUndoneKeyRef.current = null
+    }
+    clearTaskSplitPanelUi()
+  }, [selectedDateKey, selectedWindow, fairSplitContract17, fairSplitContract21, taskSplitInlinePhase])
+
+  /**
+   * Show "Split ice?" only when combined ice is still an actionable split candidate.
+   * Belt-and-suspenders: also treat ice as done if completion already satisfies split rules
+   * even if ids were momentarily out of sync with the candidate list.
+   */
+  const taskSplitWindowHasIce = useMemo(() => {
+    if (selectedWindow !== '17' && selectedWindow !== '21') return false
+    const wm = taskState[selectedDateKey]?.[selectedWindow] || {}
+    return (['ice-5pm', 'ice-close'] as const).some((tid) => {
+      if (!taskSplitCandidateIds.includes(tid)) return false
+      return !isTaskDoneForSplit(tid, wm[tid])
+    })
+  }, [selectedDateKey, selectedWindow, taskSplitCandidateIds, taskState])
+
+  const runTaskSplitSuggest = useCallback(
+    async (
+      a: string,
+      b: string,
+      opts?: {
+        forceIceMode?: 'whole' | 'split'
+        isRegenerate?: boolean
+        previousResult?: TaskSplitSuggestResult | null
+      },
+    ) => {
+      const generation = ++taskSplitSuggestGenRef.current
+      taskSplitUndoneKeyRef.current = null
+      taskSplitCompletedKeyRef.current = null
+      splitAutoFinishStartedRef.current = false
+      flushSync(() => {
+        setTaskSplitInlinePhase('loading')
+        setTaskSplitErrorBanner(null)
+      })
+      // Let the browser paint "Balancing…" before the synchronous partition + payload build.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve())
+        })
+      })
+      if (generation !== taskSplitSuggestGenRef.current) return
+      try {
+        const historySummary = buildWorkHistorySummary({
+          taskState,
+          dateKey: selectedDateKey,
+          employeeA: a,
+          employeeB: b,
+          allTasks,
+        })
+        const lastTogetherSummary = buildLastTogetherSummaryForSplit({
+          taskState,
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow as '17' | '21',
+          employeeA: a,
+          employeeB: b,
+          candidateTaskIds: taskSplitCandidateIds,
+          allTasks,
+        })
+        const previousSuggestion =
+          opts?.isRegenerate && opts?.previousResult ? suggestResultToVariant(opts.previousResult) : undefined
+        const payload = buildTaskSplitRequestPayload({
+          taskState,
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow as TaskSplitSuggestWindowKey,
+          employeeA: a,
+          employeeB: b,
+          allTasks: allTasks as TaskLike[],
+          taskOverrides,
+          windowMs: { windowStartMsForDateKey, windowCloseMsForDateKey },
+          soloModeActive: isSoloModeActiveForWindow(selectedDateKey, selectedWindow as WindowKey),
+          deploymentChannel,
+          candidateTaskIds: taskSplitCandidateIds,
+          historySummary,
+          lastTogetherSummary,
+          forceIceMode: opts?.forceIceMode,
+          previousSuggestion,
+          isRegenerate: opts?.isRegenerate,
+        })
+        const out = await submitTaskSplitRequest(payload)
+        if (generation !== taskSplitSuggestGenRef.current) return
+
+        const wk = selectedWindow as TaskSplitSuggestWindowKey
+        const shift: 'day' | 'night' = wk === '17' ? 'day' : 'night'
+        const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
+        const core = computeShiftScoringCore(
+          taskState,
+          selectedDateKey,
+          shift,
+          SHIFT_WINDOWS,
+          windowTaskWeights,
+          taskWeightByIdByWindow,
+        )
+        const baselineA = core ? readWindowPointForEmployee(core.pointsByWindow[wk], out.employeeA) : 0
+        const baselineB = core ? readWindowPointForEmployee(core.pointsByWindow[wk], out.employeeB) : 0
+        const doc = buildFairSplitContractDocument({
+          result: out,
+          dateKey: selectedDateKey,
+          windowKey: wk,
+          baselinePointsFloatA: baselineA,
+          baselinePointsFloatB: baselineB,
+        })
+        if (wk === '17') setFairSplitContract17(doc)
+        else setFairSplitContract21(doc)
+
+        fairSplitPendingWriteRef.current = wk
+        try {
+          await setFairSplitContract(doc)
+        } finally {
+          fairSplitPendingWriteRef.current = null
+        }
+        if (generation !== taskSplitSuggestGenRef.current) return
+
+        setTaskSplitResult(out)
+        setTaskSplitInlinePhase('active')
+        if (selectedWindow === '21') {
+          const prevMode = isDemoDaySelected ? demoSoloModeByDateKey[selectedDateKey] ?? null : soloMode
+          if (prevMode?.nightActive) {
+            const nextMode: SoloMode | null = prevMode.active
+              ? {
+                  active: true,
+                  activatedAt: prevMode.activatedAt,
+                  ...(prevMode.activatedBy ? { activatedBy: prevMode.activatedBy } : {}),
+                }
+              : null
+            if (isDemoDaySelected) {
+              setDemoSoloModeByDateKey((prev) => ({ ...prev, [selectedDateKey]: nextMode }))
+            }
+            setSoloMode(nextMode)
+            void persistSoloModeOrNoop(selectedDateKey, nextMode)
+          }
+        }
+      } catch (e) {
+        if (generation !== taskSplitSuggestGenRef.current) return
+        if (selectedWindow === '17') {
+          setFairSplitContract17(readFairSplitContractLocalCache(selectedDateKey, '17'))
+        } else if (selectedWindow === '21') {
+          setFairSplitContract21(readFairSplitContractLocalCache(selectedDateKey, '21'))
+        }
+        const msg = e instanceof Error ? e.message : String(e)
+        // Close the inline panel and surface the error so the user can re-tap the dice to retry.
+        setTaskSplitErrorBanner(null)
+        setTaskSplitInlinePhase(null)
+        setSplitIcePromptOpen(false)
+        setSaveError(msg || 'Could not generate a split. Try again.')
+      }
+    },
+    [
+      allTasks,
+      demoSoloModeByDateKey,
+      deploymentChannel,
+      isDemoDaySelected,
+      isSoloModeActiveForWindow,
+      persistSoloModeOrNoop,
+      selectedDateKey,
+      selectedWindow,
+      soloMode,
+      taskOverrides,
+      taskSplitCandidateIds,
+      taskState,
+      windowCloseMsForDateKey,
+      windowStartMsForDateKey,
+      SHIFT_WINDOWS,
+    ],
+  )
+
+  const closeTaskSplitInline = useCallback(() => {
+    taskSplitSuggestGenRef.current += 1
+    if (splitAutoFinishTimerRef.current != null) {
+      window.clearTimeout(splitAutoFinishTimerRef.current)
+      splitAutoFinishTimerRef.current = null
+    }
+    splitAutoFinishStartedRef.current = false
+    setSplitEvacuating(false)
+    if (selectedWindow === '17' || selectedWindow === '21') {
+      taskSplitUndoneKeyRef.current = `${selectedDateKey}:${selectedWindow}`
+      clearFairSplitContractLocalCache(selectedDateKey, selectedWindow)
+      if (selectedWindow === '17') setFairSplitContract17(null)
+      else setFairSplitContract21(null)
+      void deleteFairSplitContract(selectedDateKey, selectedWindow)
+    }
+    setTaskSplitInlinePhase(null)
+    setTaskSplitResult(null)
+    setTaskSplitErrorBanner(null)
+    setTaskSplitEmpA('')
+    setTaskSplitEmpB('')
+    setSplitIcePromptOpen(false)
+    setTaskSplitIceSplitChoice(false)
+  }, [selectedDateKey, selectedWindow])
+
+  /**
+   * Given a known pair, either ask "Split Ice?" first (when the window has an ice task)
+   * or run the suggested split immediately (one person does ice).
+   */
+  const beginDiceSplitWithPair = useCallback(
+    (a: string, b: string) => {
+      setTaskSplitEmpA(a)
+      setTaskSplitEmpB(b)
+      if (taskSplitWindowHasIce) {
+        setSplitIcePromptOpen(true)
+      } else {
+        setTaskSplitIceSplitChoice(false)
+        void runTaskSplitSuggest(a, b, { forceIceMode: 'whole' })
+      }
+    },
+    [runTaskSplitSuggest, taskSplitWindowHasIce],
+  )
+
+  const handleSplitIceChoice = useCallback(
+    (split: boolean) => {
+      const a = taskSplitEmpA.trim()
+      const b = taskSplitEmpB.trim()
+      setSplitIcePromptOpen(false)
+      if (!a || !b || a === b) return
+      setTaskSplitIceSplitChoice(split)
+      void runTaskSplitSuggest(a, b, { forceIceMode: split ? 'split' : 'whole' })
+    },
+    [runTaskSplitSuggest, taskSplitEmpA, taskSplitEmpB],
+  )
+
+  const openTaskSplitSetup = useCallback(() => {
+    if (taskSplitInlinePhase !== null) {
+      // Panel is already open — pressing dice again exits / undoes.
+      closeTaskSplitInline()
+      return
+    }
+    setTaskSplitErrorBanner(null)
+    setTaskSplitResult(null)
+    setTaskSplitIceSplitChoice(false)
+    const r = taskSplitResolvedEmployees
+    if (r && r[0] && r[1] && r[0] !== r[1]) {
+      // Two working employees are already known — go straight to the split
+      // (asking "Split Ice?" first when the window has an ice task).
+      beginDiceSplitWithPair(r[0], r[1])
+      return
+    }
+    // We don't know who is working — reuse the task-split employee grid overlay
+    // to ask, then proceed to the same split flow.
+    setTaskSplitEmpA('')
+    setTaskSplitEmpB('')
+    setAssignees([])
+    setActiveTaskId(null)
+    setSplitMode(true)
+    setShowAllEmployeesInSelector(false)
+    setSplitSetupSelecting(true)
+    setShowEmployeeSelector(true)
+  }, [beginDiceSplitWithPair, closeTaskSplitInline, taskSplitInlinePhase, taskSplitResolvedEmployees])
+
+  const handleNightSplitTeamChoice = useCallback(() => {
+    setNightSplitChoseTeamSplit(true)
+    if (isDiceEnabledForChannel(taskOverrides, deploymentChannel) && taskSplitCandidateIds.length > 0) {
+      openTaskSplitSetup()
+    }
+  }, [deploymentChannel, openTaskSplitSetup, taskOverrides, taskSplitCandidateIds.length])
+
+  const taskSplitOnRegenerate = useCallback(() => {
+    const a = taskSplitEmpA.trim()
+    const b = taskSplitEmpB.trim()
+    if (!a || !b || a === b) return
+    void runTaskSplitSuggest(a, b, {
+      forceIceMode: taskSplitIceSplitChoice ? 'split' : 'whole',
+      isRegenerate: true,
+      previousResult: taskSplitResult,
+    })
+  }, [runTaskSplitSuggest, taskSplitEmpA, taskSplitEmpB, taskSplitIceSplitChoice, taskSplitResult])
+
+  const taskSplitHudFloats = useMemo(() => {
+    if (taskSplitInlinePhase === null || !taskSplitResult) return null
+    const wk = selectedWindow as TaskSplitSuggestWindowKey
+    if (wk !== '17' && wk !== '21') return null
+    const contract = wk === '17' ? fairSplitContract17 : fairSplitContract21
+    if (!contract || contract.dateKey !== selectedDateKey || contract.windowKey !== wk) return null
+    const shift = wk === '17' ? ('day' as const) : ('night' as const)
+    const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
+    const core = computeShiftScoringCore(
+      taskState,
+      selectedDateKey,
+      shift,
+      SHIFT_WINDOWS,
+      windowTaskWeights,
+      taskWeightByIdByWindow,
+    )
+    if (!core) return null
+    return fairSplitPreviewWindowPoints({
+      state: taskState,
+      dateKey: selectedDateKey,
+      shift,
+      contract,
+      windowTaskWeights,
+      taskWeightByIdByWindow,
+      deferredFrom17: core.deferredFrom17,
+      deferredWeightTotal17: core.deferredWeightTotal17,
+      useBalancedScoring: core.useBalancedScoring,
+      useDailyTaskPoints: core.useDailyTaskPoints,
+      canonicalPointsByWindow: core.pointsByWindow,
+    })
+  }, [
+    taskSplitInlinePhase,
+    taskSplitResult,
+    selectedWindow,
+    selectedDateKey,
+    fairSplitContract17,
+    fairSplitContract21,
+    taskState,
+    getWeightsForDateKey,
+    SHIFT_WINDOWS,
+  ])
+
+  /** True once every task the active split assigned (incl. shared + split ice) is done. */
+  const allSplitSuggestedComplete = useMemo(() => {
+    if (taskSplitInlinePhase !== 'active' || !taskSplitResult) return false
+    if (selectedWindow !== '17' && selectedWindow !== '21') return false
+    const windowMap = taskState[selectedDateKey]?.[selectedWindow] || {}
+    const ids = new Set<string>([
+      ...Object.keys(taskSplitResult.finalAssignment || {}),
+      ...(taskSplitResult.finalSharedTaskIds || []),
+    ])
+    if (taskSplitResult.finalIceSplitAssignment) {
+      Object.keys(taskSplitResult.finalIceSplitAssignment).forEach((id) => ids.add(id))
+    }
+    if (ids.size === 0) return false
+    for (const tid of ids) {
+      if (!isTaskDoneForSplit(tid, windowMap[tid])) return false
+    }
+    return true
+  }, [taskSplitInlinePhase, taskSplitResult, selectedWindow, selectedDateKey, taskState])
+
+  // Reset the split-complete celebration allowance once the cinematic is gone.
+  useEffect(() => {
+    if (!windowCompleteCelebration) setSplitAutoCelebration(false)
+  }, [windowCompleteCelebration])
+
+  /** Block idle screensaver when any heavy overlay is up (does not touch MusicPlayer / <audio>). */
+  const screensaverObstructed = useMemo(
+    () =>
+      !!demoDayKey ||
+      taskSplitInlinePhase !== null ||
+      isAnyModalOpen ||
+      showLeaderboard ||
+      showPointsExplanation ||
+      showAdminPanel ||
+      showEmployeeSelector ||
+      showChecklistModal ||
+      showNightShiftPrompt ||
+      v3ShiftNotifyOpen ||
+      isLoadingData ||
+      isLoadingWindow ||
+      showStartupCover ||
+      musicReminderActive ||
+      showGoodMorning,
+    [
+      demoDayKey,
+      taskSplitInlinePhase,
+      isAnyModalOpen,
+      showLeaderboard,
+      showPointsExplanation,
+      showAdminPanel,
+      showEmployeeSelector,
+      showChecklistModal,
+      showNightShiftPrompt,
+      v3ShiftNotifyOpen,
+      isLoadingData,
+      isLoadingWindow,
+      showStartupCover,
+      musicReminderActive,
+      showGoodMorning,
+    ]
+  )
+
+  const dismissScreensaver = useCallback((opts?: { absorbGhostTap?: boolean }) => {
+    setScreensaverOpen(false)
+    setScreensaverBetaDemoOverride(null)
+    lastInteractionTsRef.current = Date.now()
+    if (opts?.absorbGhostTap) {
+      if (screensaverDismissShieldTimeoutRef.current) {
+        clearTimeout(screensaverDismissShieldTimeoutRef.current)
+      }
+      setScreensaverDismissShield(true)
+      screensaverDismissShieldTimeoutRef.current = window.setTimeout(() => {
+        setScreensaverDismissShield(false)
+        screensaverDismissShieldTimeoutRef.current = null
+      }, 450)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!musicReminderActive) return
+    dismissScreensaver()
+  }, [musicReminderActive, dismissScreensaver])
+
+  useEffect(() => {
+    if (!showGoodMorning) return
+    dismissScreensaver()
+  }, [showGoodMorning, dismissScreensaver])
+
+  const openScreensaverPreview = useCallback(() => {
+    if (!screensaverEnabled) return
+    lastInteractionTsRef.current = Date.now()
+    setScreensaverBetaDemoOverride(null)
+    setScreensaverSessionId((id) => id + 1)
+    setScreensaverOpen(true)
+  }, [screensaverEnabled])
+
+  /** Random: sample two-name quote, or static break / shift countdown (beta QA). */
+  const openScreensaverBetaDemoQuoteOrCountdown = useCallback(() => {
+    if (!screensaverEnabled) return
+    lastInteractionTsRef.current = Date.now()
+    if (Math.random() < 0.5) {
+      const lines = [
+        'Alex & Jordan are on it today',
+        'Great shift, Sam & Riley',
+        'Taylor & Morgan — keep it going',
+      ]
+      setScreensaverBetaDemoOverride({
+        kind: 'quote',
+        line: lines[Math.floor(Math.random() * lines.length)]!,
+      })
+    } else if (Math.random() < 0.5) {
+      setScreensaverBetaDemoOverride({
+        kind: 'countdown',
+        value: { kind: 'break', remainingMs: 14 * 60_000 + 32_000, employee: 'Preview' },
+      })
+    } else {
+      setScreensaverBetaDemoOverride({
+        kind: 'countdown',
+        value: { kind: 'shift', remainingMs: 21 * 60_000 + 5_000 },
+      })
+    }
+    setScreensaverOpen(true)
+  }, [screensaverEnabled])
+
+  useEffect(() => {
+    if (!screensaverEnabled) return
+    const id = window.setInterval(() => {
+      if (!screensaverEnabled || isAdmin) return
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      if (screensaverObstructed) return
+      if (screensaverOpen) return
+      if (Date.now() - lastInteractionTsRef.current < SCREENSAVER_IDLE_MS) return
+      snapBrowseContextToLiveNowRef.current()
+      setScreensaverBetaDemoOverride(null)
+      setScreensaverSessionId((id) => id + 1)
+      setScreensaverOpen(true)
+    }, SCREENSAVER_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [screensaverEnabled, isAdmin, screensaverObstructed, screensaverOpen])
 
   // Always reset to quick mode when the selector closes (regardless of which code path closed it).
   useEffect(() => {
@@ -5583,13 +7497,20 @@ function App() {
   // Compute pending gradient when shift leaders or employee colors change
   // This prepares the gradient to be applied during the next score animation
   useEffect(() => {
-    const newGradient = computeProgressGradient(shiftHudLeaders, employeeColors)
-    // If no animation is active, apply immediately; otherwise queue as pending
+    const applyGradient = () => {
+      const newGradient = computeProgressGradient(shiftHudLeaders, employeeColors)
+      const hasAnimation = scoreAnim || scoreAnimP1 || scoreAnimP2
+      if (hasAnimation) {
+        setPendingGradient(newGradient)
+      } else {
+        setProgressGradient(newGradient)
+      }
+    }
     const hasAnimation = scoreAnim || scoreAnimP1 || scoreAnimP2
     if (hasAnimation) {
-      setPendingGradient(newGradient)
+      startTransition(applyGradient)
     } else {
-      setProgressGradient(newGradient)
+      applyGradient()
     }
   }, [shiftHudLeaders, employeeColors, scoreAnim, scoreAnimP1, scoreAnimP2])
 
@@ -5606,8 +7527,6 @@ function App() {
       slots.every((s) => s?.shiftType === 'double')
     )
   }, [breakSelection?.slots])
-
-  const isOrderReportTaskId = activeTaskId === 'order-report-5pm' || activeTaskId === 'order-report-close'
 
   // Admin-only: allow overriding the two employees for Order Report so past days can be fixed.
   const [orderReportEmployeesOverride, setOrderReportEmployeesOverride] = useState<[string, string] | null>(null)
@@ -5701,21 +7620,21 @@ function App() {
   // Calculate earned labels for all employees (achievement labels from task history)
   // Calendar-based: current month-to-date.
   const earnedLabels = useMemo(
-    () => calculateEarnedLabels(taskState, employees, { fromDateKey: currentMonthStartKey, toDateKey: todayKey }),
-    [currentMonthStartKey, employees, taskState, todayKey]
+    () => calculateEarnedLabels(taskState, activeEmployees, { fromDateKey: currentMonthStartKey, toDateKey: todayKey }),
+    [currentMonthStartKey, activeEmployees, taskState, todayKey]
   )
 
   const earnedLabelsWithRarity = useMemo(() => {
     const counts: Record<string, number> = {}
-    employees.forEach((emp) => {
+    activeEmployees.forEach((emp) => {
       const list = earnedLabels[emp] ?? []
       list.forEach((l) => {
         counts[l.id] = (counts[l.id] || 0) + 1
       })
     })
-    const denom = Math.max(1, employees.length)
+    const denom = Math.max(1, activeEmployees.length)
     const boosted: Record<string, EmployeeLabel[]> = {}
-    employees.forEach((emp) => {
+    activeEmployees.forEach((emp) => {
       const list = earnedLabels[emp] ?? []
       boosted[emp] = list.map((l) => {
         if (l.category !== 'achievement') return l
@@ -5726,7 +7645,7 @@ function App() {
       })
     })
     return boosted
-  }, [earnedLabels, employees])
+  }, [earnedLabels, activeEmployees])
 
   const leaderboardMonthRange = useMemo(() => {
     const monthStart = startOfMonth(leaderboardMonth)
@@ -5736,21 +7655,21 @@ function App() {
 
   const earnedLabelsLeaderboardMonth = useMemo(() => {
     if (!showLeaderboard || leaderboardView !== 'month') return earnedLabels
-    return calculateEarnedLabels(lbMonthTaskState, employees, leaderboardMonthRange)
-  }, [earnedLabels, employees, leaderboardMonthRange, leaderboardView, lbMonthTaskState, showLeaderboard])
+    return calculateEarnedLabels(lbMonthTaskState, activeEmployees, leaderboardMonthRange)
+  }, [earnedLabels, activeEmployees, leaderboardMonthRange, leaderboardView, lbMonthTaskState, showLeaderboard])
 
   const earnedLabelsLeaderboardMonthWithRarity = useMemo(() => {
     const source = earnedLabelsLeaderboardMonth
     const counts: Record<string, number> = {}
-    employees.forEach((emp) => {
+    activeEmployees.forEach((emp) => {
       const list = source[emp] ?? []
       list.forEach((l) => {
         counts[l.id] = (counts[l.id] || 0) + 1
       })
     })
-    const denom = Math.max(1, employees.length)
+    const denom = Math.max(1, activeEmployees.length)
     const boosted: Record<string, EmployeeLabel[]> = {}
-    employees.forEach((emp) => {
+    activeEmployees.forEach((emp) => {
       const list = source[emp] ?? []
       boosted[emp] = list.map((l) => {
         if (l.category !== 'achievement') return l
@@ -5761,7 +7680,7 @@ function App() {
       })
     })
     return boosted
-  }, [earnedLabelsLeaderboardMonth, employees])
+  }, [earnedLabelsLeaderboardMonth, activeEmployees])
 
   // Manual/skill labels scaffold (local for now, can be persisted to Firestore later)
   // Format: { employeeName: EmployeeLabel[] }
@@ -5776,7 +7695,7 @@ function App() {
   // Compute display labels (up to 2 per employee, from different categories)
   const displayLabelsByEmployee = useMemo(() => {
     const result: Record<string, EmployeeLabel[]> = {}
-    employees.forEach(emp => {
+    activeEmployees.forEach(emp => {
       // Merge earned labels (achievements) with manual labels (skills, roles)
       const achievementLabels = earnedLabelsWithRarity[emp] ?? []
       const manualLabels = manualLabelsByEmployee[emp] ?? []
@@ -5788,12 +7707,12 @@ function App() {
       result[emp] = pickDisplayLabels(allLabels)
     })
     return result
-  }, [earnedLabelsWithRarity, employees, manualLabelsByEmployee])
+  }, [earnedLabelsWithRarity, activeEmployees, manualLabelsByEmployee])
 
   const displayLabelsByEmployeeForLeaderboard = useMemo(() => {
     if (!showLeaderboard || leaderboardView !== 'month') return displayLabelsByEmployee
     const result: Record<string, EmployeeLabel[]> = {}
-    employees.forEach((emp) => {
+    activeEmployees.forEach((emp) => {
       const achievementLabels = earnedLabelsLeaderboardMonthWithRarity[emp] ?? []
       const manualLabels = manualLabelsByEmployee[emp] ?? []
       const statusLabels: EmployeeLabel[] =
@@ -5807,7 +7726,7 @@ function App() {
   }, [
     displayLabelsByEmployee,
     earnedLabelsLeaderboardMonthWithRarity,
-    employees,
+    activeEmployees,
     leaderboardView,
     manualLabelsByEmployee,
     showLeaderboard,
@@ -5859,13 +7778,13 @@ function App() {
 
   const triggerTestAchievementUnlock = useCallback(() => {
     if (!isAdmin) return
-    const roster = employees.length ? employees : ['Employee']
+    const roster = activeEmployees.length ? activeEmployees : ['Employee']
     const randomName = roster[Math.floor(Math.random() * roster.length)]!
     const allAchievementDefs = Object.values(ACHIEVEMENT_LABELS)
     const randomDef = allAchievementDefs[Math.floor(Math.random() * allAchievementDefs.length)]!
     const label: EmployeeLabel = { ...randomDef, source: 'computed' }
     showLabelUnlockToast(randomName, label)
-  }, [employees, isAdmin, showLabelUnlockToast])
+  }, [activeEmployees, isAdmin, showLabelUnlockToast])
 
   // Detect new labels for assignees after each task completion
   useEffect(() => {
@@ -5873,14 +7792,14 @@ function App() {
     
     // Build current label sets
     const current: Record<string, Set<string>> = {}
-    employees.forEach(emp => {
+    activeEmployees.forEach(emp => {
       current[emp] = new Set((earnedLabels[emp] ?? []).map(l => l.id))
     })
 
     // Check for newly unlocked labels (skip on first render)
     const prev = prevEarnedLabelsRef.current
     if (Object.keys(prev).length > 0) {
-      for (const emp of employees) {
+      for (const emp of activeEmployees) {
         const prevSet = prev[emp] ?? new Set()
         const currSet = current[emp] ?? new Set()
         for (const labelId of currSet) {
@@ -5898,7 +7817,7 @@ function App() {
     }
 
     prevEarnedLabelsRef.current = current
-  }, [earnedLabels, employees, prefersReducedMotion, showLabelUnlockToast])
+  }, [earnedLabels, activeEmployees, prefersReducedMotion, showLabelUnlockToast])
 
   // Cleanup label unlock toast timeout
   useEffect(() => {
@@ -5939,13 +7858,24 @@ function App() {
           if (!complete) return
         }
 
+        const fair =
+          shift === 'day'
+            ? fairSplitContract17?.dateKey === dateKey
+              ? fairSplitContract17
+              : null
+            : fairSplitContract21?.dateKey === dateKey
+              ? fairSplitContract21
+              : null
         const shiftRows = computeShiftLeadersForState(
           lbMonthTaskState,
           dateKey,
           shift,
           SHIFT_WINDOWS,
           windowTaskWeights,
-          taskWeightByIdByWindow
+          taskWeightByIdByWindow,
+          isSoloScoreCappedForShift(dateKey, shift),
+          fair,
+          trainingKeysForDate(dateKey)
         )
         shiftRows.forEach((row) => {
           const name = row.name
@@ -5971,6 +7901,10 @@ function App() {
     leaderboardView,
     showLeaderboard,
     todayKey,
+    fairSplitContract17,
+    fairSplitContract21,
+    isSoloScoreCappedForShift,
+    trainingKeysForDate,
   ])
 
   const leaderboardRowsMonth = useMemo(() => {
@@ -5978,14 +7912,14 @@ function App() {
     leadersMonth.forEach((r) => {
       byName[r.name] = r
     })
-    const rows: LeaderRow[] = employees.map((name) => ({
+    const rows: LeaderRow[] = leaderboardMonthRoster.map((name) => ({
       name,
       score: byName[name]?.score ?? 0,
       shiftsPlayed: byName[name]?.shiftsPlayed ?? 0,
     }))
     rows.sort((a, b) => (b.score - a.score) || (b.shiftsPlayed - a.shiftsPlayed) || a.name.localeCompare(b.name))
     return rows
-  }, [employees, leadersMonth])
+  }, [leaderboardMonthRoster, leadersMonth])
 
   // Helper function to format date for display (e.g., "Wed, Jan 15")
   const formatDisplayDateForModal = useCallback((dateKey: string): string => {
@@ -6047,13 +7981,24 @@ function App() {
         }
 
         // Compute shift leaders for this date+shift
+        const fair =
+          shift === 'day'
+            ? fairSplitContract17?.dateKey === dateKey
+              ? fairSplitContract17
+              : null
+            : fairSplitContract21?.dateKey === dateKey
+              ? fairSplitContract21
+              : null
         const shiftRows = computeShiftLeadersForState(
           lbMonthTaskState,
           dateKey,
           shift,
           SHIFT_WINDOWS,
           windowTaskWeights,
-          taskWeightByIdByWindow
+          taskWeightByIdByWindow,
+          isSoloScoreCappedForShift(dateKey, shift),
+          fair,
+          trainingKeysForDate(dateKey)
         )
 
         // Track each shift where the person actually played (shiftsPlayed === 1)
@@ -6095,21 +8040,34 @@ function App() {
     })
 
     return result
-  }, [lbMonthTaskState, leaderboardMonthRange, leaderboardView, showLeaderboard, todayKey, getWeightsForDateKey, formatDisplayDateForModal])
+  }, [
+    lbMonthTaskState,
+    leaderboardMonthRange,
+    leaderboardView,
+    showLeaderboard,
+    todayKey,
+    getWeightsForDateKey,
+    formatDisplayDateForModal,
+    fairSplitContract17,
+    fairSplitContract21,
+    isSoloScoreCappedForShift,
+    SHIFT_WINDOWS,
+    trainingKeysForDate,
+  ])
 
   const leaderboardRowsToday = useMemo(() => {
     const byName: Record<string, LeaderRow> = {}
     todayLeaders.forEach((r) => {
       byName[r.name] = r
     })
-    const rows: LeaderRow[] = employees.map((name) => ({
+    const rows: LeaderRow[] = leaderboardTodayRoster.map((name) => ({
       name,
       score: byName[name]?.score ?? 0,
       shiftsPlayed: byName[name]?.shiftsPlayed ?? 0,
     }))
     rows.sort((a, b) => (b.score - a.score) || (b.shiftsPlayed - a.shiftsPlayed) || a.name.localeCompare(b.name))
     return rows
-  }, [employees, todayLeaders])
+  }, [leaderboardTodayRoster, todayLeaders])
 
   const leaderboardRowsActive = useMemo(
     () => (leaderboardView === 'month' ? leaderboardRowsMonth : leaderboardRowsToday),
@@ -6276,8 +8234,151 @@ function App() {
 
   const isTodaySelected = isSameDay(selectedDate, now)
 
+  /** Real today, Demo Day sandbox date, or admin — unlocks assignment UI (demo completions stay local / no leaderboard). */
+  const canEditTaskAssignmentsOnSelectedDate = useMemo(
+    () => isTodaySelected || isDemoDaySelected || isAdmin,
+    [isAdmin, isDemoDaySelected, isTodaySelected]
+  )
+
+  const windowUnlockKey = `${selectedDateKey}:${selectedWindow}`
+
+  const windowTimeLocked = useMemo(() => {
+    if (!isTodaySelected) return false
+    const windowConfig = WINDOWS.find((w) => w.key === selectedWindow)
+    if (!windowConfig?.unlocksAt) return false
+    const [unlockHour, unlockMinute] = windowConfig.unlocksAt.split(':').map(Number)
+    const currentHour = now.getHours()
+    const currentMinute = now.getMinutes()
+    if (currentHour < unlockHour) return true
+    if (currentHour === unlockHour && currentMinute < unlockMinute) return true
+    return false
+  }, [isTodaySelected, now, selectedWindow])
+
+  const isWindowManuallyUnlocked = manualWindowUnlockKeys.has(windowUnlockKey)
+  const effectiveWindowLocked = windowTimeLocked && !isWindowManuallyUnlocked
+
+  // Timestamp (today) when the selected window unlocks for task completion, or null if it never locks.
+  const windowUnlockTargetMs = useMemo(() => {
+    const windowConfig = WINDOWS.find((w) => w.key === selectedWindow)
+    if (!windowConfig?.unlocksAt) return null
+    const [unlockHour, unlockMinute] = windowConfig.unlocksAt.split(':').map(Number)
+    const target = new Date(now)
+    target.setHours(unlockHour, unlockMinute, 0, 0)
+    return target.getTime()
+  }, [now, selectedWindow])
+
+  // Drive a 1-second clock only while locked and within ~31 min of unlock (for a smooth MM:SS countdown).
+  useEffect(() => {
+    if (!effectiveWindowLocked || windowUnlockTargetMs === null) return
+    if (windowUnlockTargetMs - Date.now() > 31 * 60_000) return
+    const id = window.setInterval(() => setUnlockCountdownNowMs(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [effectiveWindowLocked, windowUnlockTargetMs, now])
+
+  const isWindowTaskLocked = useCallback(
+    (taskId?: string | null) => {
+      if (isAdmin) return false
+      if (!effectiveWindowLocked) return false
+      if (
+        taskId === 'yum-yum-close' &&
+        (selectedWindow === '17' || selectedWindow === '21')
+      ) {
+        return false
+      }
+      return true
+    },
+    [effectiveWindowLocked, isAdmin, selectedWindow],
+  )
+
+  useEffect(() => {
+    setManualWindowUnlockKeys(new Set())
+  }, [selectedDateKey])
+
+  const hasSplitRequiredTaskCompletedInWindow21 = useMemo(() => {
+    const tasks = getEffectiveTasksByWindowForDateKey(selectedDateKey)['21'] || []
+    const windowMap = taskState[selectedDateKey]?.['21'] || {}
+    return tasks.some((task) => {
+      if (!task.requiresSplit) return false
+      const c = windowMap[task.id]
+      if (!c || c.status !== 'done' || c.didNotNeedToComplete) return false
+      if ((c.assignees?.length ?? 0) >= 2) return true
+      if (task.id === 'ice-5pm' || task.id === 'ice-close') {
+        return (
+          !!String(c.iceSides?.left || '').trim() && !!String(c.iceSides?.right || '').trim()
+        )
+      }
+      if (task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') {
+        return (
+          !!String(c.towelSides?.diningBar || '').trim() &&
+          !!String(c.towelSides?.bowlStation || '').trim()
+        )
+      }
+      return false
+    })
+  }, [selectedDateKey, taskState, getEffectiveTasksByWindowForDateKey])
+
+  const hasPendingRequiresSplitInWindow21 = useMemo(() => {
+    const tasks = getEffectiveTasksByWindowForDateKey(selectedDateKey)['21'] || []
+    const windowMap = taskState[selectedDateKey]?.['21'] || {}
+    return tasks.some((task) => {
+      if (!task.requiresSplit) return false
+      const c = windowMap[task.id]
+      return !c || c.status !== 'done'
+    })
+  }, [selectedDateKey, taskState, getEffectiveTasksByWindowForDateKey])
+
+  const hasTwoNightShiftWorkersWithMultipleTasks = useMemo(() => {
+    const windowMap = taskState[selectedDateKey]?.['21'] || {}
+    const taskCountByPerson: Record<string, number> = {}
+    for (const [taskId, completion] of Object.entries(windowMap)) {
+      if (!completion || completion.status !== 'done' || completion.didNotNeedToComplete) continue
+      if (completion.autoAssigned) continue
+      if (completion.completedLate && !completion.lateForgiven) continue
+      const people = creditedPeopleForShiftCompletion(taskId, completion)
+      for (const name of people) {
+        taskCountByPerson[name] = (taskCountByPerson[name] || 0) + 1
+      }
+    }
+    let workersWithMultiple = 0
+    for (const count of Object.values(taskCountByPerson)) {
+      if (count > 1) workersWithMultiple++
+    }
+    return workersWithMultiple >= 2
+  }, [selectedDateKey, taskState])
+
+  const needsNightSoloDecision = useMemo(() => {
+    const hasSplitWork =
+      hasPendingRequiresSplitInWindow21 ||
+      (isDiceEnabledForChannel(taskOverrides, deploymentChannel) && taskSplitCandidateIds.length > 0)
+    return (
+      selectedWindow === '21' &&
+      taskSplitInlinePhase === null &&
+      hasSplitWork &&
+      !isSoloModeActiveForWindow(selectedDateKey, '21') &&
+      !hasSplitRequiredTaskCompletedInWindow21 &&
+      !hasTwoNightShiftWorkersWithMultipleTasks
+    )
+  }, [
+    selectedWindow,
+    taskSplitInlinePhase,
+    hasPendingRequiresSplitInWindow21,
+    taskOverrides,
+    deploymentChannel,
+    taskSplitCandidateIds.length,
+    isSoloModeActiveForWindow,
+    selectedDateKey,
+    hasSplitRequiredTaskCompletedInWindow21,
+    hasTwoNightShiftWorkersWithMultipleTasks,
+  ])
+
+  const showNightSoloActiveBanner = useMemo(() => {
+    if (selectedWindow !== '21') return false
+    const mode = getSoloModeForDateKey(selectedDateKey)
+    return !!mode?.nightActive && !mode?.active
+  }, [selectedWindow, selectedDateKey, getSoloModeForDateKey, soloMode, demoSoloModeByDateKey])
+
   const hasEnabledDailyTasks = useMemo(() => {
-    return (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled).length > 0
+    return (dailyTaskCatalog.tasks || []).filter(isDailyTaskSchedulable).length > 0
   }, [dailyTaskCatalog.tasks])
 
   const isDailyTaskContextSelected = isTodaySelected || isDemoDaySelected
@@ -6291,17 +8392,29 @@ function App() {
   const activeDailyTaskDef = useMemo(() => {
     const taskId = activeDailyTaskRun?.taskId
     if (!taskId) return null
-    return (dailyTaskCatalog.tasks || []).find((t) => t.id === taskId) || null
+    return resolveDailyTaskDefFromCatalog(dailyTaskCatalog.tasks, taskId)
   }, [activeDailyTaskRun?.taskId, dailyTaskCatalog.tasks])
+
+  const todayScheduleEntry = useMemo(
+    () => parseWeekDayEntry(todayDailyTaskWeek?.days?.[todayDateKey]),
+    [todayDailyTaskWeek?.days, todayDateKey]
+  )
 
   const shouldShowDailyTaskTeaser = useMemo(() => {
     if (!hasEnabledDailyTasks) return false
     if (!isDailyTaskContextSelected) return false
+    if (isDemoDaySelected) {
+      const isDinnerWindow = selectedWindow === '17' || selectedWindow === '21'
+      const wasCompletedBeforeDinner = activeDailyTaskRun?.completedAtMs && isDinnerWindow
+      if (wasCompletedBeforeDinner) return false
+      if (activeDailyTaskRun?.taskId === '__none__') return false
+      return true
+    }
+    if (!isDayVisibleToPlayers(todayScheduleEntry)) return false
     // If task was completed before dinner shift, hide card during 5PM/9PM windows
     const isDinnerWindow = selectedWindow === '17' || selectedWindow === '21'
     const wasCompletedBeforeDinner = activeDailyTaskRun?.completedAtMs && isDinnerWindow
     if (wasCompletedBeforeDinner) return false
-    // If override is set to "__none__", no task for today
     if (activeDailyTaskRun?.taskId === '__none__') return false
     return true
   }, [
@@ -6309,7 +8422,9 @@ function App() {
     activeDailyTaskRun?.taskId,
     hasEnabledDailyTasks,
     isDailyTaskContextSelected,
+    isDemoDaySelected,
     selectedWindow,
+    todayScheduleEntry,
   ])
 
   useEffect(() => {
@@ -6400,7 +8515,7 @@ function App() {
     (dateKey: string): DailyTaskRun | null => {
       const existing = demoDailyTaskRunByDateKey[dateKey]
       if (existing) return existing
-      const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled)
+      const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskSchedulable)
       if (!enabled.length) return null
       const picked = enabled[Math.floor(Math.random() * enabled.length)]
       const run: DailyTaskRun = {
@@ -6467,7 +8582,7 @@ function App() {
     todayDateKey,
   ])
 
-  // Called when the slot machine animation completes
+  // Called when the reveal animation completes (v2: curtain; v3: cinematic)
   const handleDailyTaskSlotRevealComplete = useCallback(() => {
     setDailyTaskRevealing(false)
     setDailyTaskStep(1) // Go directly to Materials (skip old step 0)
@@ -6545,7 +8660,9 @@ function App() {
           spawnRewardStars(dailyTaskTeaserCardRef.current, { count: 14 })
         } else {
           // Fallback: spawn stars toward Shift HUD
-          const target = shiftHudExtraRef.current || shiftHudHeaderRef.current
+          const target = isMainShiftHudMostlyVisible()
+            ? (shiftHudExtraRef.current || p1ScoreRef.current || p2ScoreRef.current || shiftHudHeaderRef.current)
+            : (shiftHudExtraRef.current || shiftHudHeaderRef.current)
           if (target) {
             spawnRewardStars(target, { count: 14 })
           }
@@ -6572,47 +8689,295 @@ function App() {
     todayDateKey,
   ])
 
+  const getOrderedTasksForDateKeyWindow = useCallback(
+    (dateKey: string, windowKey: WindowKey): Task[] => {
+      const filtered = [...(getEffectiveTasksByWindowForDateKey(dateKey)[windowKey] || [])]
+      if (windowKey === '17' && isSoloModeActiveForDateKey(dateKey) && !filtered.some((task) => task.id === NIGHT_SHIFT_SOLO_CHECK_TASK.id)) {
+        filtered.push(NIGHT_SHIFT_SOLO_CHECK_TASK)
+      }
+      const legacyOrder = taskOrder[windowKey]
+      const v3Order = taskOrderV3[windowKey]
+      const order =
+        uiVariant === 'v3'
+          ? v3Order && v3Order.length > 0
+            ? v3Order
+            : legacyOrder && legacyOrder.length > 0
+              ? legacyOrder
+              : undefined
+          : legacyOrder && legacyOrder.length > 0
+            ? legacyOrder
+            : undefined
+      if (!order || order.length === 0) return filtered
+
+      const ordered: Task[] = []
+      order.forEach((id) => {
+        const task = filtered.find((t) => t.id === id)
+        if (task) ordered.push(task)
+      })
+      filtered.forEach((task) => {
+        if (!order.includes(task.id)) ordered.push(task)
+      })
+      return ordered
+    },
+    [getEffectiveTasksByWindowForDateKey, isSoloModeActiveForDateKey, taskOrder, taskOrderV3, uiVariant]
+  )
+
   const currentTasks = useMemo(() => {
-    const filtered = getEffectiveTasksByWindowForDateKey(selectedDateKey)[selectedWindow] || []
-    const order = taskOrder[selectedWindow]
-    if (!order || order.length === 0) return filtered
-    
-    // Apply custom order
-    const ordered: Task[] = []
-    order.forEach(id => {
-      const task = filtered.find(t => t.id === id)
-      if (task) ordered.push(task)
+    return getOrderedTasksForDateKeyWindow(selectedDateKey, selectedWindow)
+  }, [getOrderedTasksForDateKeyWindow, selectedDateKey, selectedWindow])
+
+  /** Only non-null during fixed local-time bands (11-ish, 5-ish, close); see inRange below. Screensaver uses this for periodic suggested-task slots. */
+  const screensaverSuggestedTask = useMemo(() => {
+    const inRange = (startHour: number, startMinute: number, endHour: number, endMinute: number): boolean => {
+      const minuteOfDay = now.getHours() * 60 + now.getMinutes()
+      const start = startHour * 60 + startMinute
+      const end = endHour * 60 + endMinute
+      return minuteOfDay >= start && minuteOfDay <= end
+    }
+
+    let suggestedWindow: WindowKey | null = null
+    if (inRange(10, 0, 11, 30)) {
+      suggestedWindow = '11'
+    } else if (inRange(16, 0, 17, 30)) {
+      suggestedWindow = '17'
+    } else {
+      const isFriSat = now.getDay() === 5 || now.getDay() === 6
+      const closeHour = isFriSat ? 22 : 21
+      if (inRange(closeHour - 1, 0, closeHour, 30)) {
+        suggestedWindow = '21'
+      }
+    }
+    if (!suggestedWindow) return null
+
+    const orderedTasks = getOrderedTasksForDateKeyWindow(todayDateKey, suggestedWindow)
+    const incomplete = orderedTasks.filter((task) => {
+      const completion = taskState[todayDateKey]?.[suggestedWindow!]?.[task.id]
+      const status = effectiveStatus(todayDate, suggestedWindow!, completion, now, task.id, isSoloModeActiveForWindow(todayDateKey, suggestedWindow!))
+      return status !== 'done'
     })
-    // Add any tasks not in the order (new tasks)
-    filtered.forEach(task => {
-      if (!order.includes(task.id)) ordered.push(task)
+    if (incomplete.length === 0) return null
+
+    const topThree = incomplete.slice(0, 3)
+    const minuteIndex = Math.floor(now.getTime() / 60_000)
+    const index = minuteIndex % topThree.length
+    const task = topThree[index]
+    if (!task) return null
+    return {
+      id: task.id,
+      icon: task.icon,
+      name: task.name,
+    }
+  }, [getOrderedTasksForDateKeyWindow, now, taskState, todayDate, todayDateKey])
+
+  /** Live clock window + today — matches current shift task list, not selected calendar window. */
+  const screensaverShiftProgress = useMemo(() => {
+    const liveWindow = getWindowForDate(now)
+    const tasks = getOrderedTasksForDateKeyWindow(todayDateKey, liveWindow)
+    const total = tasks.length
+    if (total === 0) return { resolved: 0, total: 0, percent: 0 }
+    let resolved = 0
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i]
+      const completion = taskState[todayDateKey]?.[liveWindow]?.[task.id]
+      const status = effectiveStatus(todayDate, liveWindow, completion, now, task.id, isSoloModeActiveForWindow(todayDateKey, liveWindow))
+      if (status === 'done') resolved++
+    }
+    return { total, resolved, percent: Math.round((resolved / total) * 100) }
+  }, [getOrderedTasksForDateKeyWindow, now, taskState, todayDate, todayDateKey])
+
+  /** Always-latest inputs for AI quote fetch (interval must not close over stale progress). */
+  const latestShiftQuoteInputsRef = useRef({
+    deploymentChannel,
+    timeOfDay,
+    selectorShiftEmployees,
+    screensaverShiftProgress,
+  })
+  latestShiftQuoteInputsRef.current = {
+    deploymentChannel,
+    timeOfDay,
+    selectorShiftEmployees,
+    screensaverShiftProgress,
+  }
+
+  /** Re-run fetch setup when *meaningful* context changes — not every `now` tick (avoids cancelling in-flight calls). */
+  const shiftQuoteRefreshKey = useMemo(
+    () =>
+      [
+        deploymentChannel,
+        timeOfDay,
+        selectorShiftEmployees.join('|'),
+        screensaverShiftProgress.resolved,
+        screensaverShiftProgress.total,
+        screensaverShiftProgress.percent,
+      ].join('\u0001'),
+    [
+      deploymentChannel,
+      timeOfDay,
+      selectorShiftEmployees,
+      screensaverShiftProgress.resolved,
+      screensaverShiftProgress.total,
+      screensaverShiftProgress.percent,
+    ],
+  )
+
+  // Periodically fetch AI-generated motivational quotes (after shift progress + selector employees exist).
+  useEffect(() => {
+    let cancelled = false
+    const doFetch = () => {
+      const { deploymentChannel: ch, timeOfDay: tod, selectorShiftEmployees: emps, screensaverShiftProgress: prog } =
+        latestShiftQuoteInputsRef.current
+      const liveWindow = getWindowForDate(new Date())
+      const ctx: ShiftQuoteContext = {
+        deploymentChannel: ch,
+        timeOfDay: tod,
+        windowKey: liveWindow,
+        employeesOnShift: emps,
+        progress: prog,
+        stateTag: prog.percent >= 100 ? 'all_done'
+          : prog.percent >= 60 ? 'on_pace'
+          : prog.percent > 0 ? 'behind'
+          : 'starting',
+      }
+      fetchShiftQuote(ctx).then((res) => {
+        if (!cancelled) setAiShiftContent(res)
+      })
+    }
+    doFetch()
+    const id = setInterval(doFetch, 5 * 60_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [shiftQuoteRefreshKey])
+
+  useEffect(() => {
+    onLateQuoteUpdate((res) => setAiShiftContent(res))
+  }, [])
+
+  useEffect(() => {
+    onLateWindowCompleteMessage((res) => {
+      if (res.source === 'fallback') return
+      const msg = res.message.trim()
+      const k = lastKnownWindowCompleteMessageKeyRef.current
+      if (k && msg) windowCompleteCompletionMessageByKeyRef.current.set(k, msg)
+      setWindowCompleteCelebration((prev) =>
+        prev ? { ...prev, completionMessage: msg } : null,
+      )
     })
-    return ordered
-  }, [getEffectiveTasksByWindowForDateKey, selectedDateKey, selectedWindow, taskOrder])
+  }, [])
 
   const statusByTask = useMemo(() => {
     const map: Record<string, { status: EffectiveStatus; completion?: TaskCompletion }> = {}
     currentTasks.forEach((task) => {
       const completion = taskState[selectedDateKey]?.[selectedWindow]?.[task.id]
       map[task.id] = {
-        status: effectiveStatus(selectedDate, selectedWindow, completion, now, task.id),
+        status: effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, isSoloModeActiveForWindow(selectedDateKey, selectedWindow)),
         completion,
       }
     })
     return map
   }, [currentTasks, selectedDate, selectedWindow, taskState, selectedDateKey, now])
 
+  const v3CompletedTasksOrdered = useMemo(() => {
+    if (!isV3Ui) return [] as Task[]
+    const done = currentTasks.filter((t) => statusByTask[t.id]?.status === 'done')
+    done.sort((a, b) => {
+      const ca = statusByTask[a.id]?.completion?.completedAt || ''
+      const cb = statusByTask[b.id]?.completion?.completedAt || ''
+      const ta = Date.parse(ca)
+      const tb = Date.parse(cb)
+      const na = Number.isFinite(ta) ? ta : 0
+      const nb = Number.isFinite(tb) ? tb : 0
+      if (nb !== na) return nb - na
+      return a.id.localeCompare(b.id)
+    })
+    return done
+  }, [isV3Ui, currentTasks, statusByTask])
+
+  const stagedTasks = useMemo<{ stage1: Task[]; stage2: Task[]; label1: string; label2: string } | null>(() => {
+    if (uiVariant !== 'v3') return null
+    if (selectedWindow !== '11' && selectedWindow !== '21') return null
+
+    const stage1: Task[] = []
+    const stage2: Task[] = []
+    for (const task of currentTasks) {
+      const raw = taskStages[task.id]?.[selectedWindow]
+      const inStage1 = Number(raw) === 1
+      if (inStage1) stage1.push(task)
+      else stage2.push(task)
+    }
+    if (stage1.length === 0) return null
+
+    let label1: string
+    let label2: string
+    if (selectedWindow === '11') {
+      label1 = 'Stage 1 \u2014 Finish by 11:00'
+      label2 = 'Stage 2 \u2014 Finish by 11:30'
+    } else {
+      const isFriSat = selectedDate.getDay() === 5 || selectedDate.getDay() === 6
+      // Night window stages shift one hour later on Fri/Sat (10PM close).
+      label1 = isFriSat ? 'Stage 1 \u2014 8:00' : 'Stage 1 \u2014 7:00'
+      label2 = isFriSat ? 'Stage 2 \u2014 9:00' : 'Stage 2 \u2014 8:00'
+    }
+
+    return { stage1, stage2, label1, label2 }
+  }, [uiVariant, selectedWindow, currentTasks, taskStages, selectedDate])
+
+  const taskSplitNightStageLabels = useMemo(() => {
+    if (!isV3Ui || selectedWindow !== '21' || !stagedTasks) return null
+    return { label1: stagedTasks.label1, label2: stagedTasks.label2 }
+  }, [isV3Ui, selectedWindow, stagedTasks])
+
+  stagedTasksRefForEvac.current = stagedTasks
+
   const showNewBadgeByTaskId = useMemo(() => {
     const nowMs = new Date(tick).getTime()
     const NEW_MS = 7 * 24 * 60 * 60 * 1000
-    const dateKeys = Object.keys(newBadgeTaskState).sort()
+    const allDateKeys = Object.keys(newBadgeTaskState).sort()
+    const effectiveByDateKeyCache = new Map<string, Record<WindowKey, Task[]>>()
+    const participantsCache = new Map<string, Set<string>>()
+
+    const getEffectiveCached = (dateKey: string) => {
+      let cached = effectiveByDateKeyCache.get(dateKey)
+      if (!cached) {
+        cached = getEffectiveTasksByWindowForDateKey(dateKey)
+        effectiveByDateKeyCache.set(dateKey, cached)
+      }
+      return cached
+    }
+
+    const getParticipantsCached = (dateKey: string, shift: 'day' | 'night') => {
+      const cacheKey = `${dateKey}:${shift}`
+      let cached = participantsCache.get(cacheKey)
+      if (!cached) {
+        cached = computeShiftHudParticipantsForState(newBadgeTaskState, dateKey, shift, SHIFT_WINDOWS)
+        participantsCache.set(cacheKey, cached)
+      }
+      return cached
+    }
+
+    const dateKeysSinceMs = (sinceMs: number) => {
+      const minKey = formatDateKey(new Date(sinceMs))
+      return allDateKeys.filter((k) => k >= minKey)
+    }
+
+    const qualifyingTasks = currentTasks.filter((task) => {
+      const createdAtMs = task.createdAtMs ?? 0
+      return !!createdAtMs && task.source === 'admin' && nowMs <= createdAtMs + NEW_MS
+    })
+
+    const map: Record<string, boolean> = {}
+    if (qualifyingTasks.length === 0) {
+      currentTasks.forEach((task) => {
+        map[task.id] = false
+      })
+      return map
+    }
 
     const didEmployeePlayShiftWithTask = (employeeName: string, task: Task): boolean => {
       const taskId = task.id
-      // Only consider shifts where the task is effective (based on createdAtMs + window close).
+      const createdAtMs = task.createdAtMs ?? 0
+      const dateKeys = dateKeysSinceMs(createdAtMs)
       for (let di = 0; di < dateKeys.length; di++) {
         const dateKey = dateKeys[di]
-        const effectiveByWindow = getEffectiveTasksByWindowForDateKey(dateKey)
+        const effectiveByWindow = getEffectiveCached(dateKey)
         for (const shift of ['day', 'night'] as const) {
           const windows = SHIFT_WINDOWS[shift]
           let taskAppliesToShift = false
@@ -6625,14 +8990,13 @@ function App() {
           }
           if (!taskAppliesToShift) continue
 
-          const participants = computeShiftHudParticipantsForState(newBadgeTaskState, dateKey, shift, SHIFT_WINDOWS)
+          const participants = getParticipantsCached(dateKey, shift)
           if (participants.has(employeeName)) return true
         }
       }
       return false
     }
 
-    const map: Record<string, boolean> = {}
     currentTasks.forEach((task) => {
       const createdAtMs = task.createdAtMs ?? 0
       if (!createdAtMs || task.source !== 'admin') {
@@ -6643,21 +9007,61 @@ function App() {
         map[task.id] = false
         return
       }
-      const allPlayed = employees.every((emp) => didEmployeePlayShiftWithTask(emp, task))
+      const allPlayed = activeEmployees.every((emp) => didEmployeePlayShiftWithTask(emp, task))
       map[task.id] = !allPlayed
     })
     return map
-  }, [SHIFT_WINDOWS, currentTasks, employees, getEffectiveTasksByWindowForDateKey, newBadgeTaskState, tick])
+  }, [SHIFT_WINDOWS, currentTasks, activeEmployees, getEffectiveTasksByWindowForDateKey, newBadgeTaskState, tick])
 
   const showUpdatedRequirementsBadgeByTaskId = useMemo(() => {
     const nowMs = new Date(tick).getTime()
     const UPDATED_MS = 7 * 24 * 60 * 60 * 1000
-    const dateKeys = Object.keys(newBadgeTaskState).sort()
+    const allDateKeys = Object.keys(newBadgeTaskState).sort()
+    const effectiveByDateKeyCache = new Map<string, Record<WindowKey, Task[]>>()
+    const participantsCache = new Map<string, Set<string>>()
+
+    const getEffectiveCached = (dateKey: string) => {
+      let cached = effectiveByDateKeyCache.get(dateKey)
+      if (!cached) {
+        cached = getEffectiveTasksByWindowForDateKey(dateKey)
+        effectiveByDateKeyCache.set(dateKey, cached)
+      }
+      return cached
+    }
+
+    const getParticipantsCached = (dateKey: string, shift: 'day' | 'night') => {
+      const cacheKey = `${dateKey}:${shift}`
+      let cached = participantsCache.get(cacheKey)
+      if (!cached) {
+        cached = computeShiftHudParticipantsForState(newBadgeTaskState, dateKey, shift, SHIFT_WINDOWS)
+        participantsCache.set(cacheKey, cached)
+      }
+      return cached
+    }
+
+    const dateKeysSinceMs = (sinceMs: number) => {
+      const minKey = formatDateKey(new Date(sinceMs))
+      return allDateKeys.filter((k) => k >= minKey)
+    }
+
+    const qualifyingTasks = currentTasks.filter((task) => {
+      const updatedAtMs = task.requirementsUpdatedAtMs
+      return task.requirementsOverridden && typeof updatedAtMs === 'number' && nowMs <= updatedAtMs + UPDATED_MS
+    })
+
+    const map: Record<string, boolean> = {}
+    if (qualifyingTasks.length === 0) {
+      currentTasks.forEach((task) => {
+        map[task.id] = false
+      })
+      return map
+    }
 
     const didEmployeePlayShiftWithTaskSince = (employeeName: string, taskId: string, sinceMs: number): boolean => {
+      const dateKeys = dateKeysSinceMs(sinceMs)
       for (let di = 0; di < dateKeys.length; di++) {
         const dateKey = dateKeys[di]
-        const effectiveByWindow = getEffectiveTasksByWindowForDateKey(dateKey)
+        const effectiveByWindow = getEffectiveCached(dateKey)
         for (const shift of ['day', 'night'] as const) {
           const windows = SHIFT_WINDOWS[shift]
           let qualifies = false
@@ -6672,14 +9076,13 @@ function App() {
           }
           if (!qualifies) continue
 
-          const participants = computeShiftHudParticipantsForState(newBadgeTaskState, dateKey, shift, SHIFT_WINDOWS)
+          const participants = getParticipantsCached(dateKey, shift)
           if (participants.has(employeeName)) return true
         }
       }
       return false
     }
 
-    const map: Record<string, boolean> = {}
     currentTasks.forEach((task) => {
       const updatedAtMs = task.requirementsUpdatedAtMs
       if (!task.requirementsOverridden || typeof updatedAtMs !== 'number') {
@@ -6690,11 +9093,11 @@ function App() {
         map[task.id] = false
         return
       }
-      const allPlayed = employees.every((emp) => didEmployeePlayShiftWithTaskSince(emp, task.id, updatedAtMs))
+      const allPlayed = activeEmployees.every((emp) => didEmployeePlayShiftWithTaskSince(emp, task.id, updatedAtMs))
       map[task.id] = !allPlayed
     })
     return map
-  }, [SHIFT_WINDOWS, currentTasks, employees, getEffectiveTasksByWindowForDateKey, newBadgeTaskState, tick, windowCloseMsForDateKey])
+  }, [SHIFT_WINDOWS, currentTasks, activeEmployees, getEffectiveTasksByWindowForDateKey, newBadgeTaskState, tick, windowCloseMsForDateKey])
 
   // Trigger pulse on the next incomplete task after completing one
   const triggerNextTaskPulse = useCallback((completedTaskId: string, updatedState: TaskState) => {
@@ -6709,7 +9112,7 @@ function App() {
       }
       if (foundCompleted) {
         const completion = updatedState[selectedDateKey]?.[selectedWindow]?.[task.id]
-        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, isSoloModeActiveForWindow(selectedDateKey, selectedWindow))
         if (status !== 'done') {
           setPulseTaskId(task.id)
           return
@@ -6720,7 +9123,7 @@ function App() {
     for (const task of currentTasks) {
       if (task.id === completedTaskId) break
       const completion = updatedState[selectedDateKey]?.[selectedWindow]?.[task.id]
-      const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
+      const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, isSoloModeActiveForWindow(selectedDateKey, selectedWindow))
       if (status !== 'done') {
         setPulseTaskId(task.id)
         return
@@ -6744,6 +9147,171 @@ function App() {
     return { total, resolved, percent }
   }, [currentTasks, statusByTask])
 
+  /** Inline `WindowCompleteCelebration` (post-evacuation cinematic), not the task grid. */
+  const showInlineWindowCelebration = useMemo(
+    () =>
+      !!windowCompleteCelebration &&
+      (taskProgress.percent === 100 || windowCompleteBetaPreview || splitAutoCelebration) &&
+      windowCompleteCelebration.phase !== 'evacuate',
+    [windowCompleteCelebration, taskProgress.percent, windowCompleteBetaPreview, splitAutoCelebration],
+  )
+
+  /** Bottom daily-task nudge 10s after window-complete AI copy finishes typing (`WindowCompleteCelebration`). */
+  const FLOATING_DAILY_AFTER_AI_TYPING_MS = 10_000
+  /** If no AI message ever arrives, still allow the nudge so the shift is not stuck. */
+  const FLOATING_DAILY_IF_NO_AI_MESSAGE_MS = 60_000
+  const [floatingDailyTaskDelayReady, setFloatingDailyTaskDelayReady] = useState(false)
+  const floatingDailyTaskDelayTimeoutRef = useRef<number | null>(null)
+
+  const clearFloatingDailyTaskDelayTimeout = useCallback(() => {
+    if (floatingDailyTaskDelayTimeoutRef.current != null) {
+      window.clearTimeout(floatingDailyTaskDelayTimeoutRef.current)
+      floatingDailyTaskDelayTimeoutRef.current = null
+    }
+  }, [])
+
+  const onWindowCompleteAiTypingFinished = useCallback(() => {
+    clearFloatingDailyTaskDelayTimeout()
+    floatingDailyTaskDelayTimeoutRef.current = window.setTimeout(() => {
+      floatingDailyTaskDelayTimeoutRef.current = null
+      setFloatingDailyTaskDelayReady(true)
+    }, FLOATING_DAILY_AFTER_AI_TYPING_MS)
+  }, [clearFloatingDailyTaskDelayTimeout])
+
+  useEffect(() => {
+    clearFloatingDailyTaskDelayTimeout()
+    if (!showInlineWindowCelebration) {
+      setFloatingDailyTaskDelayReady(false)
+      return
+    }
+    setFloatingDailyTaskDelayReady(false)
+  }, [showInlineWindowCelebration, clearFloatingDailyTaskDelayTimeout])
+
+  useEffect(() => {
+    if (!showInlineWindowCelebration || !windowCompleteCelebration) return
+    if (windowCompleteCelebration.completionMessage?.trim()) return
+    const t = window.setTimeout(() => {
+      setFloatingDailyTaskDelayReady(true)
+    }, FLOATING_DAILY_IF_NO_AI_MESSAGE_MS)
+    return () => window.clearTimeout(t)
+  }, [showInlineWindowCelebration, windowCompleteCelebration?.completionMessage])
+
+  const windowCompleteMessageKey = useMemo(() => {
+    if (!windowCompleteCelebration || taskProgress.percent !== 100) return null
+    const w = windowCompleteCelebration
+    const parts = w.players.map((pl) =>
+      `${pl.name}:${(pl.tiles || []).map((t) => t.taskId).sort().join(',')}`,
+    )
+    return `${selectedDateKey}\u0001${selectedWindow}\u0001${w.layout ?? 'pair'}\u0001${parts.join('||')}`
+  }, [
+    windowCompleteCelebration?.players,
+    windowCompleteCelebration?.layout,
+    selectedDateKey,
+    selectedWindow,
+    taskProgress.percent,
+  ])
+
+  useLayoutEffect(() => {
+    lastKnownWindowCompleteMessageKeyRef.current = windowCompleteMessageKey
+  }, [windowCompleteMessageKey])
+
+  useLayoutEffect(() => {
+    windowCompleteCelebrationRef.current = windowCompleteCelebration
+  }, [windowCompleteCelebration])
+
+  useEffect(() => {
+    if (!windowCompleteMessageKey) {
+      lastWindowCompleteAiFetchKeyRef.current = null
+      return
+    }
+    const celebration = windowCompleteCelebrationRef.current
+    if (!celebration) return
+
+    const key = windowCompleteMessageKey
+    const cached = windowCompleteCompletionMessageByKeyRef.current.get(key)?.trim()
+
+    if (cached && !celebration.completionMessage?.trim()) {
+      lastWindowCompleteAiFetchKeyRef.current = key
+      setWindowCompleteCelebration((prev) => (prev ? { ...prev, completionMessage: cached } : null))
+      return
+    }
+
+    if (celebration.completionMessage?.trim()) {
+      lastWindowCompleteAiFetchKeyRef.current = key
+      return
+    }
+
+    if (lastWindowCompleteAiFetchKeyRef.current === key) return
+    lastWindowCompleteAiFetchKeyRef.current = key
+
+    const ctx = buildWindowCompleteMessageContext({
+      celebration,
+      windowKey: selectedWindow,
+      timeOfDay,
+      deploymentChannel,
+    })
+
+    let cancelled = false
+    fetchWindowCompleteMessage(ctx).then((res) => {
+      const msg = (res.message ?? '').trim()
+      if (msg) windowCompleteCompletionMessageByKeyRef.current.set(key, msg)
+      if (cancelled) return
+      setWindowCompleteCelebration((prev) => {
+        if (!prev) return null
+        return { ...prev, completionMessage: res.message }
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [windowCompleteMessageKey, deploymentChannel, selectedWindow, timeOfDay])
+
+  const screensaverGreetingProps = useMemo(() => {
+    const countdownActive =
+      screensaverBetaDemoOverride?.kind === 'countdown' || (!screensaverBetaDemoOverride && !!screensaverCountdown)
+    if (!screensaverOpen) {
+      return {
+        headline: null as string | null,
+        quote: null as string | null,
+        showAiBadge: false,
+        attributionBelowQuote: false,
+      }
+    }
+    if (countdownActive) {
+      return { headline: null, quote: null, showAiBadge: false, attributionBelowQuote: false }
+    }
+    if (screensaverBetaDemoOverride?.kind === 'quote') {
+      return {
+        headline: null,
+        quote: screensaverBetaDemoOverride.line,
+        showAiBadge: false,
+        attributionBelowQuote: false,
+      }
+    }
+    if (isAiBackedShiftQuote(aiShiftContent) && aiShiftContent) {
+      return {
+        headline: aiShiftContent.greeting.trim() || getGreeting(timeOfDay),
+        quote: aiShiftContent.quote,
+        showAiBadge: true,
+        attributionBelowQuote: false,
+      }
+    }
+    const sq = SPEAKER_QUOTES[screensaverSessionId % SPEAKER_QUOTES.length]
+    return {
+      headline: sq.speaker,
+      quote: sq.quote,
+      showAiBadge: false,
+      attributionBelowQuote: true,
+    }
+  }, [
+    screensaverOpen,
+    screensaverBetaDemoOverride,
+    screensaverCountdown,
+    aiShiftContent,
+    timeOfDay,
+    screensaverSessionId,
+  ])
+
   const computeWindowTaskPercent = useCallback(
     (state: TaskState): number => {
       const total = currentTasks.length
@@ -6752,7 +9320,7 @@ function App() {
       for (let i = 0; i < currentTasks.length; i++) {
         const task = currentTasks[i]
         const completion = state[selectedDateKey]?.[selectedWindow]?.[task.id]
-        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, isSoloModeActiveForWindow(selectedDateKey, selectedWindow))
         if (status === 'done') resolved++
       }
       return Math.round((resolved / total) * 100)
@@ -6766,7 +9334,7 @@ function App() {
       for (let i = 0; i < currentTasks.length; i++) {
         const task = currentTasks[i]
         const completion = state[selectedDateKey]?.[selectedWindow]?.[task.id]
-        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id)
+        const status = effectiveStatus(selectedDate, selectedWindow, completion, now, task.id, isSoloModeActiveForWindow(selectedDateKey, selectedWindow))
         if (status !== 'done') continue
         const assignees = completion?.assignees || []
         for (let ai = 0; ai < assignees.length; ai++) {
@@ -6778,6 +9346,196 @@ function App() {
     },
     [currentTasks, now, selectedDate, selectedDateKey, selectedWindow]
   )
+
+  // Auto-finish: when both players have completed everything the split assigned, play the
+  // panel fly-out, then hand off to the standard "Shift Complete" celebration. The fair-split
+  // contract is intentionally NOT deleted so the HUD/celebration stay at exactly 50/50.
+  useEffect(() => {
+    if (!allSplitSuggestedComplete) {
+      splitAutoFinishStartedRef.current = false
+      if (splitAutoFinishTimerRef.current != null) {
+        window.clearTimeout(splitAutoFinishTimerRef.current)
+        splitAutoFinishTimerRef.current = null
+      }
+      return
+    }
+    if (splitAutoFinishStartedRef.current) return
+    splitAutoFinishStartedRef.current = true
+
+    const viewKey = `${selectedDateKey}:${selectedWindow}`
+    const stateSnapshot = taskState
+    const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+    setSplitEvacuating(true)
+
+    splitAutoFinishTimerRef.current = window.setTimeout(() => {
+      splitAutoFinishTimerRef.current = null
+      taskSplitCompletedKeyRef.current = viewKey
+      setSplitEvacuating(false)
+      setTaskSplitInlinePhase(null)
+      setTaskSplitResult(null)
+      setSplitAutoCelebration(true)
+      const participants = computeCurrentWindowParticipants(stateSnapshot)
+      startWindowCompleteCelebration({
+        state: stateSnapshot,
+        windowLabel,
+        participants,
+        skipEvacuation: true,
+      })
+    }, SPLIT_AUTO_FINISH_EVAC_MS)
+  }, [
+    allSplitSuggestedComplete,
+    selectedDateKey,
+    selectedWindow,
+    selectedDate,
+    taskState,
+    computeCurrentWindowParticipants,
+    startWindowCompleteCelebration,
+  ])
+
+  const triggerBetaWindowCompleteAnimation = useCallback(() => {
+    windowCompleteBetaPreviewRef.current = true
+    setWindowCompleteBetaPreview(true)
+    setPendingBetaWindowCompleteSeed(true)
+    if (!isDemoDaySelected) {
+      startRandomDemoDay()
+    }
+  }, [
+    isDemoDaySelected,
+    startRandomDemoDay,
+  ])
+
+  useEffect(() => {
+    if (!pendingBetaWindowCompleteSeed) return
+    if (!isDemoDaySelected) return
+    if (currentTasks.length === 0) {
+      setPendingBetaWindowCompleteSeed(false)
+      return
+    }
+
+    const randomFrom = <T,>(list: T[]): T => list[Math.floor(Math.random() * list.length)]
+    const employeePool = Array.from(new Set(activeEmployees.map((e) => e.trim()).filter(Boolean)))
+    const shuffledPool = [...employeePool].sort(() => Math.random() - 0.5)
+    const p1 = shuffledPool[0] || 'Player 1'
+    const p2 = shuffledPool.find((name) => name !== p1) || shuffledPool[1] || 'Player 2'
+    const participants = [p1, p2]
+    const completionTime = new Date().toISOString()
+    const windowPatch: Record<string, TaskCompletion> = {}
+
+    currentTasks.forEach((task) => {
+      const assignee = randomFrom(participants)
+      const completion: TaskCompletion = {
+        status: 'done',
+        assignees: [assignee],
+        completedAt: completionTime,
+        assignedByAdmin: true,
+      }
+      if (task.id === 'ice-5pm' || task.id === 'ice-close') {
+        completion.iceSides = { left: assignee, right: assignee }
+      }
+      if (task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') {
+        completion.towelSides = { diningBar: assignee, bowlStation: assignee }
+      }
+      windowPatch[task.id] = completion
+    })
+
+    const nextState: TaskState = {
+      ...taskState,
+      [selectedDateKey]: {
+        ...(taskState[selectedDateKey] || {}),
+        [selectedWindow]: {
+          ...((taskState[selectedDateKey] && taskState[selectedDateKey][selectedWindow]) || {}),
+          ...windowPatch,
+        },
+      },
+    }
+
+    setTaskState(nextState)
+    const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+    startWindowCompleteCelebration({
+      state: nextState,
+      windowLabel,
+      participants,
+      waitForStars: false,
+    })
+    setPendingBetaWindowCompleteSeed(false)
+  }, [
+    currentTasks,
+    activeEmployees,
+    getWindowLabel,
+    isDemoDaySelected,
+    pendingBetaWindowCompleteSeed,
+    selectedDate,
+    selectedDateKey,
+    selectedWindow,
+    startWindowCompleteCelebration,
+    taskState,
+  ])
+
+  useEffect(() => {
+    const betaPreviewActive =
+      windowCompleteBetaPreviewRef.current || windowCompleteBetaPreview
+
+    if (taskProgress.percent !== 100) {
+      if (!betaPreviewActive) {
+        windowCompleteStartScheduledRef.current = false
+        if (windowCompleteStartTimeoutRef.current) {
+          window.clearTimeout(windowCompleteStartTimeoutRef.current)
+          windowCompleteStartTimeoutRef.current = null
+        }
+        clearWindowCompletePhaseTimeouts()
+        if (taskGridCelebrating) setTaskGridCelebrating(false)
+        setWindowCompleteStageCollapse(false)
+        if (windowCompleteCelebration) setWindowCompleteCelebration(null)
+      }
+      return
+    }
+
+    windowCompleteBetaPreviewRef.current = false
+    setWindowCompleteBetaPreview(false)
+
+    if (!windowCompleteCelebration) {
+      if (windowCompleteStartTimeoutRef.current || windowCompleteStartScheduledRef.current) return
+      const participants = computeCurrentWindowParticipants(taskState)
+      const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+      const model = buildWindowCompleteCelebration({ state: taskState, windowLabel, participants })
+      setTaskGridCelebrating(false)
+      setWindowCompleteCelebration({ ...model, phase: 'settle' })
+    }
+  }, [
+    buildWindowCompleteCelebration,
+    clearWindowCompletePhaseTimeouts,
+    computeCurrentWindowParticipants,
+    getWindowLabel,
+    selectedDate,
+    selectedWindow,
+    taskGridCelebrating,
+    taskProgress.percent,
+    taskState,
+    windowCompleteBetaPreview,
+    windowCompleteCelebration,
+  ])
+
+  useEffect(() => {
+    const key = `${selectedDateKey}:${selectedWindow}`
+    if (windowCompleteScopeKeyRef.current === null) {
+      windowCompleteScopeKeyRef.current = key
+      return
+    }
+    if (windowCompleteScopeKeyRef.current === key) return
+    windowCompleteScopeKeyRef.current = key
+    if (pendingBetaWindowCompleteSeed) return
+    windowCompleteBetaPreviewRef.current = false
+    setWindowCompleteBetaPreview(false)
+    if (windowCompleteStartTimeoutRef.current) {
+      window.clearTimeout(windowCompleteStartTimeoutRef.current)
+      windowCompleteStartTimeoutRef.current = null
+    }
+    clearWindowCompletePhaseTimeouts()
+    setTaskGridCelebrating(false)
+    setWindowCompleteStageCollapse(false)
+    lastWindowCompleteAiFetchKeyRef.current = null
+    setWindowCompleteCelebration(null)
+  }, [clearWindowCompletePhaseTimeouts, pendingBetaWindowCompleteSeed, selectedDateKey, selectedWindow])
 
   // Helper to protect Firestore writes from hanging UI forever.
   const withTimeout = <T,>(p: Promise<T>, timeoutMs: number = 8000): Promise<T> => {
@@ -6792,6 +9550,58 @@ function App() {
       })
     })
   }
+
+  /**
+   * Beta hosting: seed a minimal two-person break plan so 🎲 testing works without manual setup.
+   * Must stay synchronous: awaiting Firestore before opening a task lets iOS deliver a delayed click
+   * to whatever moved under the finger. Demo day mirrors saveBreakPlan: demo map + breakSelectionState.
+   */
+  const seedBetaDiceTestShiftPlanIfNeeded = useCallback(() => {
+    if (deploymentChannel !== 'beta') return
+    const slots = breakSelection?.slots || []
+    if (slots.length >= 2) {
+      const e0 = (slots[0]?.employee || '').trim()
+      const e1 = (slots[1]?.employee || '').trim()
+      if (e0 && e1 && e0 !== e1) return
+    }
+    if (shiftHudLeaders.length >= 2) {
+      const e0 = (shiftHudLeaders[0]?.name || '').trim()
+      const e1 = (shiftHudLeaders[1]?.name || '').trim()
+      if (e0 && e1 && e0 !== e1) return
+    }
+    const trimmed = activeEmployees.map((x) => String(x || '').trim()).filter(Boolean)
+    const withColor = trimmed.filter((n) => employeeColors[n])
+    const pool = withColor.length >= 2 ? withColor : trimmed
+    if (pool.length < 2) return
+    const shuffled = shuffleInPlaceTaskSplitVariants([...pool])
+    const a = shuffled[0]!
+    const b = shuffled[1]!
+    const selection: BreakSelection = {
+      slots: [
+        { employee: a, shiftType: 'lunch', start: '13:00', durationMin: 30 },
+        { employee: b, shiftType: 'lunch', start: '14:00', durationMin: 30 },
+      ],
+      updatedAt: new Date().toISOString(),
+    }
+    flushSync(() => {
+      if (isDemoDaySelected) {
+        setDemoBreakSelectionByDateKey((prev) => ({ ...prev, [selectedDateKey]: selection }))
+      }
+      setBreakSelectionState({ dateKey: selectedDateKey, value: selection })
+    })
+    void withTimeout(persistBreakSelectionOrNoop(selectedDateKey, selection), 8000).catch((e) => {
+      console.warn('[beta] dice: could not persist seeded break plan:', e)
+    })
+  }, [
+    breakSelection?.slots,
+    deploymentChannel,
+    employeeColors,
+    employees,
+    isDemoDaySelected,
+    persistBreakSelectionOrNoop,
+    selectedDateKey,
+    shiftHudLeaders,
+  ])
 
   const BREAK_WINDOW_START_MIN = 13 * 60 // 1:00 PM
   const BREAK_WINDOW_END_MIN = 16 * 60 // 4:00 PM
@@ -6823,7 +9633,7 @@ function App() {
   }
 
   const openBreakWizard = (idx: 0 | 1) => {
-    const locked = (!isTodaySelected && !isAdmin) || isInitialSyncing || isSaving
+    const locked = !canEditTaskAssignmentsOnSelectedDate || isInitialSyncing || isSaving
     if (locked) return
     if (activeTaskId !== 'break-selection') return
 
@@ -6850,7 +9660,7 @@ function App() {
   }
 
   const pickBreakWizardEmployee = (idx: 0 | 1, employee: string) => {
-    const locked = (!isTodaySelected && !isAdmin) || isInitialSyncing || isSaving
+    const locked = !canEditTaskAssignmentsOnSelectedDate || isInitialSyncing || isSaving
     if (locked) return
 
     const otherIdx: 0 | 1 = idx === 0 ? 1 : 0
@@ -6873,7 +9683,7 @@ function App() {
   }
 
   const pickBreakWizardShift = (idx: 0 | 1, nextShift: BreakShiftType) => {
-    const locked = (!isTodaySelected && !isAdmin) || isInitialSyncing || isSaving
+    const locked = !canEditTaskAssignmentsOnSelectedDate || isInitialSyncing || isSaving
     if (locked) return
     const d = breakDraftSlots[idx]
     if (!d?.employee) return
@@ -6885,7 +9695,7 @@ function App() {
   }
 
   const pickBreakWizardTime = (idx: 0 | 1, t: string) => {
-    const locked = (!isTodaySelected && !isAdmin) || isInitialSyncing || isSaving
+    const locked = !canEditTaskAssignmentsOnSelectedDate || isInitialSyncing || isSaving
     if (locked) return
     const d = breakDraftSlots[idx]
     if (!d?.shiftType) return
@@ -7071,7 +9881,11 @@ function App() {
   useEffect(() => {
     if (!isTodaySelected) return
     if (selectedWindow !== '17') return
-    const slots = breakSelection?.slots || []
+    // Belt-and-suspenders: refuse to act unless breakSelectionState is tagged for the selected date.
+    // Prevents acting on a stale snapshot captured during a date-navigation render (which could
+    // otherwise seed today's deferred 5PM docs with yesterday's assignees).
+    if (!breakSelectionState || breakSelectionState.dateKey !== selectedDateKey) return
+    const slots = breakSelectionState.value?.slots || []
     if (!Array.isArray(slots) || slots.length < 2) return
     if (!slots.every((s) => s?.shiftType === 'double')) return
 
@@ -7081,17 +9895,392 @@ function App() {
     const nowMs = Date.now()
     // Throttle to avoid hammering Firestore during poor connectivity.
     if (nowMs - (lastDeferredEnsureMsRef.current || 0) < 30_000) return
-    lastDeferredEnsureMsRef.current = nowMs
 
     void ensureDeferredFivePmTasksForDoubleShift(selectedDateKey, selectedDate, slots, {
       reason: 'enter-5pm-window',
       surfaceErrors: false,
     })
-  }, [breakSelection?.slots, ensureDeferredFivePmTasksForDoubleShift, isTodaySelected, selectedDate, selectedDateKey, selectedWindow, taskState])
+    // Only mark the throttle after we've actually decided to fire so early returns don't
+    // poison the next 30s of legitimate retries.
+    lastDeferredEnsureMsRef.current = nowMs
+  }, [breakSelectionState, ensureDeferredFivePmTasksForDoubleShift, isTodaySelected, selectedDate, selectedDateKey, selectedWindow, taskState])
+
+  // Today-only reconciliation: heal days that previously got seeded with the wrong employees
+  // (e.g. pre-fix staleness bug). If today's loaded break plan is NOT both-doubles, OR its
+  // assignees disagree with what's stored on the 4 deferred 5PM completions, clear the
+  // deferred docs so today's staff can complete them normally (or so the self-heal effect
+  // can re-create them with today's real employees).
+  const lastReconcileDeferredMsRef = useRef<number>(0)
+  useEffect(() => {
+    if (!isTodaySelected) return
+    if (!breakSelectionState || breakSelectionState.dateKey !== selectedDateKey) return
+    const plan = breakSelectionState.value
+    // Without a loaded plan we can't tell if the deferred docs are stale; leave them alone.
+    if (!plan) return
+
+    const slots = plan.slots || []
+    const planEmployees = slots.map((s) => (s?.employee || '').trim()).filter(Boolean)
+    const bothDoubles =
+      slots.length >= 2 && slots.every((s) => s?.shiftType === 'double') && planEmployees.length >= 2
+
+    const deferredTaskIds = ['count-drawer', 'blue-bag-count', 'split-tips', 'order-report-5pm'] as const
+    const windowMap = taskState[selectedDateKey]?.['17'] ?? {}
+
+    let mismatch = false
+    for (const taskId of deferredTaskIds) {
+      const comp = windowMap[taskId]
+      if (!comp?.deferredToClose) continue
+      if (!bothDoubles) {
+        mismatch = true
+        break
+      }
+      const assignees = (comp.assignees || [])
+        .map((s) => (s || '').trim())
+        .filter(Boolean)
+        .slice()
+        .sort()
+      const expected = planEmployees.slice().sort()
+      if (
+        assignees.length !== expected.length ||
+        assignees.some((a, i) => a !== expected[i])
+      ) {
+        mismatch = true
+        break
+      }
+    }
+
+    if (!mismatch) return
+
+    const nowMs = Date.now()
+    if (nowMs - (lastReconcileDeferredMsRef.current || 0) < 30_000) return
+    lastReconcileDeferredMsRef.current = nowMs
+
+    void clearDeferredFivePmTasksIfNeeded(selectedDateKey, {
+      reason: 'reconcile-stale-defer',
+      surfaceErrors: false,
+    })
+  }, [breakSelectionState, clearDeferredFivePmTasksIfNeeded, isTodaySelected, selectedDateKey, taskState])
+
+  const applySoloOrderReportAutoWaives = useCallback(
+    async (dateKey: string, stateSnapshot: TaskState) => {
+      const completedAt = new Date().toISOString()
+      const completionBody = makeSoloAutoDidNotNeedCompletionBody(completedAt)
+      const orderReportsToPersist = getSoloOrderReportTargetsToWaive(stateSnapshot, dateKey)
+
+      setTaskState((prev) => applySoloOrderReportWaivesToTaskState(prev, dateKey, completedAt))
+
+      for (const t of orderReportsToPersist) {
+        const orArgs: CompleteTaskArgs = {
+          dateKey,
+          windowKey: t.windowKey,
+          taskId: t.taskId,
+          completion: completionBody,
+        }
+        try {
+          await withTimeout(persistCompleteTaskIfAvailableOrNoop(orArgs), 8000)
+        } catch (err) {
+          if (err instanceof Error && err.message === 'already-completed') {
+            await withTimeout(persistAdminSetTaskCompletionOrNoop(orArgs), 8000)
+          } else {
+            throw err
+          }
+        }
+      }
+    },
+    [persistAdminSetTaskCompletionOrNoop, persistCompleteTaskIfAvailableOrNoop, withTimeout]
+  )
+
+  const clearSoloOrderReportAutoWaives = useCallback(
+    async (dateKey: string, stateSnapshot: TaskState) => {
+      const toPersistClear = getSoloOrderReportTargetsToClear(stateSnapshot, dateKey)
+      setTaskState((prev) => clearSoloOrderReportWaivesFromTaskState(prev, dateKey))
+      if (toPersistClear.length > 0) {
+        await Promise.all(
+          toPersistClear.map(({ windowKey, taskId }) =>
+            withTimeout(persistAdminClearTaskCompletionOrNoop(dateKey, windowKey, taskId), 8000)
+          )
+        )
+      }
+    },
+    [persistAdminClearTaskCompletionOrNoop, withTimeout]
+  )
+
+  const setSoloModeActive = async (nextActive: boolean) => {
+    if (!canEditTaskAssignmentsOnSelectedDate) return
+    if (isInitialSyncing || isSaving) return
+    if (nextActive) {
+      const ok = window.confirm(
+        'Are you sure you want to activate Solo Mode?\n\n' +
+          'Solo Mode means only one person is working this shift. Day shift tasks (11AM and 5PM) can be completed late without penalty, and leaderboard points are capped at 70.\n\n' +
+          'Break Selection and both Order Report tasks (5PM + close) will be marked as didn’t need to complete when they aren’t already filled in.\n\n' +
+          'Undo on Break Selection turns Solo Mode off and clears those auto-waived tasks.'
+      )
+      if (!ok) return
+    }
+
+    setSaveError(null)
+    setIsSaving(true)
+    const nextMode: SoloMode | null = nextActive
+      ? {
+          active: true,
+          activatedAt: new Date().toISOString(),
+          ...(soloMode?.nightActive
+            ? { nightActive: true, nightActivatedAt: soloMode.nightActivatedAt }
+            : {}),
+        }
+      : soloMode?.nightActive
+        ? {
+            active: false,
+            activatedAt: soloMode.activatedAt || new Date().toISOString(),
+            nightActive: true,
+            nightActivatedAt: soloMode.nightActivatedAt || new Date().toISOString(),
+          }
+        : null
+
+    const dateKey = selectedDateKey
+    const breakWindow: WindowKey = '11'
+    const breakTaskId = 'break-selection'
+
+    try {
+      if (isDemoDaySelected) {
+        setDemoSoloModeByDateKey((prev) => ({ ...prev, [selectedDateKey]: nextMode }))
+      }
+      await withTimeout(persistSoloModeOrNoop(dateKey, nextMode), 8000)
+      setSoloMode(nextMode)
+
+      if (nextActive) {
+        const completedAt = new Date().toISOString()
+        const completion: TaskCompletion = makeSoloAutoDidNotNeedCompletion(completedAt)
+        const soloBreakBodyAtComplete = makeSoloAutoDidNotNeedCompletionBody(completedAt)
+
+        setTaskState((prev) => {
+          const next: TaskState = { ...prev }
+          const dateMap: Record<WindowKey, Record<string, TaskCompletion>> = { ...(next[dateKey] ?? {}) }
+          const wm = { ...(dateMap[breakWindow] ?? {}) }
+          wm[breakTaskId] = completion
+          dateMap[breakWindow] = wm
+          next[dateKey] = dateMap
+          return next
+        })
+
+        const persistArgs: CompleteTaskArgs = {
+          dateKey,
+          windowKey: breakWindow,
+          taskId: breakTaskId,
+          completion: soloBreakBodyAtComplete,
+        }
+        try {
+          await withTimeout(persistCompleteTaskIfAvailableOrNoop(persistArgs), 8000)
+        } catch (err) {
+          if (err instanceof Error && err.message === 'already-completed') {
+            await withTimeout(persistAdminSetTaskCompletionOrNoop(persistArgs), 8000)
+          } else {
+            throw err
+          }
+        }
+
+        await applySoloOrderReportAutoWaives(dateKey, taskState)
+      } else {
+        const toPersistClearBreak = isSoloAutoDidNotNeedPlaceholder(taskState[dateKey]?.[breakWindow]?.[breakTaskId])
+          ? [{ w: breakWindow, id: breakTaskId }]
+          : []
+        setTaskState((prev) => {
+          if (toPersistClearBreak.length === 0) return prev
+          const next: TaskState = { ...prev }
+          const dateMap: Record<WindowKey, Record<string, TaskCompletion>> = { ...(next[dateKey] ?? {}) }
+          const wm = { ...(dateMap[breakWindow] ?? {}) }
+          delete wm[breakTaskId]
+          if (Object.keys(wm).length === 0) {
+            delete (dateMap as Partial<Record<WindowKey, Record<string, TaskCompletion>>>)[breakWindow]
+          } else {
+            dateMap[breakWindow] = wm
+          }
+          if (Object.keys(dateMap).length === 0) {
+            const rest = { ...next }
+            delete (rest as Record<string, unknown>)[dateKey]
+            return rest as TaskState
+          }
+          next[dateKey] = dateMap
+          return next
+        })
+        if (toPersistClearBreak.length > 0) {
+          await Promise.all(
+            toPersistClearBreak.map(({ w, id }) =>
+              withTimeout(persistAdminClearTaskCompletionOrNoop(dateKey, w, id), 8000)
+            )
+          )
+        }
+        await clearSoloOrderReportAutoWaives(dateKey, taskState)
+      }
+    } catch (error) {
+      console.error('Failed to save solo mode / break selection sync:', error)
+      setSaveError(
+        nextActive
+          ? 'Failed to save solo mode or update Break Selection. Please try again.'
+          : 'Failed to turn off solo mode. Please try again.'
+      )
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const setNightSoloModeActive = async (nextActive: boolean) => {
+    if (!canEditTaskAssignmentsOnSelectedDate) return
+    if (isInitialSyncing || isSaving) return
+    if (nextActive) {
+      const ok = window.confirm(
+        'Are you sure you want to activate night solo mode?\n\n' +
+          'Night shift solo means one person handles 9/10 PM close tasks without splitting. Split-required tasks can be completed alone, and your close shift score is capped at 70.\n\n' +
+          'Close Order Report (and 5PM Order Report if still incomplete) will be marked as didn’t need to complete when they aren’t already filled in.'
+      )
+      if (!ok) return
+    }
+
+    setSaveError(null)
+    setIsSaving(true)
+    const dateKey = selectedDateKey
+    const prev = isDemoDaySelected ? demoSoloModeByDateKey[dateKey] ?? null : soloMode
+    const nextMode: SoloMode | null = nextActive
+      ? {
+          active: !!prev?.active,
+          activatedAt: prev?.activatedAt || new Date().toISOString(),
+          nightActive: true,
+          nightActivatedAt: new Date().toISOString(),
+          ...(prev?.activatedBy ? { activatedBy: prev.activatedBy } : {}),
+        }
+      : prev?.active
+        ? {
+            active: true,
+            activatedAt: prev.activatedAt,
+            ...(prev.activatedBy ? { activatedBy: prev.activatedBy } : {}),
+          }
+        : null
+
+    try {
+      if (isDemoDaySelected) {
+        setDemoSoloModeByDateKey((prevMap) => ({ ...prevMap, [dateKey]: nextMode }))
+      }
+      await withTimeout(persistSoloModeOrNoop(dateKey, nextMode), 8000)
+      setSoloMode(nextMode)
+
+      if (nextActive) {
+        await applySoloOrderReportAutoWaives(dateKey, taskState)
+      } else if (!prev?.active) {
+        await clearSoloOrderReportAutoWaives(dateKey, taskState)
+      }
+    } catch (error) {
+      console.error('Failed to save night solo mode:', error)
+      setSaveError(
+        nextActive
+          ? 'Failed to activate night solo mode. Please try again.'
+          : 'Failed to turn off night solo mode. Please try again.'
+      )
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const completeNightShiftSoloCheck = async (answer: 'yes' | 'no') => {
+    if (activeTaskId !== 'night-shift-solo-check') return
+    if (!canEditTaskAssignmentsOnSelectedDate) return
+    if (isInitialSyncing || isSaving) return
+    if (taskState[selectedDateKey]?.[selectedWindow]?.['night-shift-solo-check']) return
+
+    const confirmMsg =
+      answer === 'yes'
+        ? 'Confirm: Night shift will also be solo (one person), per your manager?'
+        : 'Confirm: Night shift will NOT be solo — there is team coverage at night?'
+    if (!window.confirm(confirmMsg)) return
+
+    setSaveError(null)
+    setIsSaving(true)
+
+    if (answer === 'yes') {
+      const dateKey = selectedDateKey
+      const prev = isDemoDaySelected ? demoSoloModeByDateKey[dateKey] ?? null : soloMode
+      const nextMode: SoloMode = {
+        active: !!prev?.active,
+        activatedAt: prev?.activatedAt || new Date().toISOString(),
+        nightActive: true,
+        nightActivatedAt: new Date().toISOString(),
+        ...(prev?.activatedBy ? { activatedBy: prev.activatedBy } : {}),
+      }
+      try {
+        if (isDemoDaySelected) {
+          setDemoSoloModeByDateKey((prevMap) => ({ ...prevMap, [dateKey]: nextMode }))
+        }
+        await withTimeout(persistSoloModeOrNoop(dateKey, nextMode), 8000)
+        setSoloMode(nextMode)
+        await applySoloOrderReportAutoWaives(dateKey, taskState)
+      } catch (error) {
+        console.error('Failed to save night solo mode from check task:', error)
+        setSaveError('Failed to save night solo mode. Please try again.')
+        setIsSaving(false)
+        return
+      }
+    }
+
+    const completedAt = new Date().toISOString()
+    const completionBody: Omit<TaskCompletion, 'status'> = {
+      assignees: [],
+      completedAt,
+      assignedByAdmin: false,
+      completedLate: false,
+      lateForgiven: false,
+      completedEarly: false,
+      autoAssigned: true,
+      didNotNeedToComplete: true,
+    }
+    const completion: TaskCompletion = { status: 'done', ...completionBody }
+
+    try {
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        windowMap['night-shift-solo-check'] = completion
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        return next
+      })
+      setActiveTaskId(null)
+      await withTimeout(
+        persistCompleteTaskIfAvailableOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId: 'night-shift-solo-check',
+          completion: completionBody,
+        }),
+        8000
+      )
+    } catch (error) {
+      console.error('Failed to complete night shift solo check:', error)
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        delete windowMap['night-shift-solo-check']
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        return next
+      })
+      if (error instanceof Error && error.message === 'already-completed') {
+        setSaveError('Already completed by someone else.')
+      } else {
+        setSaveError(
+          error instanceof Error && error.message === 'timeout'
+            ? 'Save timed out. Check connection.'
+            : 'Failed to save. Try again.'
+        )
+      }
+    } finally {
+      setIsSaving(false)
+    }
+  }
 
   const saveBreakPlan = async () => {
     if (activeTaskId !== 'break-selection') return
-    if (!isTodaySelected && !isAdmin) return
+    if (!canEditTaskAssignmentsOnSelectedDate) return
 
     setBreakDraftError(null)
     setSaveError(null)
@@ -7148,7 +10337,7 @@ function App() {
         setDemoBreakSelectionByDateKey((prev) => ({ ...prev, [selectedDateKey]: selection }))
       }
       await withTimeout(persistBreakSelectionOrNoop(selectedDateKey, selection), 8000)
-      setBreakSelection(selection)
+      setBreakSelectionState({ dateKey: selectedDateKey, value: selection })
       // Saved plan is now the source of truth; draft is no longer "dirty".
       setBreakDraftDirtyByDateKey((prev) => ({ ...prev, [selectedDateKey]: false }))
       setBreakDraftByDateKey((prev) => {
@@ -7209,7 +10398,11 @@ function App() {
         let isLate = false
         const cutoff = getLateCutoffForWindow(selectedDate, selectedWindow)
         isLate = now >= cutoff
+        if (isSoloModeActiveForWindow(selectedDateKey, selectedWindow)) {
+          isLate = false
+        }
 
+        windowCompleteStartScheduledRef.current = true
         const updatedState = await new Promise<TaskState>((resolve) => {
           setTaskState((prev) => {
             const next: TaskState = { ...prev }
@@ -7234,8 +10427,13 @@ function App() {
         if (beforeWindowPercent < 100 && afterWindowPercent === 100) {
           const participants = computeCurrentWindowParticipants(updatedState)
           const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-          scheduleWindowCompleteCelebrationAfterScroll({ windowLabel, participants, alsoScrollToTop: true })
+          startWindowCompleteCelebration({
+            state: updatedState,
+            windowLabel,
+            participants,
+          })
         }
+        windowCompleteStartScheduledRef.current = false
 
         setActiveTaskId(null)
 
@@ -7303,7 +10501,7 @@ function App() {
 
   const clearBreakPlan = async () => {
     if (activeTaskId !== 'break-selection') return
-    if (!isTodaySelected && !isAdmin) return
+    if (!canEditTaskAssignmentsOnSelectedDate) return
 
     setBreakDraftError(null)
     setSaveError(null)
@@ -7316,7 +10514,7 @@ function App() {
         setDemoBreakSelectionByDateKey((prev) => ({ ...prev, [selectedDateKey]: null }))
       }
       await withTimeout(persistBreakSelectionOrNoop(selectedDateKey, null), 8000)
-      setBreakSelection(null)
+      setBreakSelectionState({ dateKey: selectedDateKey, value: null })
 
       // Reset the draft slots
       setBreakDraftSlots([
@@ -7397,8 +10595,33 @@ function App() {
       baseSplitMode?: boolean
     }
   ) => {
+    // Dice "who is working?" flow: this selection picks the split pair, it does not complete a task.
+    if (splitSetupSelecting) {
+      const base = opts?.baseAssignees ?? assignees
+      const exists = base.includes(name)
+      let next: string[]
+      if (exists) next = base.filter((n) => n !== name)
+      else if (base.length >= 2) next = [base[1], name]
+      else next = [...base, name]
+      setAssignees(next)
+      if (next.length === 2) {
+        setShowEmployeeSelector(false)
+        setSplitSetupSelecting(false)
+        setSplitMode(false)
+        beginDiceSplitWithPair(next[0], next[1])
+      }
+      return
+    }
+    if (isWindowTaskLocked(activeTaskId)) {
+      setSaveError('This window is locked until unlock time.')
+      return
+    }
     if (activeTaskId === 'turn-on-music' && !musicIsActuallyPlaying) {
       setSaveError('Start the music before selecting an employee.')
+      return
+    }
+    if (activeCompletion?.didNotNeedToComplete && !isAdmin) {
+      setSaveError('Tap Undo to clear this, then you can record who completed it.')
       return
     }
     const beforeCompletionSnapshot = activeTaskId
@@ -7551,15 +10774,18 @@ function App() {
         setShowColorPicker(true)
         return
       }
-      appendSelectionLog({
-        action: 'selected',
+      const selectionLogEntry = {
+        action: 'selected' as const,
         taskId: activeTaskId,
         taskName: activeTask?.name ?? activeTaskId,
         window: selectedWindow,
         dateKey: selectedDateKey,
         assignees: newAssignees,
         byAdmin: isAdmin,
-      })
+      }
+      if (!isV3Ui) {
+        appendSelectionLog(selectionLogEntry)
+      }
 
       // If editing an existing completion, preserve its timing/late flags so points stay consistent.
       // If creating a new completion, compute lateness.
@@ -7572,6 +10798,9 @@ function App() {
         if (window) {
           const cutoff = getLateCutoffForWindow(selectedDate, selectedWindow)
           isLate = now >= cutoff
+          if (isSoloModeActiveForWindow(selectedDateKey, selectedWindow)) {
+            isLate = false
+          }
 
           // Yum Yum Sauce can be completed early for both 5PM and 9/10PM windows.
           const isYumYum = activeTaskId === 'yum-yum-close' && (selectedWindow === '17' || selectedWindow === '21')
@@ -7582,132 +10811,137 @@ function App() {
         }
       }
 
-      // Build the new state
-      const updatedState = await new Promise<TaskState>((resolve) => {
-        setTaskState((prev) => {
-          const next: TaskState = { ...prev }
-          const dateMap = { ...(next[selectedDateKey] ?? {}) }
-          const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
-          windowMap[activeTaskId] = existingCompletion
-            ? {
-                ...existingCompletion,
-                assignees: newAssignees,
-                // Preserve assignedByAdmin on edits unless explicitly changed via the admin Assign/Complete controls.
-                assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
-                // If editing yum-yum-close that was autoAssigned, clear autoAssigned flag since user is manually selecting.
-                // This allows the completion to count toward shift participation in the HUD.
-                autoAssigned: activeTaskId === 'yum-yum-close' && existingCompletion.autoAssigned ? false : existingCompletion.autoAssigned,
-              }
-            : {
-                status: 'done',
-                assignees: newAssignees,
-                completedAt: new Date().toISOString(),
-                // Admin completions default to normal completion (not admin-assigned).
-                assignedByAdmin: false,
-                completedLate: isLate,
-                completedEarly: isEarly,
-              }
-          dateMap[selectedWindow] = windowMap
-          next[selectedDateKey] = dateMap
-          resolve(next)
-          return next
-        })
-      })
-
-      const afterWindowPercent = computeWindowTaskPercent(updatedState)
-      const willHitHundredPercent = beforeWindowPercent < 100 && afterWindowPercent === 100
-
-      // Reward animation (self-selection only):
-      // - non-admin
-      // - today only
-      // - new completion OR switching to a new assignee (reward the new person)
-      // - only when the resulting completion is not admin-assigned
+      // Build the new state purely (no commit) so updatedState is available synchronously
+      // for the celebration math without forcing a render. The setTaskState below batches
+      // with the score hold (React 18 auto-batching) into one paint, so there is no flash
+      // of afterScore and only one render instead of two synchronous flushSync renders.
+      windowCompleteStartScheduledRef.current = true
       let pendingNormalCelebration: null | {
         slot: 'p1' | 'p2' | null
         beforeScore: number
         afterScore: number
       } = null
+      const completedAtIso = new Date().toISOString()
+      const buildNext = (prev: TaskState): TaskState => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        windowMap[activeTaskId] = existingCompletion
+          ? {
+              ...existingCompletion,
+              assignees: newAssignees,
+              // Preserve assignedByAdmin on edits unless explicitly changed via the admin Assign/Complete controls.
+              assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+              // v3 "didn't need to complete": clearing by assigning real people
+              didNotNeedToComplete:
+                existingCompletion.didNotNeedToComplete && newAssignees.length > 0
+                  ? false
+                  : !!existingCompletion.didNotNeedToComplete,
+              // If editing yum-yum-close that was autoAssigned, clear autoAssigned flag since user is manually selecting.
+              // This allows the completion to count toward shift participation in the HUD.
+              autoAssigned: (() => {
+                if (existingCompletion.didNotNeedToComplete && newAssignees.length > 0) return false
+                if (activeTaskId === 'yum-yum-close' && existingCompletion.autoAssigned) return false
+                return existingCompletion.autoAssigned ?? false
+              })(),
+            }
+          : {
+              status: 'done',
+              assignees: newAssignees,
+              completedAt: completedAtIso,
+              // Admin completions default to normal completion (not admin-assigned).
+              assignedByAdmin: false,
+              completedLate: isLate,
+              completedEarly: isEarly,
+            }
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        return next
+      }
+      const updatedState: TaskState = buildNext(taskState)
+      setTaskState(buildNext)
+
       try {
         const afterCompletion = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
         const afterAssignees = afterCompletion?.assignees ?? []
         const rewardName = afterAssignees[afterAssignees.length - 1]
         const isNewCompletion = beforeAssigneesSnapshot.length === 0 && afterAssignees.length > 0
         const isNewAssignee = rewardName && !beforeAssigneesSnapshot.includes(rewardName)
-        // Show celebration for new completions or new assignees (admins can also see it for testing)
-        // Also allow celebrations in Demo Day mode for UX testing
         const shouldCelebrate = (isTodaySelected || isDemoDaySelected) && (isNewCompletion || isNewAssignee)
         if (shouldCelebrate) {
           const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
-          const beforeRows = computeShiftLeadersForState(
-            taskState,
-            selectedDateKey,
-            selectedShift,
-            SHIFT_WINDOWS,
-            windowTaskWeights,
-            taskWeightByIdByWindow
-          )
+          // Reuse the memoized unfiltered leaders (same compute as shiftHudLeaders, pre-commit
+          // taskState) instead of a redundant synchronous scoring pass on the tap path.
+          const beforeRows = shiftLeadersForSelected
           const afterRows = computeShiftLeadersForState(
             updatedState,
             selectedDateKey,
             selectedShift,
             SHIFT_WINDOWS,
             windowTaskWeights,
-            taskWeightByIdByWindow
+            taskWeightByIdByWindow,
+            isSoloScoreCappedForShift(selectedDateKey, selectedShift),
+            fairSplitForSelectedDateAndShift
           )
-          const beforeScore = beforeRows.find((r) => r.name === rewardName)?.score ?? 0
-          const afterScore = afterRows.find((r) => r.name === rewardName)?.score ?? 0
+          const beforeScore = shiftHudScoreForCelebration(beforeRows.find((r) => r.name === rewardName))
+          const afterScore = shiftHudScoreForCelebration(afterRows.find((r) => r.name === rewardName))
 
-          const afterPlayed = afterRows.filter((r) => r.score > 0)
-          const afterP1 = afterPlayed[0]
-          const afterP2 = afterPlayed[1]
-          const slot: 'p1' | 'p2' | null =
-            afterP1?.name === rewardName ? 'p1' : afterP2?.name === rewardName ? 'p2' : null
+          // Use "any points" (5PM or post-cutover 11AM) so completing an 11AM task still maps to a slot.
+          const slot = shiftHudCelebrationSlotForName(rewardName, afterRows, activeSplitHudPair)
 
-          // Defer the actual scroll + stars until AFTER the modal closes and scroll-lock unlock completes.
           pendingNormalCelebration = { slot, beforeScore, afterScore }
         }
       } catch {
         // ignore reward failures
       }
-
-      // Trigger pulse on the next incomplete task (local-only celebration)
-      if (!existingCompletion) {
-        triggerNextTaskPulse(activeTaskId, updatedState)
+      if (pendingNormalCelebration) {
+        const { slot, beforeScore } = pendingNormalCelebration
+        if (slot === 'p1' || slot === 'p2') {
+          // Batches with the setTaskState above into one commit (no flushSync), so the
+          // HUD shows beforeScore in the same paint that applies the completion.
+          applyShiftHudCelebrationScoreHold(slot, beforeScore)
+        }
       }
 
-      // Always scroll to top after completing a task (matches Order Report behavior).
-      // Schedule this BEFORE closing modal so it runs after scroll-lock releases.
+      const afterWindowPercent =
+        beforeWindowPercent < 100 ? computeWindowTaskPercent(updatedState) : beforeWindowPercent
+      const willHitHundredPercent = beforeWindowPercent < 100 && afterWindowPercent === 100
+
+      // Trigger pulse on the next incomplete task (local-only celebration).
+      // Deferred to the next frame so the completion paints before the pulse scan/render.
+      if (!existingCompletion) {
+        const pulseTaskIdArg = activeTaskId
+        window.requestAnimationFrame(() => triggerNextTaskPulse(pulseTaskIdArg, updatedState))
+      }
+
+      // v2: scroll to top so Shift HUD is visible for star flight. v3: floating Shift HUD notification instead (no scroll).
       setRewardStars([])
-      window.setTimeout(() => {
-        window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
-      }, 100)
-
-      // Normal task celebration: stars + score animation (only on today for new completions).
-      if (pendingNormalCelebration) {
-        const { slot, beforeScore, afterScore } = pendingNormalCelebration
-        // Wait for scroll to complete (100ms + 550ms), then show stars + shake.
-        const starDelay = prefersReducedMotion ? 150 : 650
+      if (!isV3Ui) {
         window.setTimeout(() => {
-          // Shake should happen at the same time the stars start.
-          setCelebrateShake(true)
-          window.setTimeout(() => setCelebrateShake(false), 500)
+          window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
+        }, 100)
+      }
 
+      const runStandardCelebrationStars = () => {
+        if (!pendingNormalCelebration) return
+        const { slot, beforeScore, afterScore } = pendingNormalCelebration
+        const starDelay = celebrationTiming.v2StarDelayMs
+        window.setTimeout(() => {
           if (slot === 'p1' && p1ScoreRef.current) {
             setP1ScoreOverride(beforeScore)
-            setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
             rewardTargetRef.current = p1ScoreRef.current
             spawnRewardStars(p1ScoreRef.current)
+            setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
             return
           }
           if (slot === 'p2' && p2ScoreRef.current) {
             setP2ScoreOverride(beforeScore)
-            setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
             rewardTargetRef.current = p2ScoreRef.current
             spawnRewardStars(p2ScoreRef.current)
+            setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
             return
           }
 
-          // Fallback: fly into Shift HUD header (or +extra pill) + pulse the HUD
           setShiftHudPulse(true)
           const target = shiftHudExtraRef.current || shiftHudHeaderRef.current
           rewardTargetRef.current = target
@@ -7715,103 +10949,149 @@ function App() {
         }, starDelay)
       }
 
-      // Window 100% celebration: schedule after stars finish if stars are playing.
-      if (willHitHundredPercent) {
+      if (!isV3Ui && pendingNormalCelebration) {
+        runStandardCelebrationStars()
+      }
+
+      if (!isV3Ui && willHitHundredPercent) {
         const participants = computeCurrentWindowParticipants(updatedState)
         const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-        scheduleWindowCompleteCelebrationAfterScroll({
+        startWindowCompleteCelebration({
+          state: updatedState,
           windowLabel,
           participants,
           waitForStars: !!pendingNormalCelebration,
         })
+        windowCompleteStartScheduledRef.current = false
       }
 
-      // Close modal immediately for fast feedback (after scheduling celebration)
-      setActiveTaskId(null)
-      setShowEmployeeSelector(false)
-      
-      // For tasks with askNightShiftComplete (ice-check, bathroom-check), show the prompt
-      // Only for new completions, not edits
-      if (!existingCompletion && activeTask?.askNightShiftComplete) {
-        setPendingNightShiftTask({
-          taskId: activeTaskId,
-          taskName: activeTask.name,
-          assignees: newAssignees,
-        })
-        setShowNightShiftPrompt(true)
+      const taskIdSnapshot = activeTaskId
+      const activeTaskSnapshot = activeTask
+
+      const finishCloseAndPersist = () => {
+        setActiveTaskId(null)
+        setShowEmployeeSelector(false)
+
+        if (!existingCompletion && activeTaskSnapshot?.askNightShiftComplete) {
+          setPendingNightShiftTask({
+            taskId: taskIdSnapshot,
+            taskName: activeTaskSnapshot.name,
+            assignees: newAssignees,
+          })
+          setShowNightShiftPrompt(true)
+        }
+
+        window.requestAnimationFrame(() => setIsSaving(true))
+        setSaveError(null)
+
+        localWindowWriteGuardRef.current = {
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          expiresAt: Date.now() + LOCAL_WINDOW_WRITE_GUARD_MS,
+        }
+
+        const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[taskIdSnapshot]
+        const persist =
+          existingCompletion
+            ? persistAdminSetTaskCompletionOrNoop({
+                dateKey: selectedDateKey,
+                windowKey: selectedWindow,
+                taskId: taskIdSnapshot,
+                completion: {
+                  assignees: completionToPersist?.assignees ?? newAssignees,
+                  completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+                  assignedByAdmin: completionToPersist?.assignedByAdmin,
+                  completedLate: completionToPersist?.completedLate,
+                  lateForgiven: completionToPersist?.lateForgiven,
+                  completedEarly: completionToPersist?.completedEarly,
+                  autoAssigned: completionToPersist?.autoAssigned,
+                  iceSides: completionToPersist?.iceSides,
+                },
+              })
+            : persistCompleteTaskIfAvailableOrNoop({
+                dateKey: selectedDateKey,
+                windowKey: selectedWindow,
+                taskId: taskIdSnapshot,
+                completion: {
+                  assignees: completionToPersist?.assignees ?? newAssignees,
+                  completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+                  assignedByAdmin: completionToPersist?.assignedByAdmin,
+                  completedLate: completionToPersist?.completedLate,
+                  lateForgiven: completionToPersist?.lateForgiven,
+                  completedEarly: completionToPersist?.completedEarly,
+                  autoAssigned: completionToPersist?.autoAssigned,
+                  iceSides: completionToPersist?.iceSides,
+                },
+              })
+
+        Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
+          .then(() => {
+            if (import.meta.env.DEV) console.log('Completed task state saved successfully')
+            localWindowWriteGuardRef.current = null
+            setIsSaving(false)
+          })
+          .catch((error) => {
+            console.error('Failed to save completion:', error)
+            localWindowWriteGuardRef.current = null
+            if (error instanceof Error && error.message === 'already-completed') {
+              setTaskState((prev) => {
+                const next: TaskState = { ...prev }
+                const day = { ...(next[selectedDateKey] ?? {}) }
+                const w = { ...(day[selectedWindow] ?? {}) }
+                if (beforeCompletionSnapshot) {
+                  w[taskIdSnapshot] = beforeCompletionSnapshot
+                  day[selectedWindow] = w
+                  next[selectedDateKey] = day
+                } else {
+                  delete w[taskIdSnapshot]
+                  day[selectedWindow] = w
+                  next[selectedDateKey] = day
+                }
+                return next
+              })
+              setSaveError('Already completed by someone else.')
+            } else {
+              setSaveError(
+                error instanceof Error && error.message === 'timeout'
+                  ? 'Save timed out. Check connection.'
+                  : 'Failed to save. Try again.'
+              )
+            }
+            setIsSaving(false)
+          })
       }
-      
-      // Save in background and show indicator at top
-      setIsSaving(true)
-      setSaveError(null)
 
-      const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
-      const persist =
-        existingCompletion
-          ? persistAdminSetTaskCompletionOrNoop({
-              dateKey: selectedDateKey,
-              windowKey: selectedWindow,
-              taskId: activeTaskId,
-              completion: {
-                assignees: completionToPersist?.assignees ?? newAssignees,
-                completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
-                assignedByAdmin: completionToPersist?.assignedByAdmin,
-                completedLate: completionToPersist?.completedLate,
-                lateForgiven: completionToPersist?.lateForgiven,
-                completedEarly: completionToPersist?.completedEarly,
-                autoAssigned: completionToPersist?.autoAssigned,
-                iceSides: completionToPersist?.iceSides,
-              },
+      if (isV3Ui) {
+        setShowEmployeeSelector(false)
+        animateSuccessSlideDownAndDismiss(
+          () => {
+            finishCloseAndPersist()
+            if (pendingNormalCelebration) {
+              playV3TaskCompletionCelebration(pendingNormalCelebration, V3_TASK_COMPLETION_ANIM_OPTS)
+            }
+          },
+          V3_TASK_COMPLETION_ANIM_OPTS,
+        )
+        window.requestAnimationFrame(() => {
+          appendSelectionLog(selectionLogEntry)
+          if (willHitHundredPercent) {
+            const participants = computeCurrentWindowParticipants(updatedState)
+            const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+            startWindowCompleteCelebration({
+              state: updatedState,
+              windowLabel,
+              participants,
+              waitForStars: !!pendingNormalCelebration,
             })
-          : persistCompleteTaskIfAvailableOrNoop({
-              dateKey: selectedDateKey,
-              windowKey: selectedWindow,
-              taskId: activeTaskId,
-              completion: {
-                assignees: completionToPersist?.assignees ?? newAssignees,
-                completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
-                assignedByAdmin: completionToPersist?.assignedByAdmin,
-                completedLate: completionToPersist?.completedLate,
-                lateForgiven: completionToPersist?.lateForgiven,
-                completedEarly: completionToPersist?.completedEarly,
-                autoAssigned: completionToPersist?.autoAssigned,
-                iceSides: completionToPersist?.iceSides,
-              },
-            })
-
-      Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
-        .then(() => {
-          if (import.meta.env.DEV) console.log('Completed task state saved successfully')
-          setIsSaving(false)
-          // Trigger screen shake celebration
-          setCelebrateShake(true)
-          setTimeout(() => setCelebrateShake(false), 500)
-        })
-        .catch((error) => {
-          console.error('Failed to save completion:', error)
-          // Revert optimistic state if we lost the race (already completed elsewhere)
-          if (error instanceof Error && error.message === 'already-completed') {
-            setTaskState((prev) => {
-              const next: TaskState = { ...prev }
-              const day = { ...(next[selectedDateKey] ?? {}) }
-              const w = { ...(day[selectedWindow] ?? {}) }
-              if (beforeCompletionSnapshot) {
-                w[activeTaskId] = beforeCompletionSnapshot
-                day[selectedWindow] = w
-                next[selectedDateKey] = day
-              } else {
-                delete w[activeTaskId]
-                day[selectedWindow] = w
-                next[selectedDateKey] = day
-              }
-              return next
-            })
-            setSaveError('Already completed by someone else.')
-          } else {
-            setSaveError(error instanceof Error && error.message === 'timeout' ? 'Save timed out. Check connection.' : 'Failed to save. Try again.')
           }
-          setIsSaving(false)
+          windowCompleteStartScheduledRef.current = false
         })
+      } else {
+        finishCloseAndPersist()
+        if (!willHitHundredPercent) {
+          windowCompleteStartScheduledRef.current = false
+        }
+      }
     }
   }
 
@@ -7843,6 +11123,8 @@ function App() {
               assignees: newAssignees,
               iceSides: { left, right },
               assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+              didNotNeedToComplete: false,
+              autoAssigned: false,
             }
           : {
               status: 'done',
@@ -7907,6 +11189,10 @@ function App() {
   const completeCombinedIceTask = async (sides: { left: string; right: string }) => {
     if (!activeTaskId) return
     if (activeTaskId !== 'ice-5pm' && activeTaskId !== 'ice-close') return
+    if (isWindowTaskLocked(activeTaskId)) {
+      setSaveError('This window is locked until unlock time.')
+      return
+    }
 
     const left = String(sides.left || '').trim()
     const right = String(sides.right || '').trim()
@@ -7955,230 +11241,301 @@ function App() {
       return
     }
 
-    appendSelectionLog({
-      action: 'selected',
+    const iceSelectionLogEntry = {
+      action: 'selected' as const,
       taskId: activeTaskId,
       taskName: activeTask?.name ?? activeTaskId,
       window: selectedWindow,
       dateKey: selectedDateKey,
       assignees: newAssignees,
       byAdmin: isAdmin,
-    })
+    }
+    if (!isV3Ui) {
+      appendSelectionLog(iceSelectionLogEntry)
+    }
 
-    const updatedState = await new Promise<TaskState>((resolve) => {
-      setTaskState((prev) => {
-        const next: TaskState = { ...prev }
-        const dateMap = { ...(next[selectedDateKey] ?? {}) }
-        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
-        windowMap[activeTaskId] = existingCompletion
-          ? {
-              ...existingCompletion,
-              assignees: newAssignees,
-              iceSides: { left, right },
-              // Preserve assignedByAdmin on edits unless explicitly changed via the admin Assign/Complete controls.
-              assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
-            }
-          : {
-              status: 'done',
-              assignees: newAssignees,
-              completedAt: new Date().toISOString(),
-              assignedByAdmin: false,
-              completedLate: isLate,
-              completedEarly: isEarly,
-              iceSides: { left, right },
-            }
-        dateMap[selectedWindow] = windowMap
-        next[selectedDateKey] = dateMap
-        resolve(next)
-        return next
-      })
-    })
-
-    const afterWindowPercent = computeWindowTaskPercent(updatedState)
-    const willHitHundredPercent = beforeWindowPercent < 100 && afterWindowPercent === 100
-
+    // Build the new state purely (no commit) so updatedState is synchronously available;
+    // the setTaskState below batches with the score hold into one paint (no flushSync).
+    windowCompleteStartScheduledRef.current = true
     let pendingNormalCelebration: null | {
       slot: 'p1' | 'p2' | null
       beforeScore: number
       afterScore: number
     } = null
+    const completedAtIso = new Date().toISOString()
+    const buildNext = (prev: TaskState): TaskState => {
+      const next: TaskState = { ...prev }
+      const dateMap = { ...(next[selectedDateKey] ?? {}) }
+      const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+      windowMap[activeTaskId] = existingCompletion
+        ? {
+            ...existingCompletion,
+            assignees: newAssignees,
+            iceSides: { left, right },
+            // Preserve assignedByAdmin on edits unless explicitly changed via the admin Assign/Complete controls.
+            assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+            didNotNeedToComplete: false,
+            autoAssigned: false,
+          }
+        : {
+            status: 'done',
+            assignees: newAssignees,
+            completedAt: completedAtIso,
+            assignedByAdmin: false,
+            completedLate: isLate,
+            completedEarly: isEarly,
+            iceSides: { left, right },
+          }
+      dateMap[selectedWindow] = windowMap
+      next[selectedDateKey] = dateMap
+      return next
+    }
+    const updatedState: TaskState = buildNext(taskState)
+    setTaskState(buildNext)
+
     try {
       const afterCompletion = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
       const afterAssignees = afterCompletion?.assignees ?? []
       const rewardName = afterAssignees[afterAssignees.length - 1]
+      const beforeIceLeft = String(beforeCompletionSnapshot?.iceSides?.left || '').trim()
+      const beforeIceRight = String(beforeCompletionSnapshot?.iceSides?.right || '').trim()
+      const iceTransitionedPartialToFull =
+        !!beforeCompletionSnapshot &&
+        (!beforeIceLeft || !beforeIceRight) &&
+        (!!beforeIceLeft || !!beforeIceRight) &&
+        !!left &&
+        !!right
+      const dualSidesJustFinished =
+        beforeAssigneesSnapshot.length < 2 && newAssignees.length === 2
       const isNewCompletion = beforeAssigneesSnapshot.length === 0 && afterAssignees.length > 0
       const isNewAssignee = rewardName && !beforeAssigneesSnapshot.includes(rewardName)
-      // Also allow celebrations in Demo Day mode for UX testing
-      const shouldCelebrate = (isTodaySelected || isDemoDaySelected) && (isNewCompletion || isNewAssignee)
+      const shouldCelebrate =
+        canEditTaskAssignmentsOnSelectedDate &&
+        (isNewCompletion || isNewAssignee || iceTransitionedPartialToFull || dualSidesJustFinished)
       if (shouldCelebrate) {
-        const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
-        const beforeRows = computeShiftLeadersForState(
-          taskState,
-          selectedDateKey,
-          selectedShift,
-          SHIFT_WINDOWS,
-          windowTaskWeights,
-          taskWeightByIdByWindow
-        )
-        const afterRows = computeShiftLeadersForState(
-          updatedState,
-          selectedDateKey,
-          selectedShift,
-          SHIFT_WINDOWS,
-          windowTaskWeights,
-          taskWeightByIdByWindow
-        )
-        const beforeScore = beforeRows.find((r) => r.name === rewardName)?.score ?? 0
-        const afterScore = afterRows.find((r) => r.name === rewardName)?.score ?? 0
+        const celebrationRewardName =
+          newAssignees.length === 2 && newAssignees[0] === newAssignees[1] ? newAssignees[0] : rewardName
+        if (celebrationRewardName) {
+          const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
+          // Reuse the memoized unfiltered leaders (same compute as shiftHudLeaders, pre-commit
+          // taskState) instead of a redundant synchronous scoring pass on the tap path.
+          const beforeRows = shiftLeadersForSelected
+          const afterRows = computeShiftLeadersForState(
+            updatedState,
+            selectedDateKey,
+            selectedShift,
+            SHIFT_WINDOWS,
+            windowTaskWeights,
+            taskWeightByIdByWindow,
+            isSoloScoreCappedForShift(selectedDateKey, selectedShift),
+            fairSplitForSelectedDateAndShift
+          )
+          const beforeScore = shiftHudScoreForCelebration(beforeRows.find((r) => r.name === celebrationRewardName))
+          const afterScore = shiftHudScoreForCelebration(afterRows.find((r) => r.name === celebrationRewardName))
 
-        const afterPlayed = afterRows.filter((r) => r.score > 0)
-        const afterP1 = afterPlayed[0]
-        const afterP2 = afterPlayed[1]
-        const slot: 'p1' | 'p2' | null =
-          afterP1?.name === rewardName ? 'p1' : afterP2?.name === rewardName ? 'p2' : null
+          const slot = shiftHudCelebrationSlotForName(celebrationRewardName, afterRows, activeSplitHudPair)
 
-        pendingNormalCelebration = { slot, beforeScore, afterScore }
+          pendingNormalCelebration = { slot, beforeScore, afterScore }
+        }
       }
     } catch {
       // ignore reward failures
     }
+    if (pendingNormalCelebration) {
+      const { slot, beforeScore } = pendingNormalCelebration
+      if (slot === 'p1' || slot === 'p2') {
+        // Batched with setTaskState above (no flushSync): one paint, no afterScore flash.
+        applyShiftHudCelebrationScoreHold(slot, beforeScore)
+      }
+    }
+
+    const afterWindowPercent =
+      beforeWindowPercent < 100 ? computeWindowTaskPercent(updatedState) : beforeWindowPercent
+    const willHitHundredPercent = beforeWindowPercent < 100 && afterWindowPercent === 100
 
     if (!existingCompletion) {
-      triggerNextTaskPulse(activeTaskId, updatedState)
+      const pulseTaskIdArg = activeTaskId
+      window.requestAnimationFrame(() => triggerNextTaskPulse(pulseTaskIdArg, updatedState))
     }
 
     setRewardStars([])
-    window.setTimeout(() => {
-      window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
-    }, 100)
-
-    if (pendingNormalCelebration) {
-      const { slot, beforeScore, afterScore } = pendingNormalCelebration
-      const starDelay = prefersReducedMotion ? 150 : 650
+    if (!isV3Ui) {
       window.setTimeout(() => {
-        setCelebrateShake(true)
-        window.setTimeout(() => setCelebrateShake(false), 500)
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      }, 100)
+    }
 
+    if (!isV3Ui && pendingNormalCelebration) {
+      const { slot, beforeScore, afterScore } = pendingNormalCelebration
+      const starDelay = celebrationTiming.iceTowelStarDelayMs
+      const starOpts = { bypassReducedMotion: true as const }
+      window.setTimeout(() => {
         if (slot === 'p1' && p1ScoreRef.current) {
           setP1ScoreOverride(beforeScore)
-          setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
           rewardTargetRef.current = p1ScoreRef.current
-          spawnRewardStars(p1ScoreRef.current)
+          spawnRewardStars(p1ScoreRef.current, starOpts)
+          setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
           return
         }
         if (slot === 'p2' && p2ScoreRef.current) {
           setP2ScoreOverride(beforeScore)
-          setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
           rewardTargetRef.current = p2ScoreRef.current
-          spawnRewardStars(p2ScoreRef.current)
+          spawnRewardStars(p2ScoreRef.current, starOpts)
+          setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
           return
         }
 
         setShiftHudPulse(true)
         const target = shiftHudExtraRef.current || shiftHudHeaderRef.current
         rewardTargetRef.current = target
-        spawnRewardStars(target)
+        spawnRewardStars(target, starOpts)
       }, starDelay)
     }
 
-    // Window 100% celebration: schedule after stars finish if stars are playing.
-    if (willHitHundredPercent) {
+    if (!isV3Ui && willHitHundredPercent) {
       const participants = computeCurrentWindowParticipants(updatedState)
       const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-      scheduleWindowCompleteCelebrationAfterScroll({
+      startWindowCompleteCelebration({
+        state: updatedState,
         windowLabel,
         participants,
         waitForStars: !!pendingNormalCelebration,
       })
+      windowCompleteStartScheduledRef.current = false
     }
 
-    // Close modal immediately (after scheduling celebration)
-    setActiveTaskId(null)
-    setShowEmployeeSelector(false)
-    setPendingIceSide(null)
-    setIceSidesDraft({ left: null, right: null })
-    {
-      const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
-      setIceSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
-      setIceSidesDraftByKey((prev) => {
-        if (!prev[key]) return prev
-        const { [key]: _, ...rest } = prev
-        return rest
-      })
+    const iceTaskIdSnapshot = activeTaskId
+
+    const finishIceCloseAndPersist = () => {
+      setActiveTaskId(null)
+      setShowEmployeeSelector(false)
+      setPendingIceSide(null)
+      setIceSidesDraft({ left: null, right: null })
+      {
+        const key = `${selectedDateKey}:${selectedWindow}:${iceTaskIdSnapshot}`
+        setIceSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
+        setIceSidesDraftByKey((prev) => {
+          if (!prev[key]) return prev
+          const { [key]: _, ...rest } = prev
+          return rest
+        })
+      }
+
+      window.requestAnimationFrame(() => setIsSaving(true))
+      setSaveError(null)
+
+      localWindowWriteGuardRef.current = {
+        dateKey: selectedDateKey,
+        windowKey: selectedWindow,
+        expiresAt: Date.now() + LOCAL_WINDOW_WRITE_GUARD_MS,
+      }
+
+      const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[iceTaskIdSnapshot]
+      const persist =
+        existingCompletion
+          ? persistAdminSetTaskCompletionOrNoop({
+              dateKey: selectedDateKey,
+              windowKey: selectedWindow,
+              taskId: iceTaskIdSnapshot,
+              completion: {
+                assignees: completionToPersist?.assignees ?? newAssignees,
+                completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+                assignedByAdmin: completionToPersist?.assignedByAdmin,
+                completedLate: completionToPersist?.completedLate,
+                lateForgiven: completionToPersist?.lateForgiven,
+                completedEarly: completionToPersist?.completedEarly,
+                iceSides: completionToPersist?.iceSides,
+              },
+            })
+          : persistCompleteTaskIfAvailableOrNoop({
+              dateKey: selectedDateKey,
+              windowKey: selectedWindow,
+              taskId: iceTaskIdSnapshot,
+              completion: {
+                assignees: completionToPersist?.assignees ?? newAssignees,
+                completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+                assignedByAdmin: completionToPersist?.assignedByAdmin,
+                completedLate: completionToPersist?.completedLate,
+                lateForgiven: completionToPersist?.lateForgiven,
+                completedEarly: completionToPersist?.completedEarly,
+                iceSides: completionToPersist?.iceSides,
+              },
+            })
+
+      Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
+        .then(() => {
+          if (import.meta.env.DEV) console.log('Completed task state saved successfully')
+          localWindowWriteGuardRef.current = null
+          setIsSaving(false)
+        })
+        .catch((error) => {
+          console.error('Failed to save completion:', error)
+          localWindowWriteGuardRef.current = null
+          if (error instanceof Error && error.message === 'already-completed') {
+            setTaskState((prev) => {
+              const next: TaskState = { ...prev }
+              const day = { ...(next[selectedDateKey] ?? {}) }
+              const w = { ...(day[selectedWindow] ?? {}) }
+              if (beforeCompletionSnapshot) {
+                w[iceTaskIdSnapshot] = beforeCompletionSnapshot
+                day[selectedWindow] = w
+                next[selectedDateKey] = day
+              } else {
+                delete w[iceTaskIdSnapshot]
+                day[selectedWindow] = w
+                next[selectedDateKey] = day
+              }
+              return next
+            })
+            setSaveError('Already completed by someone else.')
+          } else {
+            setSaveError(
+              error instanceof Error && error.message === 'timeout'
+                ? 'Save timed out. Check connection.'
+                : 'Failed to save. Try again.'
+            )
+          }
+          setIsSaving(false)
+        })
     }
 
-    // Save in background and show indicator at top
-    setIsSaving(true)
-    setSaveError(null)
-
-    const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
-    const persist =
-      existingCompletion
-        ? persistAdminSetTaskCompletionOrNoop({
-            dateKey: selectedDateKey,
-            windowKey: selectedWindow,
-            taskId: activeTaskId,
-            completion: {
-              assignees: completionToPersist?.assignees ?? newAssignees,
-              completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
-              assignedByAdmin: completionToPersist?.assignedByAdmin,
-              completedLate: completionToPersist?.completedLate,
-              lateForgiven: completionToPersist?.lateForgiven,
-              completedEarly: completionToPersist?.completedEarly,
-              iceSides: completionToPersist?.iceSides,
-            },
+    if (isV3Ui) {
+      setShowEmployeeSelector(false)
+      animateSuccessSlideDownAndDismiss(
+        () => {
+          finishIceCloseAndPersist()
+          if (pendingNormalCelebration) {
+            playV3TaskCompletionCelebration(pendingNormalCelebration, V3_TASK_COMPLETION_ANIM_OPTS)
+          }
+        },
+        V3_TASK_COMPLETION_ANIM_OPTS,
+      )
+      window.requestAnimationFrame(() => {
+        appendSelectionLog(iceSelectionLogEntry)
+        if (willHitHundredPercent) {
+          const participants = computeCurrentWindowParticipants(updatedState)
+          const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+          startWindowCompleteCelebration({
+            state: updatedState,
+            windowLabel,
+            participants,
+            waitForStars: !!pendingNormalCelebration,
           })
-        : persistCompleteTaskIfAvailableOrNoop({
-            dateKey: selectedDateKey,
-            windowKey: selectedWindow,
-            taskId: activeTaskId,
-            completion: {
-              assignees: completionToPersist?.assignees ?? newAssignees,
-              completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
-              assignedByAdmin: completionToPersist?.assignedByAdmin,
-              completedLate: completionToPersist?.completedLate,
-              lateForgiven: completionToPersist?.lateForgiven,
-              completedEarly: completionToPersist?.completedEarly,
-              iceSides: completionToPersist?.iceSides,
-            },
-          })
-
-    Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
-      .then(() => {
-        if (import.meta.env.DEV) console.log('Completed task state saved successfully')
-        setIsSaving(false)
-        setCelebrateShake(true)
-        setTimeout(() => setCelebrateShake(false), 500)
-      })
-      .catch((error) => {
-        console.error('Failed to save completion:', error)
-        if (error instanceof Error && error.message === 'already-completed') {
-          setTaskState((prev) => {
-            const next: TaskState = { ...prev }
-            const day = { ...(next[selectedDateKey] ?? {}) }
-            const w = { ...(day[selectedWindow] ?? {}) }
-            if (beforeCompletionSnapshot) {
-              w[activeTaskId] = beforeCompletionSnapshot
-              day[selectedWindow] = w
-              next[selectedDateKey] = day
-            } else {
-              delete w[activeTaskId]
-              day[selectedWindow] = w
-              next[selectedDateKey] = day
-            }
-            return next
-          })
-          setSaveError('Already completed by someone else.')
-        } else {
-          setSaveError(error instanceof Error && error.message === 'timeout' ? 'Save timed out. Check connection.' : 'Failed to save. Try again.')
         }
-        setIsSaving(false)
+        windowCompleteStartScheduledRef.current = false
       })
+    } else {
+      finishIceCloseAndPersist()
+      if (!willHitHundredPercent) {
+        windowCompleteStartScheduledRef.current = false
+      }
+    }
   }
 
-  const clearCombinedIceTask = useCallback(async () => {
+  const clearCombinedIceTask = useCallback(async (opts?: { closeModal?: boolean }) => {
     if (!activeTaskId) return
     if (activeTaskId !== 'ice-5pm' && activeTaskId !== 'ice-close') return
+    if (isWindowTaskLocked(activeTaskId)) return
 
     // Clearing should also wipe any cached draft for this ice task instance.
     const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
@@ -8193,8 +11550,13 @@ function App() {
     setPendingIceSide(null)
     setIceSidesDraft({ left: null, right: null })
     setAssignees([])
-    setIceFillAnim(null)
-    setIcePageEmojis([])
+    if (iceFillAnimCleanupRef.current != null) {
+      window.clearTimeout(iceFillAnimCleanupRef.current)
+      iceFillAnimCleanupRef.current = null
+    }
+    iceLeftTileRef.current?.classList.remove('ice-filling')
+    iceRightTileRef.current?.classList.remove('ice-filling')
+    icePageEmojiLayerRef.current?.replaceChildren()
     setSaveError(null)
 
     // If not completed yet, nothing to delete.
@@ -8241,6 +11603,11 @@ function App() {
         new Promise((r) => setTimeout(r, 350)),
       ])
       setIsSaving(false)
+      if (opts?.closeModal) {
+        pendingScrollToTaskIdRef.current = activeTaskId
+        setShowEmployeeSelector(false)
+        setActiveTaskId(null)
+      }
     } catch (error) {
       console.error('Failed to clear combined ice completion:', error)
       // Restore local state on failure
@@ -8265,6 +11632,7 @@ function App() {
     selectedDateKey,
     selectedWindow,
     taskState,
+    isWindowTaskLocked,
   ])
 
   const persistPartialTowelTask = async (sides: { diningBar: string | null; bowlStation: string | null }) => {
@@ -8359,6 +11727,10 @@ function App() {
   const completeCombinedTowelTask = async (sides: { diningBar: string; bowlStation: string }) => {
     if (!activeTaskId) return
     if (activeTaskId !== 'towels' && activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+    if (isWindowTaskLocked(activeTaskId)) {
+      setSaveError('This window is locked until unlock time.')
+      return
+    }
 
     const diningBar = String(sides.diningBar || '').trim()
     const bowlStation = String(sides.bowlStation || '').trim()
@@ -8394,185 +11766,284 @@ function App() {
       return
     }
 
-    appendSelectionLog({
-      action: 'selected',
+    const towelSelectionLogEntry = {
+      action: 'selected' as const,
       taskId: activeTaskId,
       taskName: activeTask?.name ?? activeTaskId,
       window: selectedWindow,
       dateKey: selectedDateKey,
       assignees: newAssignees,
       byAdmin: isAdmin,
-    })
+    }
+    if (!isV3Ui) {
+      appendSelectionLog(towelSelectionLogEntry)
+    }
 
-    const updatedState = await new Promise<TaskState>((resolve) => {
-      setTaskState((prev) => {
-        const next: TaskState = { ...prev }
-        const dateMap = { ...(next[selectedDateKey] ?? {}) }
-        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
-        windowMap[activeTaskId] = existingCompletion
-          ? {
-              ...existingCompletion,
-              assignees: newAssignees,
-              towelSides: { diningBar, bowlStation },
-              assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
-            }
-          : {
-              status: 'done',
-              assignees: newAssignees,
-              completedAt: new Date().toISOString(),
-              assignedByAdmin: false,
-              completedLate: isLate,
-              lateForgiven: false,
-              towelSides: { diningBar, bowlStation },
-            }
-        dateMap[selectedWindow] = windowMap
-        next[selectedDateKey] = dateMap
-        resolve(next)
-        return next
-      })
-    })
+    const beforeWindowPercent = computeWindowTaskPercent(taskState)
 
-    const willHitHundredPercent = computeWindowTaskPercent(updatedState) >= 100
-    const rewardName = newAssignees[newAssignees.length - 1]
-    const isNewCompletion = beforeAssigneesSnapshot.length === 0 && newAssignees.length > 0
-    const isNewAssignee = rewardName && !beforeAssigneesSnapshot.includes(rewardName)
-    const shouldCelebrate = (isTodaySelected || isDemoDaySelected) && (isNewCompletion || isNewAssignee)
+    // Build the new state purely (no commit) so updatedState is synchronously available;
+    // the setTaskState below batches with the score hold into one paint (no flushSync).
+    windowCompleteStartScheduledRef.current = true
     let pendingNormalCelebration: { slot: 'p1' | 'p2' | null; beforeScore: number; afterScore: number } | null = null
+    const completedAtIso = new Date().toISOString()
+    const buildNext = (prev: TaskState): TaskState => {
+      const next: TaskState = { ...prev }
+      const dateMap = { ...(next[selectedDateKey] ?? {}) }
+      const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+      windowMap[activeTaskId] = existingCompletion
+        ? {
+            ...existingCompletion,
+            assignees: newAssignees,
+            towelSides: { diningBar, bowlStation },
+            assignedByAdmin: existingCompletion.assignedByAdmin ?? false,
+          }
+        : {
+            status: 'done',
+            assignees: newAssignees,
+            completedAt: completedAtIso,
+            assignedByAdmin: false,
+            completedLate: isLate,
+            lateForgiven: false,
+            towelSides: { diningBar, bowlStation },
+          }
+      dateMap[selectedWindow] = windowMap
+      next[selectedDateKey] = dateMap
+      return next
+    }
+    const updatedState: TaskState = buildNext(taskState)
+    setTaskState(buildNext)
+
     try {
+      const rewardName = newAssignees[newAssignees.length - 1]
+      const beforeTowelBar = String(beforeCompletionSnapshot?.towelSides?.diningBar || '').trim()
+      const beforeTowelBowl = String(beforeCompletionSnapshot?.towelSides?.bowlStation || '').trim()
+      const towelTransitionedPartialToFull =
+        !!beforeCompletionSnapshot &&
+        (!beforeTowelBar || !beforeTowelBowl) &&
+        (!!beforeTowelBar || !!beforeTowelBowl) &&
+        !!diningBar &&
+        !!bowlStation
+      const dualSidesJustFinished =
+        beforeAssigneesSnapshot.length < 2 && newAssignees.length === 2
+      const isNewCompletion = beforeAssigneesSnapshot.length === 0 && newAssignees.length > 0
+      const isNewAssignee = rewardName && !beforeAssigneesSnapshot.includes(rewardName)
+      const shouldCelebrate =
+        canEditTaskAssignmentsOnSelectedDate &&
+        (isNewCompletion || isNewAssignee || towelTransitionedPartialToFull || dualSidesJustFinished)
       if (shouldCelebrate) {
-        const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
-        const beforeRows = computeShiftLeadersForState(taskState, selectedDateKey, selectedShift, SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
-        const afterRows = computeShiftLeadersForState(updatedState, selectedDateKey, selectedShift, SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
-        const beforeScore = beforeRows.find((r) => r.name === rewardName)?.score ?? 0
-        const afterScore = afterRows.find((r) => r.name === rewardName)?.score ?? 0
-        const afterPlayed = afterRows.filter((r) => r.score > 0)
-        const afterP1 = afterPlayed[0]
-        const afterP2 = afterPlayed[1]
-        const slot: 'p1' | 'p2' | null = afterP1?.name === rewardName ? 'p1' : afterP2?.name === rewardName ? 'p2' : null
-        pendingNormalCelebration = { slot, beforeScore, afterScore }
+        const celebrationRewardName =
+          newAssignees.length === 2 && newAssignees[0] === newAssignees[1] ? newAssignees[0] : rewardName
+        if (celebrationRewardName) {
+          const { windowTaskWeights, taskWeightByIdByWindow } = getWeightsForDateKey(selectedDateKey)
+          // Reuse the memoized unfiltered leaders (same compute as shiftHudLeaders, pre-commit
+          // taskState) instead of a redundant synchronous scoring pass on the tap path.
+          const beforeRows = shiftLeadersForSelected
+          const afterRows = computeShiftLeadersForState(
+            updatedState,
+            selectedDateKey,
+            selectedShift,
+            SHIFT_WINDOWS,
+            windowTaskWeights,
+            taskWeightByIdByWindow,
+            isSoloScoreCappedForShift(selectedDateKey, selectedShift),
+            fairSplitForSelectedDateAndShift
+          )
+          const beforeScore = shiftHudScoreForCelebration(beforeRows.find((r) => r.name === celebrationRewardName))
+          const afterScore = shiftHudScoreForCelebration(afterRows.find((r) => r.name === celebrationRewardName))
+          const slot = shiftHudCelebrationSlotForName(celebrationRewardName, afterRows, activeSplitHudPair)
+          pendingNormalCelebration = { slot, beforeScore, afterScore }
+        }
       }
-    } catch { /* ignore */ }
-
-    if (!existingCompletion) triggerNextTaskPulse(activeTaskId, updatedState)
-    setRewardStars([])
-    window.setTimeout(() => { window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' }) }, 100)
-
+    } catch {
+      /* ignore */
+    }
     if (pendingNormalCelebration) {
-      const { slot, beforeScore, afterScore } = pendingNormalCelebration
-      const starDelay = prefersReducedMotion ? 150 : 650
+      const { slot, beforeScore } = pendingNormalCelebration
+      if (slot === 'p1' || slot === 'p2') {
+        // Batched with setTaskState above (no flushSync): one paint, no afterScore flash.
+        applyShiftHudCelebrationScoreHold(slot, beforeScore)
+      }
+    }
+
+    const afterWindowPercent =
+      beforeWindowPercent < 100 ? computeWindowTaskPercent(updatedState) : beforeWindowPercent
+    const willHitHundredPercent = beforeWindowPercent < 100 && afterWindowPercent === 100
+
+    if (!existingCompletion) {
+      const pulseTaskIdArg = activeTaskId
+      window.requestAnimationFrame(() => triggerNextTaskPulse(pulseTaskIdArg, updatedState))
+    }
+    setRewardStars([])
+    if (!isV3Ui) {
       window.setTimeout(() => {
-        setCelebrateShake(true)
-        window.setTimeout(() => setCelebrateShake(false), 500)
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      }, 100)
+    }
+
+    if (!isV3Ui && pendingNormalCelebration) {
+      const { slot, beforeScore, afterScore } = pendingNormalCelebration
+      const starDelay = celebrationTiming.iceTowelStarDelayMs
+      const starOpts = { bypassReducedMotion: true as const }
+      window.setTimeout(() => {
         if (slot === 'p1' && p1ScoreRef.current) {
           setP1ScoreOverride(beforeScore)
-          setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
           rewardTargetRef.current = p1ScoreRef.current
-          spawnRewardStars(p1ScoreRef.current)
+          spawnRewardStars(p1ScoreRef.current, starOpts)
+          setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
           return
         }
         if (slot === 'p2' && p2ScoreRef.current) {
           setP2ScoreOverride(beforeScore)
-          setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
           rewardTargetRef.current = p2ScoreRef.current
-          spawnRewardStars(p2ScoreRef.current)
+          spawnRewardStars(p2ScoreRef.current, starOpts)
+          setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
           return
         }
         setShiftHudPulse(true)
         const target = shiftHudExtraRef.current || shiftHudHeaderRef.current
         rewardTargetRef.current = target
-        spawnRewardStars(target)
+        spawnRewardStars(target, starOpts)
       }, starDelay)
     }
 
-    if (willHitHundredPercent) {
+    if (!isV3Ui && willHitHundredPercent) {
       const participants = computeCurrentWindowParticipants(updatedState)
       const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-      scheduleWindowCompleteCelebrationAfterScroll({ windowLabel, participants, waitForStars: !!pendingNormalCelebration })
+      startWindowCompleteCelebration({ state: updatedState, windowLabel, participants, waitForStars: !!pendingNormalCelebration })
+      windowCompleteStartScheduledRef.current = false
     }
 
-    setActiveTaskId(null)
-    setShowEmployeeSelector(false)
-    setPendingTowelSide(null)
-    setTowelSidesDraft({ diningBar: null, bowlStation: null })
-    {
-      const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
-      setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
-      setTowelSidesDraftByKey((prev) => {
-        if (!prev[key]) return prev
-        const { [key]: _, ...rest } = prev
-        return rest
-      })
-    }
+    const towelTaskIdSnapshot = activeTaskId
 
-    setIsSaving(true)
-    setSaveError(null)
-    const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
-    const persist = existingCompletion
-      ? persistAdminSetTaskCompletionOrNoop({
-          dateKey: selectedDateKey,
-          windowKey: selectedWindow,
-          taskId: activeTaskId,
-          completion: {
-            assignees: completionToPersist?.assignees ?? newAssignees,
-            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
-            assignedByAdmin: completionToPersist?.assignedByAdmin,
-            completedLate: completionToPersist?.completedLate,
-            lateForgiven: completionToPersist?.lateForgiven,
-            completedEarly: completionToPersist?.completedEarly,
-            towelSides: completionToPersist?.towelSides,
-          },
+    const finishTowelCloseAndPersist = () => {
+      setActiveTaskId(null)
+      setShowEmployeeSelector(false)
+      setPendingTowelSide(null)
+      setTowelSidesDraft({ diningBar: null, bowlStation: null })
+      {
+        const key = `${selectedDateKey}:${selectedWindow}:${towelTaskIdSnapshot}`
+        setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
+        setTowelSidesDraftByKey((prev) => {
+          if (!prev[key]) return prev
+          const { [key]: _, ...rest } = prev
+          return rest
         })
-      : persistCompleteTaskIfAvailableOrNoop({
-          dateKey: selectedDateKey,
-          windowKey: selectedWindow,
-          taskId: activeTaskId,
-          completion: {
-            assignees: completionToPersist?.assignees ?? newAssignees,
-            completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
-            assignedByAdmin: completionToPersist?.assignedByAdmin,
-            completedLate: completionToPersist?.completedLate,
-            lateForgiven: completionToPersist?.lateForgiven,
-            completedEarly: completionToPersist?.completedEarly,
-            towelSides: completionToPersist?.towelSides,
-          },
-        })
+      }
 
-    Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
-      .then(() => {
-        if (import.meta.env.DEV) console.log('Completed task state saved successfully')
-        setIsSaving(false)
-        setCelebrateShake(true)
-        setTimeout(() => setCelebrateShake(false), 500)
-      })
-      .catch((error) => {
-        console.error('Failed to save completion:', error)
-        if (error instanceof Error && error.message === 'already-completed') {
-          setTaskState((prev) => {
-            const next: TaskState = { ...prev }
-            const day = { ...(next[selectedDateKey] ?? {}) }
-            const w = { ...(day[selectedWindow] ?? {}) }
-            if (beforeCompletionSnapshot) {
-              w[activeTaskId] = beforeCompletionSnapshot
-              day[selectedWindow] = w
-              next[selectedDateKey] = day
-            } else {
-              delete w[activeTaskId]
-              day[selectedWindow] = w
-              next[selectedDateKey] = day
-            }
-            return next
+      window.requestAnimationFrame(() => setIsSaving(true))
+      setSaveError(null)
+
+      localWindowWriteGuardRef.current = {
+        dateKey: selectedDateKey,
+        windowKey: selectedWindow,
+        expiresAt: Date.now() + LOCAL_WINDOW_WRITE_GUARD_MS,
+      }
+
+      const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[towelTaskIdSnapshot]
+      const persist = existingCompletion
+        ? persistAdminSetTaskCompletionOrNoop({
+            dateKey: selectedDateKey,
+            windowKey: selectedWindow,
+            taskId: towelTaskIdSnapshot,
+            completion: {
+              assignees: completionToPersist?.assignees ?? newAssignees,
+              completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+              assignedByAdmin: completionToPersist?.assignedByAdmin,
+              completedLate: completionToPersist?.completedLate,
+              lateForgiven: completionToPersist?.lateForgiven,
+              completedEarly: completionToPersist?.completedEarly,
+              towelSides: completionToPersist?.towelSides,
+            },
           })
-          setSaveError('Already completed by someone else.')
-        } else {
-          setSaveError(error instanceof Error && error.message === 'timeout' ? 'Save timed out. Check connection.' : 'Failed to save. Try again.')
+        : persistCompleteTaskIfAvailableOrNoop({
+            dateKey: selectedDateKey,
+            windowKey: selectedWindow,
+            taskId: towelTaskIdSnapshot,
+            completion: {
+              assignees: completionToPersist?.assignees ?? newAssignees,
+              completedAt: completionToPersist?.completedAt ?? new Date().toISOString(),
+              assignedByAdmin: completionToPersist?.assignedByAdmin,
+              completedLate: completionToPersist?.completedLate,
+              lateForgiven: completionToPersist?.lateForgiven,
+              completedEarly: completionToPersist?.completedEarly,
+              towelSides: completionToPersist?.towelSides,
+            },
+          })
+
+      Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
+        .then(() => {
+          if (import.meta.env.DEV) console.log('Completed task state saved successfully')
+          localWindowWriteGuardRef.current = null
+          setIsSaving(false)
+        })
+        .catch((error) => {
+          console.error('Failed to save completion:', error)
+          localWindowWriteGuardRef.current = null
+          if (error instanceof Error && error.message === 'already-completed') {
+            setTaskState((prev) => {
+              const next: TaskState = { ...prev }
+              const day = { ...(next[selectedDateKey] ?? {}) }
+              const w = { ...(day[selectedWindow] ?? {}) }
+              if (beforeCompletionSnapshot) {
+                w[towelTaskIdSnapshot] = beforeCompletionSnapshot
+                day[selectedWindow] = w
+                next[selectedDateKey] = day
+              } else {
+                delete w[towelTaskIdSnapshot]
+                day[selectedWindow] = w
+                next[selectedDateKey] = day
+              }
+              return next
+            })
+            setSaveError('Already completed by someone else.')
+          } else {
+            setSaveError(
+              error instanceof Error && error.message === 'timeout'
+                ? 'Save timed out. Check connection.'
+                : 'Failed to save. Try again.'
+            )
+          }
+          setIsSaving(false)
+        })
+    }
+
+    if (isV3Ui) {
+      setShowEmployeeSelector(false)
+      animateSuccessSlideDownAndDismiss(
+        () => {
+          finishTowelCloseAndPersist()
+          if (pendingNormalCelebration) {
+            playV3TaskCompletionCelebration(pendingNormalCelebration, V3_TASK_COMPLETION_ANIM_OPTS)
+          }
+        },
+        V3_TASK_COMPLETION_ANIM_OPTS,
+      )
+      window.requestAnimationFrame(() => {
+        appendSelectionLog(towelSelectionLogEntry)
+        if (willHitHundredPercent) {
+          const participants = computeCurrentWindowParticipants(updatedState)
+          const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+          startWindowCompleteCelebration({
+            state: updatedState,
+            windowLabel,
+            participants,
+            waitForStars: !!pendingNormalCelebration,
+          })
         }
-        setIsSaving(false)
+        windowCompleteStartScheduledRef.current = false
       })
+    } else {
+      finishTowelCloseAndPersist()
+      if (!willHitHundredPercent) {
+        windowCompleteStartScheduledRef.current = false
+      }
+    }
   }
 
-  const clearCombinedTowelTask = useCallback(async () => {
+  const clearCombinedTowelTask = useCallback(async (opts?: { closeModal?: boolean }) => {
     if (!activeTaskId) return
     if (activeTaskId !== 'towels' && activeTaskId !== 'towels-5pm' && activeTaskId !== 'towels-close') return
+    if (isWindowTaskLocked(activeTaskId)) return
 
     const key = `${selectedDateKey}:${selectedWindow}:${activeTaskId}`
     setTowelSidesDraftDirtyByKey((prev) => ({ ...prev, [key]: false }))
@@ -8584,8 +12055,13 @@ function App() {
     setPendingTowelSide(null)
     setTowelSidesDraft({ diningBar: null, bowlStation: null })
     setAssignees([])
-    setTowelFillAnim(null)
-    setTowelPageEmojis([])
+    if (towelFillAnimCleanupRef.current != null) {
+      window.clearTimeout(towelFillAnimCleanupRef.current)
+      towelFillAnimCleanupRef.current = null
+    }
+    towelDiningTileRef.current?.classList.remove('towel-filling')
+    towelBowlTileRef.current?.classList.remove('towel-filling')
+    towelPageEmojiLayerRef.current?.replaceChildren()
     setSaveError(null)
 
     const beforeCompletionSnapshot = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
@@ -8623,6 +12099,11 @@ function App() {
         new Promise((r) => setTimeout(r, 350)),
       ])
       setIsSaving(false)
+      if (opts?.closeModal) {
+        pendingScrollToTaskIdRef.current = activeTaskId
+        setShowEmployeeSelector(false)
+        setActiveTaskId(null)
+      }
     } catch (error) {
       console.error('Failed to clear combined towel completion:', error)
       setTaskState((prev) => {
@@ -8637,15 +12118,25 @@ function App() {
       setSaveError(error instanceof Error && error.message === 'timeout' ? 'Clear timed out. Check connection.' : 'Failed to clear. Try again.')
       setIsSaving(false)
     }
-  }, [activeTask?.name, activeTaskId, appendSelectionLog, isAdmin, persistAdminClearTaskCompletionOrNoop, selectedDateKey, selectedWindow, taskState])
+  }, [
+    activeTask?.name,
+    activeTaskId,
+    appendSelectionLog,
+    isAdmin,
+    persistAdminClearTaskCompletionOrNoop,
+    selectedDateKey,
+    selectedWindow,
+    taskState,
+    isWindowTaskLocked,
+  ])
 
   const triggerIceFillAnim = useCallback((side: 'left' | 'right') => {
     if (prefersReducedMotion) return
-    const key = Date.now()
     const count = 6
     const chars: Array<'❄️' | '🧊'> = ['❄️', '🧊']
     const tileEl = side === 'left' ? iceLeftTileRef.current : iceRightTileRef.current
-    if (!tileEl) return
+    const layerEl = icePageEmojiLayerRef.current
+    if (!tileEl || !layerEl) return
     const rect = tileEl.getBoundingClientRect()
     const startY = -56
     const emojis = Array.from({ length: count }).map((_, i) => {
@@ -8657,7 +12148,6 @@ function App() {
       const sizePx = 34 + Math.floor(Math.random() * 14)
       const char = chars[Math.floor(Math.random() * chars.length)] || '❄️'
       return {
-        id: `${key}-${side}-${i}-${Math.random().toString(16).slice(2)}`,
         char,
         x: x0,
         y: startY,
@@ -8668,25 +12158,44 @@ function App() {
         sizePx,
       }
     })
-    // Force re-trigger even if same side is picked again while already filled.
-    setIceFillAnim(null)
+    const maxMs = emojis.reduce((m, e) => Math.max(m, e.delayMs + e.durMs), 0) + 100
+    if (iceFillAnimCleanupRef.current != null) {
+      window.clearTimeout(iceFillAnimCleanupRef.current)
+      iceFillAnimCleanupRef.current = null
+    }
+    // Defer until after React commits draft/filled class from the same event handler.
     window.setTimeout(() => {
-      setIceFillAnim({ side, key })
-      setIcePageEmojis(emojis)
-      const maxMs = emojis.reduce((m, e) => Math.max(m, e.delayMs + e.durMs), 0) + 100
-      window.setTimeout(() => {
-        setIceFillAnim(null)
-        setIcePageEmojis([])
+      tileEl.classList.remove('ice-filling')
+      void tileEl.offsetWidth
+      tileEl.classList.add('ice-filling')
+      layerEl.replaceChildren()
+      for (const e of emojis) {
+        const span = document.createElement('span')
+        span.className = 'ice-page-emoji'
+        span.style.left = `${e.x}px`
+        span.style.top = `${e.y}px`
+        span.style.setProperty('--dx', `${e.dx}px`)
+        span.style.setProperty('--dy', `${e.dy}px`)
+        span.style.animationDelay = `${e.delayMs}ms`
+        span.style.animationDuration = `${e.durMs}ms`
+        span.style.fontSize = `${e.sizePx}px`
+        span.textContent = e.char
+        layerEl.appendChild(span)
+      }
+      iceFillAnimCleanupRef.current = window.setTimeout(() => {
+        iceFillAnimCleanupRef.current = null
+        tileEl.classList.remove('ice-filling')
+        layerEl.replaceChildren()
       }, maxMs)
     }, 0)
   }, [prefersReducedMotion])
 
   const triggerTowelFillAnim = useCallback((side: 'diningBar' | 'bowlStation') => {
     if (prefersReducedMotion) return
-    const key = Date.now()
     const count = 6
     const tileEl = side === 'diningBar' ? towelDiningTileRef.current : towelBowlTileRef.current
-    if (!tileEl) return
+    const layerEl = towelPageEmojiLayerRef.current
+    if (!tileEl || !layerEl) return
     const rect = tileEl.getBoundingClientRect()
     const startY = -56
     const emojis = Array.from({ length: count }).map((_, i) => {
@@ -8697,7 +12206,6 @@ function App() {
       const durMs = 700 + Math.floor(Math.random() * 260)
       const sizePx = 34 + Math.floor(Math.random() * 14)
       return {
-        id: `${key}-${side}-${i}-${Math.random().toString(16).slice(2)}`,
         x: x0,
         y: startY,
         dx: x1 - x0,
@@ -8707,14 +12215,33 @@ function App() {
         sizePx,
       }
     })
-    setTowelFillAnim(null)
+    const maxMs = emojis.reduce((m, e) => Math.max(m, e.delayMs + e.durMs), 0) + 100
+    if (towelFillAnimCleanupRef.current != null) {
+      window.clearTimeout(towelFillAnimCleanupRef.current)
+      towelFillAnimCleanupRef.current = null
+    }
     window.setTimeout(() => {
-      setTowelFillAnim({ side, key })
-      setTowelPageEmojis(emojis)
-      const maxMs = emojis.reduce((m, e) => Math.max(m, e.delayMs + e.durMs), 0) + 100
-      window.setTimeout(() => {
-        setTowelFillAnim(null)
-        setTowelPageEmojis([])
+      tileEl.classList.remove('towel-filling')
+      void tileEl.offsetWidth
+      tileEl.classList.add('towel-filling')
+      layerEl.replaceChildren()
+      for (const e of emojis) {
+        const span = document.createElement('span')
+        span.className = 'towel-page-emoji'
+        span.style.left = `${e.x}px`
+        span.style.top = `${e.y}px`
+        span.style.setProperty('--dx', `${e.dx}px`)
+        span.style.setProperty('--dy', `${e.dy}px`)
+        span.style.animationDelay = `${e.delayMs}ms`
+        span.style.animationDuration = `${e.durMs}ms`
+        span.style.fontSize = `${e.sizePx}px`
+        span.textContent = '🧼'
+        layerEl.appendChild(span)
+      }
+      towelFillAnimCleanupRef.current = window.setTimeout(() => {
+        towelFillAnimCleanupRef.current = null
+        tileEl.classList.remove('towel-filling')
+        layerEl.replaceChildren()
       }, maxMs)
     }, 0)
   }, [prefersReducedMotion])
@@ -8722,6 +12249,10 @@ function App() {
   const activeCompletion = activeTask
     ? statusByTask[activeTask.id]?.completion
     : undefined
+
+  const isFullyCompleted =
+    activeTaskId != null ? (statusByTask[activeTaskId]?.status === 'done') : false
+  const showCompletedResetUx = isFullyCompleted
 
   // Admin-only: explicitly mark an existing completion as "assigned" (⭐) or normal completion.
   // Default admin completion is normal (assignedByAdmin=false); this control is the explicit opt-in.
@@ -8913,6 +12444,7 @@ function App() {
 
     const beforeWindowPercent = computeWindowTaskPercent(taskState)
 
+    windowCompleteStartScheduledRef.current = true
     const updatedState = await new Promise<TaskState>((resolve) => {
       setTaskState((prev) => {
         const next: TaskState = { ...prev }
@@ -8938,8 +12470,13 @@ function App() {
     if (beforeWindowPercent < 100 && afterWindowPercent === 100) {
       const participants = computeCurrentWindowParticipants(updatedState)
       const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-      scheduleWindowCompleteCelebrationAfterScroll({ windowLabel, participants, alsoScrollToTop: true })
+      startWindowCompleteCelebration({
+        state: updatedState,
+        windowLabel,
+        participants,
+      })
     }
+    windowCompleteStartScheduledRef.current = false
 
     // Trigger pulse on the next incomplete task (local-only celebration)
     triggerNextTaskPulse(activeTaskId, updatedState)
@@ -9002,7 +12539,7 @@ function App() {
         }
         setIsSaving(false)
       })
-  }, [activeCompletion, activeTaskId, computeWindowTaskPercent, getLateAfterForWindow, isAdmin, selectedDate, selectedDateKey, selectedWindow, taskState, triggerNextTaskPulse, triggerWindowCompleteCelebration])
+  }, [activeCompletion, activeTaskId, computeWindowTaskPercent, getLateAfterForWindow, isAdmin, selectedDate, selectedDateKey, selectedWindow, startWindowCompleteCelebration, taskState, triggerNextTaskPulse])
 
   /**
    * Auto-assign combined ice tasks (ice-5pm / ice-close) to the last Left/Right assignees.
@@ -9010,6 +12547,10 @@ function App() {
    */
   const handleAutoAssignIce = useCallback(async () => {
     if (activeTaskId !== 'ice-5pm' && activeTaskId !== 'ice-close') return
+    if (isWindowTaskLocked(activeTaskId)) {
+      setSaveError('This window is locked until unlock time.')
+      return
+    }
     if (activeCompletion) {
       setSaveError('Task already completed.')
       return
@@ -9048,6 +12589,7 @@ function App() {
 
     const beforeWindowPercent = computeWindowTaskPercent(taskState)
 
+    windowCompleteStartScheduledRef.current = true
     const updatedState = await new Promise<TaskState>((resolve) => {
       setTaskState((prev) => {
         const next: TaskState = { ...prev }
@@ -9074,8 +12616,13 @@ function App() {
     if (beforeWindowPercent < 100 && afterWindowPercent === 100) {
       const participants = computeCurrentWindowParticipants(updatedState)
       const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-      scheduleWindowCompleteCelebrationAfterScroll({ windowLabel, participants, alsoScrollToTop: true })
+      startWindowCompleteCelebration({
+        state: updatedState,
+        windowLabel,
+        participants,
+      })
     }
+    windowCompleteStartScheduledRef.current = false
 
     // Trigger pulse on the next incomplete task (local-only celebration)
     triggerNextTaskPulse(activeTaskId, updatedState)
@@ -9141,7 +12688,7 @@ function App() {
         }
         setIsSaving(false)
       })
-  }, [activeCompletion, activeTaskId, computeWindowTaskPercent, isAdmin, selectedDate, selectedDateKey, selectedWindow, taskState, triggerNextTaskPulse, triggerWindowCompleteCelebration])
+  }, [activeCompletion, activeTaskId, appendSelectionLog, computeWindowTaskPercent, isAdmin, isWindowTaskLocked, selectedDate, selectedDateKey, selectedWindow, startWindowCompleteCelebration, taskState, triggerNextTaskPulse])
 
   /**
    * Auto-assign peanuts-noodles-close to the last person who completed it.
@@ -9149,6 +12696,10 @@ function App() {
    */
   const handleAutoAssignPeanutsNoodles = useCallback(async () => {
     if (activeTaskId !== 'peanuts-noodles-close') return
+    if (isWindowTaskLocked(activeTaskId)) {
+      setSaveError('This window is locked until unlock time.')
+      return
+    }
     if (activeCompletion) {
       setSaveError('Task already completed.')
       return
@@ -9183,6 +12734,7 @@ function App() {
 
     const beforeWindowPercent = computeWindowTaskPercent(taskState)
 
+    windowCompleteStartScheduledRef.current = true
     const updatedState = await new Promise<TaskState>((resolve) => {
       setTaskState((prev) => {
         const next: TaskState = { ...prev }
@@ -9208,8 +12760,13 @@ function App() {
     if (beforeWindowPercent < 100 && afterWindowPercent === 100) {
       const participants = computeCurrentWindowParticipants(updatedState)
       const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-      scheduleWindowCompleteCelebrationAfterScroll({ windowLabel, participants, alsoScrollToTop: true })
+      startWindowCompleteCelebration({
+        state: updatedState,
+        windowLabel,
+        participants,
+      })
     }
+    windowCompleteStartScheduledRef.current = false
 
     // Trigger pulse on the next incomplete task (local-only celebration)
     triggerNextTaskPulse(activeTaskId, updatedState)
@@ -9272,13 +12829,17 @@ function App() {
         }
         setIsSaving(false)
       })
-  }, [activeCompletion, activeTaskId, computeWindowTaskPercent, isAdmin, selectedDate, selectedDateKey, selectedWindow, taskState, triggerNextTaskPulse, triggerWindowCompleteCelebration])
+  }, [activeCompletion, activeTaskId, computeWindowTaskPercent, isAdmin, selectedDate, selectedDateKey, selectedWindow, startWindowCompleteCelebration, taskState, triggerNextTaskPulse])
 
   const saveOrderReport = useCallback(
     async (counts: Record<string, number>, opts?: { clear?: boolean }) => {
       if (!activeTaskId) return
       if (!isOrderReportTaskId) return
-      if (!isTodaySelected && !isAdmin) return
+      if (!canEditTaskAssignmentsOnSelectedDate) return
+      if (isWindowTaskLocked(activeTaskId)) {
+        setSaveError('This window is locked until unlock time.')
+        return
+      }
 
       const [e0, e1] = orderReportEmployees
       if (!e0 || !e1 || e0 === e1) {
@@ -9395,6 +12956,7 @@ function App() {
 
       const beforeWindowPercent = computeWindowTaskPercent(taskState)
 
+      windowCompleteStartScheduledRef.current = true
       const updatedState = await new Promise<TaskState>((resolve) => {
         setTaskState((prev) => {
           const next: TaskState = { ...prev }
@@ -9441,7 +13003,9 @@ function App() {
           selectedShift,
           SHIFT_WINDOWS,
           windowTaskWeights,
-          taskWeightByIdByWindow
+          taskWeightByIdByWindow,
+          isSoloScoreCappedForShift(selectedDateKey, selectedShift),
+          fairSplitForSelectedDateAndShift
         )
         const afterRowsRaw = computeShiftLeadersForState(
           updatedState,
@@ -9449,7 +13013,9 @@ function App() {
           selectedShift,
           SHIFT_WINDOWS,
           windowTaskWeights,
-          taskWeightByIdByWindow
+          taskWeightByIdByWindow,
+          isSoloScoreCappedForShift(selectedDateKey, selectedShift),
+          fairSplitForSelectedDateAndShift
         )
 
         const beforeParticipants = computeShiftHudParticipantsForState(taskState, selectedDateKey, selectedShift, SHIFT_WINDOWS)
@@ -9457,15 +13023,14 @@ function App() {
         const beforeRows = beforeRowsRaw.filter((r) => beforeParticipants.has(r.name))
         const afterRows = afterRowsRaw.filter((r) => afterParticipants.has(r.name))
 
-        const afterP1 = afterRows[0]
-        const afterP2 = afterRows[1]
+        const { p1: afterP1, p2: afterP2 } = shiftHudCelebrationPairRows(afterRows, activeSplitHudPair)
 
         const p1Name = afterP1?.name
         const p2Name = afterP2?.name
-        const p1From = p1Name ? (beforeRows.find((r) => r.name === p1Name)?.score ?? 0) : 0
-        const p2From = p2Name ? (beforeRows.find((r) => r.name === p2Name)?.score ?? 0) : 0
-        const p1To = p1Name ? (afterRows.find((r) => r.name === p1Name)?.score ?? 0) : 0
-        const p2To = p2Name ? (afterRows.find((r) => r.name === p2Name)?.score ?? 0) : 0
+        const p1From = p1Name ? shiftHudScoreForCelebration(beforeRows.find((r) => r.name === p1Name)) : 0
+        const p2From = p2Name ? shiftHudScoreForCelebration(beforeRows.find((r) => r.name === p2Name)) : 0
+        const p1To = p1Name ? shiftHudScoreForCelebration(afterRows.find((r) => r.name === p1Name)) : 0
+        const p2To = p2Name ? shiftHudScoreForCelebration(afterRows.find((r) => r.name === p2Name)) : 0
 
         // Set starting values immediately so the user sees "before" values, then animate to "after".
         const startAt = Date.now()
@@ -9478,34 +13043,64 @@ function App() {
           setScoreAnimP2({ from: p2From, to: p2To, startedAt: startAt })
         }
 
-        // Order Report celebration: wait for modal close + scroll-lock release, then smooth scroll to top + stars from both sides.
+        // Order Report: v2 scrolls to top for HUD visibility; v3 uses floating Shift HUD notification (no scroll).
         setRewardStars([])
-        // Wait for scroll-lock to fully release after modal closes, then smooth scroll to top
-        window.setTimeout(() => {
-          window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
-          // Wait for smooth scroll to complete before spawning stars
-          const starDelay = prefersReducedMotion ? 50 : 550
+        if (!isV3Ui) {
           window.setTimeout(() => {
-            const hasP1Target = afterP1 && p1ScoreRef.current
-            const hasP2Target = afterP2 && p2ScoreRef.current
-            
-            if (hasP1Target) {
-              spawnRewardStars(p1ScoreRef.current, { origin: 'left', count: 18, append: true })
-            }
-            if (hasP2Target) {
-              spawnRewardStars(p2ScoreRef.current, { origin: 'right', count: 18, append: true })
-            }
-            
-            // Fallback: if no leaders exist yet, spawn stars toward the shift HUD header from both sides
-            if (!hasP1Target && !hasP2Target) {
-              const fallbackTarget = shiftHudHeaderRef.current
-              if (fallbackTarget) {
-                spawnRewardStars(fallbackTarget, { origin: 'left', count: 18, append: false })
-                spawnRewardStars(fallbackTarget, { origin: 'right', count: 18, append: true })
+            window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })
+            const starDelay = prefersReducedMotion ? 50 : 550
+            window.setTimeout(() => {
+              const hasP1Target = afterP1 && p1ScoreRef.current
+              const hasP2Target = afterP2 && p2ScoreRef.current
+
+              if (hasP1Target) {
+                spawnRewardStars(p1ScoreRef.current, { origin: 'left', count: 18, append: true })
               }
-            }
-          }, starDelay)
-        }, 100)
+              if (hasP2Target) {
+                spawnRewardStars(p2ScoreRef.current, { origin: 'right', count: 18, append: true })
+              }
+
+              if (!hasP1Target && !hasP2Target) {
+                const fallbackTarget = shiftHudHeaderRef.current
+                if (fallbackTarget) {
+                  spawnRewardStars(fallbackTarget, { origin: 'left', count: 18, append: false })
+                  spawnRewardStars(fallbackTarget, { origin: 'right', count: 18, append: true })
+                }
+              }
+            }, starDelay)
+          }, 100)
+        } else {
+          window.setTimeout(() => {
+            const useMainHud = isMainShiftHudMostlyVisible()
+            const openedNotify = !useMainHud
+            if (openedNotify) setV3ShiftNotifyOpen(true)
+            const starDelay = prefersReducedMotion ? 50 : 400
+            window.setTimeout(() => {
+              const hasP1Target = afterP1 && (useMainHud ? p1ScoreRef.current : v3NotifyP1ScoreRef.current)
+              const hasP2Target = afterP2 && (useMainHud ? p2ScoreRef.current : v3NotifyP2ScoreRef.current)
+
+              if (hasP1Target) {
+                const t = (useMainHud ? p1ScoreRef.current : v3NotifyP1ScoreRef.current) as HTMLElement
+                spawnRewardStars(t, { origin: 'left', count: 18, append: true })
+              }
+              if (hasP2Target) {
+                const t = (useMainHud ? p2ScoreRef.current : v3NotifyP2ScoreRef.current) as HTMLElement
+                spawnRewardStars(t, { origin: 'right', count: 18, append: true })
+              }
+
+              if (!hasP1Target && !hasP2Target) {
+                const fallbackTarget = useMainHud
+                  ? (shiftHudExtraRef.current || shiftHudHeaderRef.current)
+                  : v3ShiftNotifyHeaderRef.current
+                if (fallbackTarget) {
+                  spawnRewardStars(fallbackTarget, { origin: 'left', count: 18, append: false })
+                  spawnRewardStars(fallbackTarget, { origin: 'right', count: 18, append: true })
+                }
+              }
+              if (openedNotify) window.setTimeout(() => setV3ShiftNotifyOpen(false), 2600)
+            }, starDelay)
+          }, 100)
+        }
       } catch {
         // ignore celebration failures
       }
@@ -9514,12 +13109,14 @@ function App() {
       if (willHitHundredPercent) {
         const participants = computeCurrentWindowParticipants(updatedState)
         const windowLabel = getWindowLabel(selectedDate, selectedWindow)
-        scheduleWindowCompleteCelebrationAfterScroll({
+        startWindowCompleteCelebration({
+          state: updatedState,
           windowLabel,
           participants,
           waitForStars: true,
         })
       }
+      windowCompleteStartScheduledRef.current = false
 
       // Close immediately for fast feedback
       setActiveTaskId(null)
@@ -9557,9 +13154,6 @@ function App() {
       Promise.all([withTimeout(persist, 8000), new Promise((resolve) => setTimeout(resolve, 600))])
         .then(() => {
           setIsSaving(false)
-          // Trigger screen shake celebration for Order Report
-          setCelebrateShake(true)
-          setTimeout(() => setCelebrateShake(false), 500)
         })
         .catch((error) => {
           console.error('Failed to save Order Report:', error)
@@ -9574,12 +13168,15 @@ function App() {
     [
       activeTaskId,
       breakSelection?.slots,
+      canEditTaskAssignmentsOnSelectedDate,
       computeWindowTaskPercent,
       getLateAfterForWindow,
       getWeightsForDateKey,
       isAdmin,
       isOrderReportTaskId,
       isTodaySelected,
+      isV3Ui,
+      isWindowTaskLocked,
       now,
       orderReportEmployees,
       prefersReducedMotion,
@@ -9590,7 +13187,7 @@ function App() {
       SHIFT_WINDOWS,
       spawnRewardStars,
       taskState,
-      triggerWindowCompleteCelebration,
+      startWindowCompleteCelebration,
       withTimeout,
     ]
   )
@@ -9642,8 +13239,18 @@ function App() {
         return
       }
 
-      // Always use the current visible tasks to ensure new tasks are included
-      const currentOrder = currentTasks.map(t => t.id)
+      // v3: reorder only from admin portal (taskOrderV3), not drag-and-drop
+      if (uiVariant === 'v3') {
+        setDraggedTaskId(null)
+        setDragOverTaskId(null)
+        return
+      }
+
+      // Match on-screen order: v3 stage view uses stage1 then stage2, not raw taskOrder interleaving
+      const currentOrder =
+        stagedTasks != null
+          ? [...stagedTasks.stage1.map((t) => t.id), ...stagedTasks.stage2.map((t) => t.id)]
+          : currentTasks.map((t) => t.id)
       const draggedIndex = currentOrder.indexOf(draggedTaskId)
       const targetIndex = currentOrder.indexOf(targetTaskId)
 
@@ -9661,31 +13268,100 @@ function App() {
       setDraggedTaskId(null)
       setDragOverTaskId(null)
     },
-    [currentTasks, draggedTaskId, isAdmin, selectedWindow, taskOrder]
+    [currentTasks, draggedTaskId, isAdmin, selectedWindow, stagedTasks, taskOrder, uiVariant]
   )
 
   const handleTaskClick = useCallback(
-    (taskId: string) => {
-      if (shouldIgnoreClick()) return
+    (taskId: string, opts?: { bypassSyntheticClickGuard?: boolean }) => {
+      if (!opts?.bypassSyntheticClickGuard && shouldIgnoreClick()) return
+      if (isWindowTaskLocked(taskId)) return
       if (!draggedTaskId) {
+        const el = document.querySelector(`[data-task-id="${taskId}"]`)
+        if (el) activeCardRectRef.current = el.getBoundingClientRect()
         captureScrollYForNextLock()
         setActiveTaskId(taskId)
       }
     },
-    [captureScrollYForNextLock, draggedTaskId, shouldIgnoreClick]
+    [captureScrollYForNextLock, draggedTaskId, isWindowTaskLocked, shouldIgnoreClick]
   )
 
-  // Shared tap-vs-scroll detector so scrolling stays smooth.
-  const tapStateRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
-  const beginTap = useCallback(
-    (e: React.TouchEvent) => {
-      recordTouch()
-      const t = e.touches && e.touches.length ? e.touches[0] : null
-      if (!t) return
-      tapStateRef.current = { x: t.clientX, y: t.clientY, moved: false }
+  /**
+   * Shared (non-ice) split-panel tasks: open the normal task flow so the user confirms
+   * completion in the modal (split picker restricted to A/B via splitPickerRestrict).
+   */
+  const handleSplitSuggestCardClick = useCallback(
+    (taskId: string) => {
+      taskSplitOpenPrefillRef.current = null
+      handleTaskClick(taskId, { bypassSyntheticClickGuard: true })
     },
-    [recordTouch]
+    [handleTaskClick],
   )
+
+  const splitPickerRestrict = useMemo<string[] | null>(() => {
+    if (taskSplitInlinePhase !== 'active') return null
+    const r = taskSplitResult
+    if (!r || !activeTaskId) return null
+    const shared = (r.finalSharedTaskIds || []).includes(activeTaskId)
+    const assigned = activeTaskId in r.finalAssignment
+    if (!shared && !assigned) return null
+    const a = String(r.employeeA || '').trim()
+    const b = String(r.employeeB || '').trim()
+    if (!a || !b || a === b) return null
+    return [a, b]
+  }, [taskSplitInlinePhase, taskSplitResult, activeTaskId])
+
+  const randomTaskPickPool = useMemo(() => {
+    return currentTasks.filter((task) => {
+      const taskStatus = statusByTask[task.id]?.status ?? 'pending'
+      if (taskStatus === 'done') return false
+      const completion = statusByTask[task.id]?.completion
+      const interactionLocked =
+        (selectedWindow === '17' && !!completion?.deferredToClose) ||
+        (task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift)
+      return !interactionLocked
+    })
+  }, [currentTasks, selectedBothDoubleShift, selectedWindow, statusByTask])
+
+  const handleRandomTaskPick = useCallback(() => {
+    if (randomTaskPickPool.length === 0) return
+    const task = randomTaskPickPool[Math.floor(Math.random() * randomTaskPickPool.length)]!
+    // Touch path: dice onClick guards duplicate synthetic click; bypass here so open isn't blocked.
+    handleTaskClick(task.id, { bypassSyntheticClickGuard: true })
+  }, [handleTaskClick, randomTaskPickPool])
+
+  /**
+   * Greeting 🎲 (opt-in via admin `diceEnabled`):
+   *  - Beta only: may seed a minimal two-person break plan for testing.
+   *  - 5PM/9PM: opens the fair-split setup modal → AI panel.
+   *  - Other windows: picks a random incomplete task.
+   */
+  const handleDiceTap = useCallback(() => {
+    lastInteractionTsRef.current = Date.now()
+    if (deploymentChannel === 'beta') {
+      seedBetaDiceTestShiftPlanIfNeeded()
+    }
+    if (selectedWindow === '17' || selectedWindow === '21') {
+      openTaskSplitSetup()
+      return
+    }
+    handleRandomTaskPick()
+  }, [deploymentChannel, handleRandomTaskPick, openTaskSplitSetup, seedBetaDiceTestShiftPlanIfNeeded, selectedWindow])
+
+  // Shared tap-vs-scroll detector so scrolling stays smooth.
+  // Threshold is intentionally forgiving: on a large, low-DPI iPad a stationary
+  // fat-finger tap can drift several px, and a busy main thread (A-series chip)
+  // makes that worse. Anything under this is treated as a tap, not a scroll.
+  const TAP_MOVE_THRESHOLD = 16
+  const tapStateRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
+  const beginTap = useCallback((e: React.TouchEvent) => {
+    // NOTE: do NOT recordTouch() here. The "ignore the synthetic click" window
+    // must only start once a tap is actually handled in endTap, otherwise a tap
+    // that endTap drops (e.g. flagged as moved) also has its click fallback
+    // suppressed, dropping the interaction entirely and forcing repeat taps.
+    const t = e.touches && e.touches.length ? e.touches[0] : null
+    if (!t) return
+    tapStateRef.current = { x: t.clientX, y: t.clientY, moved: false }
+  }, [])
   const moveTap = useCallback((e: React.TouchEvent) => {
     const s = tapStateRef.current
     if (!s) return
@@ -9693,16 +13369,192 @@ function App() {
     if (!t) return
     const dx = Math.abs(t.clientX - s.x)
     const dy = Math.abs(t.clientY - s.y)
-    if (dx > 10 || dy > 10) s.moved = true
+    if (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD) s.moved = true
   }, [])
-  const endTap = useCallback((action: () => void, e: React.TouchEvent) => {
-    const s = tapStateRef.current
-    tapStateRef.current = null
-    if (!s || s.moved) return
-    action()
-    // Prevent delayed synthetic click (but only for true taps).
-    e.preventDefault()
+  const endTap = useCallback(
+    (action: () => void, e: React.TouchEvent) => {
+      const s = tapStateRef.current
+      tapStateRef.current = null
+      if (!s) return
+      // Re-check movement from the lifted finger. touchmove can fail to fire on a
+      // busy main thread, so don't rely on it alone to classify a tap.
+      let moved = s.moved
+      const ct = e.changedTouches && e.changedTouches.length ? e.changedTouches[0] : null
+      if (ct) {
+        const dx = Math.abs(ct.clientX - s.x)
+        const dy = Math.abs(ct.clientY - s.y)
+        if (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD) moved = true
+      }
+      if (moved) return
+      action()
+      // Successful tap: start the ignore-click window and prevent the delayed
+      // synthetic click so the action doesn't double-fire.
+      recordTouch()
+      e.preventDefault()
+    },
+    [recordTouch]
+  )
+
+  const POWERED_BY_TAP_UNLOCK_COUNT = 5
+  const POWERED_BY_TAP_RESET_MS = 2000
+
+  const showWindowUnlockToast = useCallback((windowLabel: string) => {
+    if (windowUnlockToastTimeoutRef.current) window.clearTimeout(windowUnlockToastTimeoutRef.current)
+    setWindowUnlockToast(windowLabel)
+    windowUnlockToastTimeoutRef.current = window.setTimeout(() => {
+      windowUnlockToastTimeoutRef.current = null
+      setWindowUnlockToast(null)
+    }, 2200)
   }, [])
+
+  const handlePoweredByUnlockTap = useCallback(() => {
+    if (!windowTimeLocked) {
+      poweredByTapRef.current = { count: 0, lastMs: 0 }
+      return
+    }
+    const nowMs = Date.now()
+    if (nowMs - poweredByTapRef.current.lastMs > POWERED_BY_TAP_RESET_MS) {
+      poweredByTapRef.current = { count: 1, lastMs: nowMs }
+      return
+    }
+    poweredByTapRef.current.count += 1
+    poweredByTapRef.current.lastMs = nowMs
+    if (poweredByTapRef.current.count < POWERED_BY_TAP_UNLOCK_COUNT) return
+    poweredByTapRef.current = { count: 0, lastMs: 0 }
+    setManualWindowUnlockKeys((prev) => {
+      const next = new Set(prev)
+      next.add(windowUnlockKey)
+      return next
+    })
+    showWindowUnlockToast(getWindowLabel(selectedDate, selectedWindow))
+  }, [selectedDate, selectedWindow, showWindowUnlockToast, windowTimeLocked, windowUnlockKey])
+
+  const dailyTaskTeaserEl = useMemo(
+    () =>
+      !shouldShowDailyTaskTeaser || suppressDailyTaskInlineUnmount ? null : (
+        <DailyTaskTeaserCard
+          ref={dailyTaskTeaserCardRef}
+          layoutLocked={isTaskCardModalOpen}
+          label={
+            activeDailyTaskRun?.revealedAtMs
+              ? activeDailyTaskDef?.name || (isDemoDaySelected ? 'Demo Task' : "Today's Task")
+              : isDemoDaySelected
+                ? 'Demo Task'
+                : "Today's Task"
+          }
+          completed={!!activeDailyTaskRun?.completedAtMs}
+          completedBy={
+            (activeDailyTaskRun?.completedByList && activeDailyTaskRun.completedByList.length
+              ? activeDailyTaskRun.completedByList.join(' + ')
+              : '') ||
+            activeDailyTaskRun?.completedBy ||
+            ''
+          }
+          attention={
+            !isTaskCardModalOpen &&
+            !prefersReducedMotion &&
+            !(activeDailyTaskRun?.revealedAtMs || activeDailyTaskRun?.completedAtMs)
+          }
+          onOpen={() => {
+            if (shouldIgnoreClick()) return
+            captureScrollYForNextLock()
+            if (activeDailyTaskRun?.revealedAtMs && !activeDailyTaskRun?.completedAtMs) {
+              setDailyTaskStep(1)
+            }
+            setShowDailyTaskModal(true)
+          }}
+          onTouchStart={beginTap}
+          onTouchMove={moveTap}
+          onTouchEnd={(e) =>
+            endTap(() => {
+              captureScrollYForNextLock()
+              if (activeDailyTaskRun?.revealedAtMs && !activeDailyTaskRun?.completedAtMs) {
+                setDailyTaskStep(1)
+              }
+              setShowDailyTaskModal(true)
+            }, e)
+          }
+        />
+      ),
+    [
+      shouldShowDailyTaskTeaser,
+      suppressDailyTaskInlineUnmount,
+      isTaskCardModalOpen,
+      activeDailyTaskRun,
+      activeDailyTaskDef?.name,
+      isDemoDaySelected,
+      prefersReducedMotion,
+      shouldIgnoreClick,
+      captureScrollYForNextLock,
+      beginTap,
+      moveTap,
+      endTap,
+    ]
+  )
+
+  const showFloatingDailyTaskNotification =
+    shouldShowDailyTaskTeaser &&
+    !suppressDailyTaskFloating &&
+    !activeDailyTaskRun?.completedAtMs &&
+    taskProgress.percent === 100 &&
+    floatingDailyTaskDelayReady
+
+  const dailyTaskFloatingNotificationEl = useMemo(
+    () =>
+      !showFloatingDailyTaskNotification ? null : (
+        <div className="daily-task-floating-notice" aria-live="polite">
+          <DailyTaskTeaserCard
+            className="daily-task-teaser--notification"
+            ref={dailyTaskTeaserCardRef}
+            label={
+              activeDailyTaskRun?.revealedAtMs
+                ? activeDailyTaskDef?.name || (isDemoDaySelected ? 'Demo Task' : "Today's Task")
+                : isDemoDaySelected
+                  ? 'Demo Task'
+                  : "Today's Task"
+            }
+            subtitle="Daily task incomplete - tap to open"
+            completed={false}
+            completedBy=""
+            attention={!prefersReducedMotion}
+            onOpen={() => {
+              if (shouldIgnoreClick()) return
+              captureScrollYForNextLock()
+              if (activeDailyTaskRun?.revealedAtMs && !activeDailyTaskRun?.completedAtMs) {
+                setDailyTaskStep(1)
+              }
+              setShowDailyTaskModal(true)
+            }}
+            onTouchStart={beginTap}
+            onTouchMove={moveTap}
+            onTouchEnd={(e) =>
+              endTap(() => {
+                captureScrollYForNextLock()
+                if (activeDailyTaskRun?.revealedAtMs && !activeDailyTaskRun?.completedAtMs) {
+                  setDailyTaskStep(1)
+                }
+                setShowDailyTaskModal(true)
+              }, e)
+            }
+          />
+        </div>
+      ),
+    [
+      activeDailyTaskDef?.name,
+      activeDailyTaskRun?.completedAtMs,
+      activeDailyTaskRun?.revealedAtMs,
+      beginTap,
+      captureScrollYForNextLock,
+      endTap,
+      isDemoDaySelected,
+      prefersReducedMotion,
+      shouldIgnoreClick,
+      showFloatingDailyTaskNotification,
+      moveTap,
+    ]
+  )
+
+  const dailyTaskInlineTeaserEl = showFloatingDailyTaskNotification ? null : dailyTaskTeaserEl
 
   const handleTaskTouchStart = useCallback(
     (_taskId: string, e: React.TouchEvent) => {
@@ -9721,18 +13573,517 @@ function App() {
     (taskId: string, e: React.TouchEvent) => {
       if (isAdmin) return
       endTap(() => {
+        if (isWindowTaskLocked(taskId)) return
         if (!draggedTaskId) {
+          const el = document.querySelector(`[data-task-id="${taskId}"]`)
+          if (el) activeCardRectRef.current = el.getBoundingClientRect()
           captureScrollYForNextLock()
           setActiveTaskId(taskId)
         }
       }, e)
     },
-    [captureScrollYForNextLock, draggedTaskId, endTap, isAdmin]
+    [captureScrollYForNextLock, draggedTaskId, endTap, isAdmin, isWindowTaskLocked]
+  )
+
+  const handleWindowCompleteTileClick = useCallback(
+    (taskId: string) => {
+      if (!taskId) return
+      if (shouldIgnoreClick()) return
+      captureScrollYForNextLock()
+      setActiveTaskId(taskId)
+    },
+    [captureScrollYForNextLock, shouldIgnoreClick]
+  )
+
+  const animateCloseAndDismiss = useCallback(() => {
+    if (isClosingModalRef.current) return
+    const sheet = modalSheetRef.current
+    const targetCardRect = (() => {
+      if (activeTaskId) {
+        const liveCard = document.querySelector<HTMLElement>(`[data-task-id="${activeTaskId}"]`)
+        if (liveCard) return liveCard.getBoundingClientRect()
+      }
+      return activeCardRectRef.current
+    })()
+
+    if (!sheet || !targetCardRect || prefersReducedMotion || typeof sheet.animate !== 'function') {
+      activeCardRectRef.current = null
+      setActiveTaskId(null)
+      return
+    }
+
+    isClosingModalRef.current = true
+    const sheetRect = sheet.getBoundingClientRect()
+    const scaleX = targetCardRect.width / sheetRect.width
+    const scaleY = targetCardRect.height / sheetRect.height
+    const translateX =
+      targetCardRect.left + targetCardRect.width / 2 - (sheetRect.left + sheetRect.width / 2)
+    const translateY =
+      targetCardRect.top + targetCardRect.height / 2 - (sheetRect.top + sheetRect.height / 2)
+
+    const backdrop = sheet.parentElement
+    if (backdrop) {
+      backdrop.animate([{ opacity: '1' }, { opacity: '0' }], {
+        duration: 235,
+        easing: 'ease-in',
+        fill: 'forwards',
+      })
+    }
+
+    const anim = sheet.animate([
+      {
+        transform: 'translate(0, 0) scale(1, 1)',
+        borderRadius: '24px',
+        opacity: '1',
+      },
+      {
+        transform: `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`,
+        borderRadius: '16px',
+        opacity: '0',
+      },
+    ], {
+      duration: 270,
+      easing: 'cubic-bezier(0.4, 0, 0.6, 1)',
+      fill: 'forwards',
+    })
+
+    anim.onfinish = () => {
+      isClosingModalRef.current = false
+      activeCardRectRef.current = null
+      flushSync(() => {
+        setActiveTaskId(null)
+      })
+    }
+  }, [activeTaskId, prefersReducedMotion])
+
+  /** v3: slide task modal down off-screen after successful completion (not cancel). v2: runs callback immediately. */
+  const animateSuccessSlideDownAndDismiss = useCallback(
+    (onFinished: () => void, animOpts?: { bypassReducedMotion?: boolean }) => {
+      const bypassRm = !!animOpts?.bypassReducedMotion
+      if (!isV3Ui) {
+        onFinished()
+        return
+      }
+      if (isClosingModalRef.current) {
+        onFinished()
+        return
+      }
+      const sheet = modalSheetRef.current
+      if (!sheet || (prefersReducedMotion && !bypassRm) || typeof sheet.animate !== 'function') {
+        activeCardRectRef.current = null
+        onFinished()
+        return
+      }
+      isClosingModalRef.current = true
+      setModalSuccessDismiss(true)
+      const sheetRect = sheet.getBoundingClientRect()
+      const dy = window.innerHeight - sheetRect.top + 32
+      const backdrop = sheet.parentElement
+      const anim = sheet.animate(
+        [
+          { transform: 'translate(0px, 0px)', opacity: 1 },
+          { transform: `translate(0px, ${dy}px)`, opacity: 0.92 },
+        ],
+        {
+          duration: celebrationTiming.v3SlideDurationMs,
+          easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+          fill: 'forwards',
+        }
+      )
+      if (backdrop) {
+        backdrop.animate([{ opacity: 1 }, { opacity: 0 }], {
+          duration: celebrationTiming.v3BackdropFadeMs,
+          easing: 'ease-in',
+          fill: 'forwards',
+        })
+      }
+      anim.onfinish = () => {
+        isClosingModalRef.current = false
+        setModalSuccessDismiss(false)
+        activeCardRectRef.current = null
+        onFinished()
+      }
+    },
+    [
+      celebrationTiming.v3BackdropFadeMs,
+      celebrationTiming.v3SlideDurationMs,
+      isV3Ui,
+      prefersReducedMotion,
+    ]
+  )
+
+  const playV3TaskCompletionCelebration = useCallback(
+    (
+      pending: { slot: 'p1' | 'p2' | null; beforeScore: number; afterScore: number },
+      animOpts?: { bypassReducedMotion?: boolean },
+    ) => {
+      const { slot, beforeScore, afterScore } = pending
+      const bypassRm = !!animOpts?.bypassReducedMotion
+      const starOpts = bypassRm ? { bypassReducedMotion: true as const } : undefined
+      const useMainHud = isMainShiftHudMostlyVisible()
+      const openedNotify = !useMainHud
+      if (openedNotify) setV3ShiftNotifyOpen(true)
+      const leadInMs =
+        prefersReducedMotion && !bypassRm
+          ? celebrationTiming.v3CelebrationLeadInMs
+          : openedNotify
+            ? celebrationTiming.v3CelebrationLeadInMs
+            : 0
+      const runV3CelebrationBody = () => {
+        if (slot === 'p1') {
+          const p1Target = useMainHud ? p1ScoreRef.current : v3NotifyP1ScoreRef.current
+          if (p1Target) {
+            setP1ScoreOverride(beforeScore)
+            rewardTargetRef.current = p1Target
+            spawnRewardStarsAfterLayoutSettle(p1Target, starOpts)
+            setScoreAnim({ slot: 'p1', from: beforeScore, to: afterScore, startedAt: Date.now() })
+            if (openedNotify) window.setTimeout(() => setV3ShiftNotifyOpen(false), 2400)
+            return
+          }
+        }
+        if (slot === 'p2') {
+          const p2Target = useMainHud ? p2ScoreRef.current : v3NotifyP2ScoreRef.current
+          if (p2Target) {
+            setP2ScoreOverride(beforeScore)
+            rewardTargetRef.current = p2Target
+            spawnRewardStarsAfterLayoutSettle(p2Target, starOpts)
+            setScoreAnim({ slot: 'p2', from: beforeScore, to: afterScore, startedAt: Date.now() })
+            if (openedNotify) window.setTimeout(() => setV3ShiftNotifyOpen(false), 2400)
+            return
+          }
+        }
+        setShiftHudPulse(true)
+        const fallback = useMainHud
+          ? (shiftHudExtraRef.current || shiftHudHeaderRef.current)
+          : v3ShiftNotifyHeaderRef.current
+        if (fallback) {
+          rewardTargetRef.current = fallback
+          spawnRewardStarsAfterLayoutSettle(fallback, starOpts)
+        }
+        if (openedNotify) window.setTimeout(() => setV3ShiftNotifyOpen(false), 2400)
+      }
+      const scheduleBody = () => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(runV3CelebrationBody)
+        })
+      }
+      if (leadInMs <= 0) {
+        scheduleBody()
+      } else {
+        window.setTimeout(scheduleBody, leadInMs)
+      }
+    },
+    [
+      celebrationTiming.v3CelebrationLeadInMs,
+      isMainShiftHudMostlyVisible,
+      prefersReducedMotion,
+      spawnRewardStarsAfterLayoutSettle,
+    ]
+  )
+
+  /** v3 only: optional tasks — complete with no assignees ("didn't need to complete"); undo clears for a real completion. */
+  const handleV3OptionalDidNotNeedToComplete = useCallback(async () => {
+    if (!isV3Ui) return
+    const taskId = activeTaskId
+    if (
+      taskId !== 'yum-yum-close' &&
+      taskId !== 'ice-5pm' &&
+      taskId !== 'ice-close' &&
+      taskId !== 'peanuts-noodles-close'
+    ) {
+      return
+    }
+    if (isWindowTaskLocked(taskId)) {
+      setSaveError('This window is locked until unlock time.')
+      return
+    }
+    if (activeCompletion) {
+      setSaveError('Task already completed.')
+      return
+    }
+    if (!(isTodaySelected || isDemoDaySelected || isAdmin)) {
+      setSaveError('Editing locked for this date.')
+      return
+    }
+
+    const now = new Date()
+    const windowConfig = WINDOWS.find((w) => w.key === selectedWindow)
+    let isLate = false
+    let isEarly = false
+    if (windowConfig) {
+      const cutoff = getLateCutoffForWindow(selectedDate, selectedWindow)
+      isLate = now >= cutoff
+      const startAt = combineDateTime(selectedDate, windowConfig.start)
+      isEarly = now < startAt
+    }
+
+    appendSelectionLog({
+      action: 'selected',
+      taskId,
+      taskName: activeTask?.name ?? taskId,
+      window: selectedWindow,
+      dateKey: selectedDateKey,
+      assignees: [],
+      byAdmin: isAdmin,
+    })
+
+    const beforeWindowPercent = computeWindowTaskPercent(taskState)
+
+    windowCompleteStartScheduledRef.current = true
+    const updatedState = await new Promise<TaskState>((resolve) => {
+      setTaskState((prev) => {
+        const next: TaskState = { ...prev }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        windowMap[taskId] = {
+          status: 'done',
+          assignees: [],
+          completedAt: now.toISOString(),
+          assignedByAdmin: false,
+          completedLate: isLate,
+          completedEarly: isEarly,
+          autoAssigned: true,
+          didNotNeedToComplete: true,
+        }
+        dateMap[selectedWindow] = windowMap
+        next[selectedDateKey] = dateMap
+        resolve(next)
+        return next
+      })
+    })
+
+    const afterWindowPercent = computeWindowTaskPercent(updatedState)
+    if (beforeWindowPercent < 100 && afterWindowPercent === 100) {
+      const participants = computeCurrentWindowParticipants(updatedState)
+      const windowLabel = getWindowLabel(selectedDate, selectedWindow)
+      startWindowCompleteCelebration({
+        state: updatedState,
+        windowLabel,
+        participants,
+      })
+    }
+    windowCompleteStartScheduledRef.current = false
+
+    triggerNextTaskPulse(taskId, updatedState)
+
+    setIsSaving(true)
+    setSaveError(null)
+
+    const completionToPersist = updatedState[selectedDateKey]?.[selectedWindow]?.[taskId]
+    const persist = isAdmin
+      ? persistAdminSetTaskCompletionOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId,
+          completion: {
+            assignees: completionToPersist?.assignees ?? [],
+            completedAt: completionToPersist?.completedAt ?? now.toISOString(),
+            assignedByAdmin: false,
+            completedLate: isLate,
+            lateForgiven: false,
+            completedEarly: isEarly,
+            autoAssigned: true,
+            didNotNeedToComplete: true,
+          },
+        })
+      : persistCompleteTaskIfAvailableOrNoop({
+          dateKey: selectedDateKey,
+          windowKey: selectedWindow,
+          taskId,
+          completion: {
+            assignees: [],
+            completedAt: now.toISOString(),
+            assignedByAdmin: false,
+            completedLate: isLate,
+            lateForgiven: false,
+            completedEarly: isEarly,
+            autoAssigned: true,
+            didNotNeedToComplete: true,
+          },
+        })
+
+    Promise.all([withTimeout(persist, 8000), new Promise((r) => setTimeout(r, 600))])
+      .then(() => {
+        setIsSaving(false)
+        setPendingIceSide(null)
+        setShowEmployeeSelector(false)
+        animateSuccessSlideDownAndDismiss(() => {
+          playV3TaskCompletionCelebration({ slot: null, beforeScore: 0, afterScore: 0 })
+        })
+      })
+      .catch((error) => {
+        setTaskState((prev) => {
+          const next: TaskState = { ...prev }
+          const dateMap = { ...(next[selectedDateKey] ?? {}) }
+          const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+          delete windowMap[taskId]
+          dateMap[selectedWindow] = windowMap
+          next[selectedDateKey] = dateMap
+          return next
+        })
+        if (error instanceof Error && error.message === 'already-completed') {
+          setSaveError('Already completed by someone else.')
+        } else {
+          setSaveError(
+            error instanceof Error && error.message === 'timeout'
+              ? 'Save timed out. Check connection.'
+              : 'Failed to save. Try again.'
+          )
+        }
+        setIsSaving(false)
+      })
+  }, [
+    activeCompletion,
+    activeTask?.name,
+    activeTaskId,
+    animateSuccessSlideDownAndDismiss,
+    appendSelectionLog,
+    computeCurrentWindowParticipants,
+    computeWindowTaskPercent,
+    getWindowLabel,
+    isAdmin,
+    isDemoDaySelected,
+    isTodaySelected,
+    isV3Ui,
+    persistAdminSetTaskCompletionOrNoop,
+    persistCompleteTaskIfAvailableOrNoop,
+    playV3TaskCompletionCelebration,
+    startWindowCompleteCelebration,
+    selectedDate,
+    selectedDateKey,
+    selectedWindow,
+    taskState,
+    triggerNextTaskPulse,
+    withTimeout,
+    isWindowTaskLocked,
+  ])
+
+  const undoV3DidNotNeedToComplete = useCallback(
+    async (taskId: string) => {
+      if (!isV3Ui) return
+      if (isWindowTaskLocked(taskId)) {
+        setSaveError('This window is locked until unlock time.')
+        return
+      }
+      const completion = taskState[selectedDateKey]?.[selectedWindow]?.[taskId]
+      if (!completion?.didNotNeedToComplete) return
+      if (!(isTodaySelected || isDemoDaySelected || isAdmin)) {
+        setSaveError('Cannot undo on this date.')
+        return
+      }
+      const beforeSnapshot = completion
+      const orderReportsToClearOnBreakUndo =
+        taskId === 'break-selection'
+          ? SOLO_AUTO_ORDER_REPORT_TARGETS.filter((t) =>
+              isSoloAutoDidNotNeedPlaceholder(taskState[selectedDateKey]?.[t.windowKey]?.[t.taskId])
+            )
+          : []
+      const orderReportSnapshotsBeforeUndo = orderReportsToClearOnBreakUndo
+        .map((t) => {
+          const c = taskState[selectedDateKey]?.[t.windowKey]?.[t.taskId]
+          return c ? { ...t, completion: c } : null
+        })
+        .filter((x): x is { windowKey: WindowKey; taskId: string; completion: TaskCompletion } => x !== null)
+      await new Promise<void>((resolve) => {
+        setTaskState((prev) => {
+          const next: TaskState = { ...prev }
+          const dateMap = { ...(next[selectedDateKey] ?? {}) }
+          const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+          delete windowMap[taskId]
+          if (Object.keys(windowMap).length === 0) {
+            delete dateMap[selectedWindow]
+          } else {
+            dateMap[selectedWindow] = windowMap
+          }
+
+          if (taskId === 'break-selection') {
+            for (const t of orderReportsToClearOnBreakUndo) {
+              if (!isSoloAutoDidNotNeedPlaceholder(prev[selectedDateKey]?.[t.windowKey]?.[t.taskId])) continue
+              const wm = { ...(dateMap[t.windowKey] ?? {}) }
+              delete wm[t.taskId]
+              if (Object.keys(wm).length === 0) {
+                delete (dateMap as Partial<Record<WindowKey, Record<string, TaskCompletion>>>)[t.windowKey]
+              } else {
+                dateMap[t.windowKey] = wm
+              }
+            }
+          }
+
+          if (Object.keys(dateMap).length === 0) {
+            delete next[selectedDateKey]
+          } else {
+            next[selectedDateKey] = dateMap
+          }
+          resolve()
+          return next
+        })
+      })
+      setIsSaving(true)
+      setSaveError(null)
+      Promise.all([
+        withTimeout(persistAdminClearTaskCompletionOrNoop(selectedDateKey, selectedWindow, taskId), 8000),
+        ...orderReportsToClearOnBreakUndo.map((t) =>
+          withTimeout(persistAdminClearTaskCompletionOrNoop(selectedDateKey, t.windowKey, t.taskId), 8000)
+        ),
+        new Promise((r) => setTimeout(r, 400)),
+      ])
+        .then(() => {
+          setIsSaving(false)
+          if (activeTaskId === taskId) setActiveTaskId(null)
+          if (taskId === 'break-selection') {
+            if (isDemoDaySelected) {
+              setDemoSoloModeByDateKey((prev) => ({ ...prev, [selectedDateKey]: null }))
+            }
+            void persistSoloModeOrNoop(selectedDateKey, null).catch(() => {
+              /* non-fatal */
+            })
+            setSoloMode(null)
+          }
+        })
+        .catch((error) => {
+          setTaskState((prev) => {
+            const next: TaskState = { ...prev }
+            const dateMap = { ...(next[selectedDateKey] ?? {}) }
+            const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+            windowMap[taskId] = beforeSnapshot
+            dateMap[selectedWindow] = windowMap
+            for (const snap of orderReportSnapshotsBeforeUndo) {
+              const wm = { ...(dateMap[snap.windowKey] ?? {}) }
+              wm[snap.taskId] = snap.completion
+              dateMap[snap.windowKey] = wm
+            }
+            next[selectedDateKey] = dateMap
+            return next
+          })
+          setSaveError(
+            error instanceof Error && error.message === 'timeout'
+              ? 'Save timed out. Check connection.'
+              : 'Failed to undo. Try again.'
+          )
+          setIsSaving(false)
+        })
+    },
+    [
+      activeTaskId,
+      isAdmin,
+      isDemoDaySelected,
+      isTodaySelected,
+      isV3Ui,
+      persistAdminClearTaskCompletionOrNoop,
+      persistSoloModeOrNoop,
+      selectedDateKey,
+      selectedWindow,
+      setDemoSoloModeByDateKey,
+      setSoloMode,
+      taskState,
+      withTimeout,
+      isWindowTaskLocked,
+    ]
   )
 
   const closeActiveTask = useCallback(() => {
-    setActiveTaskId(null)
-  }, [])
+    animateCloseAndDismiss()
+  }, [animateCloseAndDismiss])
 
   const handleModalBackdropTouchStart = useCallback(
     (e: React.TouchEvent) => {
@@ -9743,39 +14094,147 @@ function App() {
     [closeActiveTask, recordTouch]
   )
 
-  const isWindowLocked = () => {
-    if (!isTodaySelected) return false
-    
-    const windowConfig = WINDOWS.find(w => w.key === selectedWindow)
-    if (!windowConfig?.unlocksAt) return false
-    
-    const [unlockHour, unlockMinute] = windowConfig.unlocksAt.split(':').map(Number)
-    const currentHour = now.getHours()
-    const currentMinute = now.getMinutes()
-    
-    if (currentHour < unlockHour) return true
-    if (currentHour === unlockHour && currentMinute < unlockMinute) return true
-    
-    return false
-  }
+  const resetCompletedTask = useCallback(async () => {
+    if (!activeTaskId || !activeCompletion) return
+    if (isInitialSyncing || isSaving) return
+    if (!canEditTaskAssignmentsOnSelectedDate) return
 
-  const windowLocked = isWindowLocked()
+    const musicSelectionLocked = activeTaskId === 'turn-on-music' && !musicIsActuallyPlaying
+    const selectionLocked = isWindowTaskLocked(activeTaskId) || musicSelectionLocked
+    if (selectionLocked || (activeCompletion.assignedByAdmin && !isAdmin)) return
+
+    const beforeCompletionSnapshot = taskState[selectedDateKey]?.[selectedWindow]?.[activeTaskId]
+
+    setAssignees([])
+    setSplitMode(false)
+    setShowUnsplitOptions(false)
+    setSaveError(null)
+
+    appendSelectionLog({
+      action: 'cleared',
+      taskId: activeTaskId,
+      taskName: activeTask?.name ?? activeTaskId,
+      window: selectedWindow,
+      dateKey: selectedDateKey,
+      assignees: activeCompletion.assignees ?? [],
+      byAdmin: isAdmin,
+    })
+
+    await new Promise<void>((resolve) => {
+      setTaskState((prevState) => {
+        const next: TaskState = { ...prevState }
+        const dateMap = { ...(next[selectedDateKey] ?? {}) }
+        const windowMap = { ...(dateMap[selectedWindow] ?? {}) }
+        delete windowMap[activeTaskId]
+        if (Object.keys(windowMap).length === 0) {
+          delete dateMap[selectedWindow]
+        } else {
+          dateMap[selectedWindow] = windowMap
+        }
+        if (Object.keys(dateMap).length === 0) {
+          delete next[selectedDateKey]
+        } else {
+          next[selectedDateKey] = dateMap
+        }
+        resolve()
+        return next
+      })
+    })
+
+    setShowEmployeeSelector(false)
+    pendingScrollToTaskIdRef.current = activeTaskId
+    setActiveTaskId(null)
+    setIsSaving(true)
+
+    Promise.all([
+      withTimeout(persistAdminClearTaskCompletionOrNoop(selectedDateKey, selectedWindow, activeTaskId), 8000),
+      new Promise((resolve) => setTimeout(resolve, 600)),
+    ])
+      .then(() => {
+        if (import.meta.env.DEV) console.log('Reset completed task saved successfully')
+        setIsSaving(false)
+      })
+      .catch((error) => {
+        console.error('Failed to reset completed task:', error)
+        if (beforeCompletionSnapshot) {
+          setTaskState((prev) => {
+            const next: TaskState = { ...prev }
+            const day = { ...(next[selectedDateKey] ?? {}) }
+            const w = { ...(day[selectedWindow] ?? {}) }
+            w[activeTaskId] = beforeCompletionSnapshot
+            day[selectedWindow] = w
+            next[selectedDateKey] = day
+            return next
+          })
+        }
+        setSaveError(
+          error instanceof Error && error.message === 'timeout'
+            ? 'Save timed out. Check connection.'
+            : 'Failed to save. Try again.'
+        )
+        setIsSaving(false)
+      })
+  }, [
+    activeCompletion,
+    activeTask?.name,
+    activeTaskId,
+    appendSelectionLog,
+    canEditTaskAssignmentsOnSelectedDate,
+    isAdmin,
+    isInitialSyncing,
+    isSaving,
+    musicIsActuallyPlaying,
+    persistAdminClearTaskCompletionOrNoop,
+    selectedDateKey,
+    selectedWindow,
+    taskState,
+    isWindowTaskLocked,
+  ])
 
   type WindowChangeSource = 'user' | 'auto'
   const handleWindowChange = useCallback((newWindow: WindowKey, source: WindowChangeSource = 'user') => {
+    const expectedNow = getWindowForDate(new Date())
+    if (newWindow === selectedWindow) {
+      if (source === 'auto') return
+      const nextFollow = newWindow === expectedNow
+      if (followCurrentWindow === nextFollow) return
+    }
+
+    if (source === 'user') {
+      recordLastUserAction(`window-click:${newWindow}`)
+    }
+
     setIsLoadingWindow(true)
     setSelectedWindow(newWindow)
     if (source === 'user') {
       // Keep following the clock only if the user picked the current window.
       // Otherwise treat it as an intentional "view a different timeframe" action.
-      const expectedNow = getWindowForDate(new Date())
       setFollowCurrentWindow(newWindow === expectedNow)
     }
     // Show loading for a brief moment to let the UI update
     setTimeout(() => {
       setIsLoadingWindow(false)
     }, 300)
-  }, [])
+  }, [selectedWindow, followCurrentWindow])
+
+  /** Snap browsing date + window to real "now" (idle screensaver + Back to today). */
+  const snapBrowseContextToLiveNow = useCallback(() => {
+    if (demoDayKey) return
+    const nowReal = new Date()
+    const today = startOfDay(nowReal)
+    const expectedWindow = getWindowForDate(nowReal)
+    setFollowCurrentWindow(true)
+    if (!isSameDay(selectedDate, today)) {
+      setSelectedDate(today)
+    }
+    if (selectedWindow !== expectedWindow) {
+      handleWindowChange(expectedWindow, 'auto')
+    }
+  }, [demoDayKey, handleWindowChange, selectedDate, selectedWindow])
+
+  useEffect(() => {
+    snapBrowseContextToLiveNowRef.current = snapBrowseContextToLiveNow
+  }, [snapBrowseContextToLiveNow])
 
   // Track user interaction to support inactivity-based "snap back".
   useEffect(() => {
@@ -9802,6 +14261,7 @@ function App() {
       if (typeof document === 'undefined') return
       if (document.visibilityState !== 'visible') return
       if (isAdmin) return
+      if (demoDayKey) return
 
       const nowReal = new Date()
       const inactiveMs = Date.now() - (lastInteractionTsRef.current || 0)
@@ -9823,7 +14283,7 @@ function App() {
         handleWindowChange(expectedWindow, 'auto')
       }
     },
-    [followCurrentWindow, handleWindowChange, isAdmin, selectedDate, selectedWindow]
+    [demoDayKey, followCurrentWindow, handleWindowChange, isAdmin, selectedDate, selectedWindow]
   )
 
   // Auto-sync (or snap back) while the page is visible.
@@ -9892,7 +14352,11 @@ function App() {
   }
 
   return (
-    <div className={`app-shell time-${timeOfDay} ${celebrateShake ? 'celebrate-shake' : ''}`}>
+    <div
+      className={`app-shell time-${timeOfDay}${
+        uiVariant === 'v3' ? ' app-shell--v3' : ''
+      }`}
+    >
       {/* Loading screen for initial load and window transitions */}
       {(isLoadingData || isLoadingWindow || showStartupCover) && (
         <div className="loading-overlay">
@@ -9903,149 +14367,150 @@ function App() {
         </div>
       )}
 
-      {/* Reward overlay (stars) */}
-      {rewardStars.length > 0 && (
-        <div className="reward-overlay" aria-hidden>
-          {rewardStars.map((s) => (
+      {/* v3: floating Shift HUD strip for point celebrations (no scroll-to-top); mirrors main shift-hud card */}
+      {isV3Ui && v3ShiftNotifyOpen && (() => {
+        const isDay = selectedShift === 'day'
+        const { p1, p2 } = shiftHudDisplaySlots
+        const winnerScore = p1 ? p1.score : null
+        const p2Score = p2 ? p2.score : null
+        const p1Wins = winnerScore !== null && (p2Score === null || winnerScore > p2Score)
+        const tie = winnerScore !== null && p2Score !== null && winnerScore === p2Score
+        const closeMatch =
+          winnerScore !== null &&
+          p2Score !== null &&
+          winnerScore > 20 &&
+          p2Score > 20 &&
+          winnerScore - p2Score <= 3
+        const showP1Crown = !!p1 && (p1Wins || tie || closeMatch)
+        const showP2Crown = !!p2 && (tie || closeMatch)
+        const p1HudLabels = shiftHudSlotLabelsForDisplay(p1 ? displayLabelsByEmployee[p1.name] : undefined)
+        const p2HudLabels = shiftHudSlotLabelsForDisplay(p2 ? displayLabelsByEmployee[p2.name] : undefined)
+        return (
+          <div className="v3-shift-score-notify">
             <div
-              key={s.id}
-              className="reward-star"
-              style={{
-                left: `${s.startX}px`,
-                top: `${s.startY}px`,
-                ['--dx' as any]: `${s.dx}px`,
-                ['--dy' as any]: `${s.dy}px`,
-                ['--dxMid' as any]: `${s.dxMid}px`,
-                ['--dyMid' as any]: `${s.dyMid}px`,
-                // Pre-computed intermediate values for Safari compatibility (avoids calc() in keyframes)
-                ['--dx15' as any]: `${s.dxMid * 0.2}px`,
-                ['--dy15' as any]: `${s.dyMid * 0.2}px`,
-                ['--rot15' as any]: `${s.rotDeg * 0.15}deg`,
-                ['--rot55' as any]: `${s.rotDeg * 0.5}deg`,
-                ['--delay' as any]: `${s.delayMs}ms`,
-                ['--dur' as any]: `${s.durMs}ms`,
-                ['--size' as any]: `${s.sizePx}px`,
-                ['--rot' as any]: `${s.rotDeg}deg`,
-              }}
+              className={`traq-v3-hero-unified shift-hud v3-shift-score-notify-card ${isDay ? 'day' : 'night'}`}
+              role="status"
+              aria-live="polite"
             >
-              ⭐
+              <div className="shift-hud-header traq-v3-hero-unified-header" ref={v3ShiftNotifyHeaderRef} />
+
+              <div
+                className="traq-v3-hero-unified-triad"
+                role="group"
+                aria-label="Shift leaders and task completion"
+              >
+                <div
+                  className={`traq-v3-hero-slot-col traq-v3-hero-slot-col--p1 shift-player-slot shift-player-slot--v3-accent ${p1 ? 'filled' : ''}`}
+                  style={shiftPlayerSlotAccentStyle(p1 ? employeeColors[p1.name] : undefined, 'start')}
+                >
+                  <div className="slot-main">
+                    <div className="slot-name">
+                      {p1 ? p1.name : '—'} {showP1Crown ? <span className="slot-crown">👑</span> : null}
+                    </div>
+                    {p1 && p1HudLabels.length > 0 && (
+                      <div className="slot-labels">
+                        {p1HudLabels.map((label) => (
+                          <span key={label.id} className="slot-label-chip" title={label.description}>
+                            {label.emoji} {label.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className={`slot-score ${showDayAmPmSplit ? 'slot-score--split' : ''}`} ref={v3NotifyP1ScoreRef}>
+                    <ShiftHudScoreDisplay
+                      row={p1}
+                      scoreOverride={p1ScoreOverrideRef.current ?? p1ScoreOverride}
+                      showDayAmPmSplit={showDayAmPmSplit}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  className={`top-progress traq-v3-hero-unified-progress ${taskProgress.total === 0 ? 'empty' : ''}`}
+                  role="progressbar"
+                  aria-label="Task completion"
+                  aria-valuemin={0}
+                  aria-valuemax={taskProgress.total}
+                  aria-valuenow={taskProgress.resolved}
+                >
+                  <div
+                    className="progress-percent"
+                    style={
+                      progressGradient
+                        ? {
+                            background: progressGradient,
+                            WebkitBackgroundClip: 'text',
+                            WebkitTextFillColor: 'transparent',
+                            backgroundClip: 'text',
+                          }
+                        : undefined
+                    }
+                  >
+                    {taskProgress.percent}%
+                  </div>
+                  <div className="dash-progress-sub">
+                    {taskProgress.resolved}/{taskProgress.total} done
+                  </div>
+                </div>
+
+                <div
+                  className={`traq-v3-hero-slot-col traq-v3-hero-slot-col--p2 shift-player-slot shift-player-slot--v3-accent ${p2 ? 'filled' : ''}`}
+                  style={shiftPlayerSlotAccentStyle(p2 ? employeeColors[p2.name] : undefined, 'end')}
+                >
+                  <div className="slot-main">
+                    <div className="slot-name">
+                      {p2 ? p2.name : '—'} {showP2Crown ? <span className="slot-crown">👑</span> : null}
+                    </div>
+                    {p2 && p2HudLabels.length > 0 && (
+                      <div className="slot-labels">
+                        {p2HudLabels.map((label) => (
+                          <span key={label.id} className="slot-label-chip" title={label.description}>
+                            {label.emoji} {label.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className={`slot-score ${showDayAmPmSplit ? 'slot-score--split' : ''}`} ref={v3NotifyP2ScoreRef}>
+                    <ShiftHudScoreDisplay
+                      row={p2}
+                      scoreOverride={p2ScoreOverrideRef.current ?? p2ScoreOverride}
+                      showDayAmPmSplit={showDayAmPmSplit}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="traq-v3-hero-unified-track-wrap" aria-hidden="true">
+                <div className="progress-track">
+                  <div
+                    className="progress-fill"
+                    style={{
+                      width: `${taskProgress.percent}%`,
+                      background: progressGradient || undefined,
+                    }}
+                  />
+                </div>
+              </div>
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        )
+      })()}
+
+      {/* Reward overlay (stars) */}
+      <RewardStarsOverlay stars={rewardStars} />
 
       {/* Combined Ice: big falling ❄️/🧊 from top of screen into the selected tile */}
-      {icePageEmojis.length > 0 && (
-        <div className="ice-page-emoji-layer" aria-hidden="true">
-          {icePageEmojis.map((e) => (
-            <span
-              key={e.id}
-              className="ice-page-emoji"
-              style={{
-                left: `${e.x}px`,
-                top: `${e.y}px`,
-                ['--dx' as any]: `${e.dx}px`,
-                ['--dy' as any]: `${e.dy}px`,
-                animationDelay: `${e.delayMs}ms`,
-                animationDuration: `${e.durMs}ms`,
-                fontSize: `${e.sizePx}px`,
-              }}
-            >
-              {e.char}
-            </span>
-          ))}
-        </div>
-      )}
+      <div ref={icePageEmojiLayerRef} className="ice-page-emoji-layer" aria-hidden="true" />
 
       {/* Towel split: big falling 🧼 from top of screen into the selected tile */}
-      {towelPageEmojis.length > 0 && (
-        <div className="towel-page-emoji-layer" aria-hidden="true">
-          {towelPageEmojis.map((e) => (
-            <span
-              key={e.id}
-              className="towel-page-emoji"
-              style={{
-                left: `${e.x}px`,
-                top: `${e.y}px`,
-                ['--dx' as any]: `${e.dx}px`,
-                ['--dy' as any]: `${e.dy}px`,
-                animationDelay: `${e.delayMs}ms`,
-                animationDuration: `${e.durMs}ms`,
-                fontSize: `${e.sizePx}px`,
-              }}
-            >
-              🧼
-            </span>
-          ))}
-        </div>
-      )}
+      <div ref={towelPageEmojiLayerRef} className="towel-page-emoji-layer" aria-hidden="true" />
 
-      {/* Window completion full-screen celebration (post-scroll) */}
-      {windowCompleteOverlay && (
-        <div
-          className="window-complete-overlay"
-          role="status"
-          aria-live="polite"
-          aria-label="Window complete"
-          onTouchStart={beginTap}
-          onTouchMove={moveTap}
-          onTouchEnd={(e) => endTap(() => dismissWindowCompleteOverlay(), e)}
-          onClick={() => {
-            if (shouldIgnoreClick()) return
-            dismissWindowCompleteOverlay()
-          }}
-        >
-          <div className="window-complete-card" onTouchStart={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-            <div className="window-complete-kicker">Window complete</div>
-            <div className="window-complete-title">100%</div>
-            <div className="window-complete-sub">All {windowCompleteOverlay.windowLabel} tasks complete</div>
-            {windowCompleteOverlay.participants.length > 0 && (
-              <div className="window-complete-people" aria-label="Participants">
-                {windowCompleteOverlay.participants.map((name) => (
-                  <div key={name} className="window-complete-person">
-                    {name}
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="window-complete-dismiss">tap to dismiss</div>
-          </div>
-        </div>
-      )}
-
-      {/* Window completion celebration (confetti + toast) */}
-      {windowCompleteConfetti.length > 0 && (
-        <div className="confetti-layer" aria-hidden>
-          {windowCompleteConfetti.map((p) => (
-            <div
-              key={p.id}
-              className="confetti-piece"
-              style={
-                {
-                  left: `${p.x}px`,
-                  top: `${p.y}px`,
-                  width: `${p.w}px`,
-                  height: `${p.h}px`,
-                  background: p.color,
-                  borderRadius: `${p.br}px`,
-                  ['--dx' as any]: `${p.dx}px`,
-                  ['--dy' as any]: `${p.dy}px`,
-                  ['--rot' as any]: `${p.rotDeg}deg`,
-                  // Pre-computed intermediate values for Safari compatibility
-                  ['--dx75' as any]: `${p.dx * 0.82}px`,
-                  ['--dy75' as any]: `${p.dy * 0.82}px`,
-                  ['--rot75' as any]: `${p.rotDeg * 0.75}deg`,
-                  ['--delay' as any]: `${p.delayMs}ms`,
-                  ['--dur' as any]: `${p.durMs}ms`,
-                } as CSSProperties
-              }
-            />
-          ))}
-        </div>
-      )}
-      {windowCompleteToast && (
-        <div className="celebration-toast" role="status" aria-live="polite">
-          {windowCompleteToast}
+      {/* Window unlock toast (5-tap powered-by shortcut) */}
+      {windowUnlockToast && (
+        <div className="window-unlock-toast" role="status" aria-live="polite">
+          {windowUnlockToast} window unlocked
         </div>
       )}
 
@@ -10079,32 +14544,102 @@ function App() {
         </div>
       )}
       
-      <header className="hero">
-        <h1 
-          onClick={() => {
-            if (!isAdmin) {
-              setAdminPin('')
-              setAdminPinError(null)
-              setShowAdminLogin(true)
-            }
-          }}
-        >
-          <span className="hero-left">
-            <span className="hero-brand">
+      {uiVariant === 'v2' ? (
+        <header className="hero">
+          <h1>
+            <span className="hero-left">
+              <button
+                type="button"
+                className="hero-brand hero-brand-trigger"
+                aria-label={screensaverEnabled ? 'Open screensaver' : 'App settings'}
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) =>
+                  endTap(() => {
+                    if (screensaverEnabled) openScreensaverPreview()
+                    else setShowAppSettingsMenu(true)
+                  }, e)
+                }
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (shouldIgnoreClick()) return
+                  if (screensaverEnabled) openScreensaverPreview()
+                  else setShowAppSettingsMenu(true)
+                }}
+              >
+                <span className="brand-word">
+                  <img className="brand-logo" src={traqLogoUrl} alt="TRAQ" draggable={false} />
+                </span>
+                {!isLoadingData && isInitialSyncing && <span className="sync-inline">SYNCING</span>}
+                {isSaving && <span className="save-inline">SAVING</span>}
+              </button>
+              <HeaderClock />
+            </span>
+
+            <span className="header-music-slot">
+              <MusicPlayerSwitcher />
+            </span>
+
+            <span className="header-actions">
+              <button
+                className="leaderboard-button header-leaderboard"
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) =>
+                  endTap(() => {
+                    setLeaderboardView('month')
+                    setShowLeaderboard(true)
+                  }, e)
+                }
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (shouldIgnoreClick()) return
+                  setLeaderboardView('month')
+                  setShowLeaderboard(true)
+                }}
+              >
+                <span className="icon">🏆</span>
+                {formatMonthTitle(startOfMonth(new Date(tick))).replace(/\s+\d{4}$/, '')}
+              </button>
+            </span>
+          </h1>
+        </header>
+      ) : (
+        <header className="traq-v3-slim-bar" aria-label="TRAQ">
+          <div className="traq-v3-slim-left">
+            <button
+              type="button"
+              className="hero-brand hero-brand-trigger traq-v3-brand"
+              aria-label={screensaverEnabled ? 'Open screensaver' : 'App settings'}
+              onTouchStart={beginTap}
+              onTouchMove={moveTap}
+              onTouchEnd={(e) =>
+                endTap(() => {
+                  if (screensaverEnabled) openScreensaverPreview()
+                  else setShowAppSettingsMenu(true)
+                }, e)
+              }
+              onClick={(e) => {
+                e.stopPropagation()
+                if (shouldIgnoreClick()) return
+                if (screensaverEnabled) openScreensaverPreview()
+                else setShowAppSettingsMenu(true)
+              }}
+            >
               <span className="brand-word">
-                <img className="brand-logo" src={tlogoUrl} alt="TRAQ" draggable={false} />
+                <img className="brand-logo" src={traqLogoUrl} alt="TRAQ" draggable={false} />
               </span>
-              {isAdmin ? <span className="brand-admin"> Admin</span> : null}
               {!isLoadingData && isInitialSyncing && <span className="sync-inline">SYNCING</span>}
               {isSaving && <span className="save-inline">SAVING</span>}
-            </span>
+            </button>
             <HeaderClock />
-          </span>
-
-          <MusicPlayer />
-
-          <span className="header-actions">
+          </div>
+          <div className="traq-v3-slim-music header-music-slot">
+            <MusicPlayerSwitcher />
+          </div>
+          <div className="traq-v3-slim-actions">
             <button
+              type="button"
               className="leaderboard-button header-leaderboard"
               onTouchStart={beginTap}
               onTouchMove={moveTap}
@@ -10124,190 +14659,61 @@ function App() {
               <span className="icon">🏆</span>
               {formatMonthTitle(startOfMonth(new Date(tick))).replace(/\s+\d{4}$/, '')}
             </button>
-            {isAdmin && (
-              <>
-                <button
-                  className="admin-gear"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setShowAdminPanel(true)
-                  }}
-                  aria-label="Open admin panel"
-                >
-                  ⚙️
-                </button>
-                <button
-                  className="admin-logout"
-                  type="button"
-                  onTouchStart={beginTap}
-                  onTouchMove={moveTap}
-                  onTouchEnd={(e) => endTap(() => logoutAdmin(), e)}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (shouldIgnoreClick()) return
-                    logoutAdmin()
-                  }}
-                >
-                  Log out
-                </button>
-              </>
-            )}
-          </span>
-        </h1>
-      </header>
+          </div>
+        </header>
+      )}
 
-      {showAdminLogin && (
+      {showAppSettingsMenu && (
         <div
           className="selector-backdrop"
           onTouchStart={beginTap}
           onTouchMove={moveTap}
-          onTouchEnd={(e) => endTap(() => setShowAdminLogin(false), e)}
+          onTouchEnd={(e) => endTap(() => setShowAppSettingsMenu(false), e)}
           onClick={() => {
             if (shouldIgnoreClick()) return
-            setShowAdminLogin(false)
+            setShowAppSettingsMenu(false)
           }}
         >
           <div
-            className="admin-login-card"
+            className="admin-login-card logo-refresh-menu-card"
             onTouchStart={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="admin-login-title">Enter Admin Code</div>
-            <div className="admin-pin">
-              {adminPin.length ? adminPin.replace(/./g, '•') : '••••'}
-            </div>
-            {adminPinError ? <div className="admin-pin-error">{adminPinError}</div> : null}
-
-            <div className="pin-pad">
-              {['1','2','3','4','5','6','7','8','9'].map((d) => (
-                <button
-                  key={d}
-                  className="pin-key"
-                  onTouchStart={beginTap}
-                  onTouchMove={moveTap}
-                  onTouchEnd={(e) => endTap(() => {
-                    setAdminPinError(null)
-                    setAdminPin((p) => (p.length >= 8 ? p : p + d))
-                  }, e)}
-                  onClick={() => {
-                    if (shouldIgnoreClick()) return
-                    setAdminPinError(null)
-                    setAdminPin((p) => (p.length >= 8 ? p : p + d))
-                  }}
-                >
-                  {d}
-                </button>
-              ))}
-
-              <button
-                className="pin-key pin-fn"
-                onTouchStart={beginTap}
-                onTouchMove={moveTap}
-                onTouchEnd={(e) => endTap(() => {
-                  setAdminPinError(null)
-                  setAdminPin('')
-                }, e)}
-                onClick={() => {
-                  if (shouldIgnoreClick()) return
-                  setAdminPinError(null)
-                  setAdminPin('')
-                }}
-              >
-                CLR
-              </button>
-
-              <button
-                className="pin-key"
-                onTouchStart={beginTap}
-                onTouchMove={moveTap}
-                onTouchEnd={(e) => endTap(() => {
-                  setAdminPinError(null)
-                  setAdminPin((p) => (p ? p.slice(0, -1) : p))
-                }, e)}
-                onClick={() => {
-                  if (shouldIgnoreClick()) return
-                  setAdminPinError(null)
-                  setAdminPin((p) => (p ? p.slice(0, -1) : p))
-                }}
-              >
-                ⌫
-              </button>
-
-              <button
-                className="pin-key pin-fn"
-                onTouchStart={beginTap}
-                onTouchMove={moveTap}
-                onTouchEnd={(e) => endTap(() => {
-                  setAdminPinError(null)
-                  setAdminPin((p) => (p.length >= 8 ? p : p + '0'))
-                }, e)}
-                onClick={() => {
-                  if (shouldIgnoreClick()) return
-                  setAdminPinError(null)
-                  setAdminPin((p) => (p.length >= 8 ? p : p + '0'))
-                }}
-              >
-                0
-              </button>
-
-              <button
-                className="pin-key pin-enter"
-                onTouchStart={beginTap}
-                onTouchMove={moveTap}
-                onTouchEnd={(e) => endTap(() => {
-                  if (adminPin.length > 0) {
-                    const success = adminPin === '2233'
-                    void logAdminLoginAttempt(success)
-                    if (success) {
-                      setIsAdmin(true)
-                      setShowAdminLogin(false)
-                      setAdminPin('')
-                      setAdminPinError(null)
-                    } else {
-                      setAdminPinError('Wrong code')
-                      setAdminPin('')
-                    }
-                  }
-                }, e)}
-                onClick={() => {
-                  if (shouldIgnoreClick()) return
-                  if (adminPin.length > 0) {
-                    const success = adminPin === '2233'
-                    void logAdminLoginAttempt(success)
-                    if (success) {
-                      setIsAdmin(true)
-                      setShowAdminLogin(false)
-                      setAdminPin('')
-                      setAdminPinError(null)
-                    } else {
-                      setAdminPinError('Wrong code')
-                      setAdminPin('')
-                    }
-                  }
-                }}
-              >
-                ENTER
-              </button>
-            </div>
-
-            <div className="admin-login-footer">
+            <div className="admin-login-title">Settings</div>
+            <p className="logo-refresh-menu-text">
+              Reload the app to pick up the latest version and any updates.
+            </p>
+            <div className="logo-refresh-menu-actions">
               <button
                 type="button"
-                className="admin-update-btn"
-                aria-label="Reload to apply updates"
+                className="admin-update-btn logo-refresh-menu-btn logo-refresh-menu-btn--secondary"
                 onTouchStart={beginTap}
                 onTouchMove={moveTap}
                 onTouchEnd={(e) =>
                   endTap(() => {
-                    void reloadForUpdate()
+                    setShowAppSettingsMenu(false)
                   }, e)
                 }
+                onClick={() => {
+                  if (shouldIgnoreClick()) return
+                  setShowAppSettingsMenu(false)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="admin-update-btn logo-refresh-menu-btn"
+                aria-label="Reload app"
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) => endTap(() => void reloadForUpdate(), e)}
                 onClick={() => {
                   if (shouldIgnoreClick()) return
                   void reloadForUpdate()
                 }}
               >
-                Update
+                Refresh app
               </button>
             </div>
           </div>
@@ -10321,37 +14727,11 @@ function App() {
         </div>
       )}
 
+      <div
+        className={`good-morning-reveal-root${goodMorningRevealPhase ? ' good-morning-reveal-root--animating' : ''}`}
+      >
+      {uiVariant === 'v2' && (
       <div className="dashboard-grid" aria-label="Dashboard">
-        <div className="dash-card dash-date">
-          <div className="date-switcher">
-            <button
-              className="date-button"
-              onTouchStart={beginTap}
-              onTouchMove={moveTap}
-              onTouchEnd={(e) => endTap(() => handleDateChange(addDays(selectedDate, -1)), e)}
-              onClick={() => {
-                if (shouldIgnoreClick()) return
-                handleDateChange(addDays(selectedDate, -1))
-              }}
-            >
-              ◀
-            </button>
-            <div className="date-text">{displayDate(selectedDate)}</div>
-            <button
-              className="date-button"
-              onTouchStart={beginTap}
-              onTouchMove={moveTap}
-              onTouchEnd={(e) => endTap(() => handleDateChange(addDays(selectedDate, 1)), e)}
-              onClick={() => {
-                if (shouldIgnoreClick()) return
-                handleDateChange(addDays(selectedDate, 1))
-              }}
-            >
-              ▶
-            </button>
-          </div>
-        </div>
-
         <div className="dash-card dash-progress">
           <div
             className={`top-progress ${taskProgress.total === 0 ? 'empty' : ''}`}
@@ -10390,7 +14770,11 @@ function App() {
 
         {/* Greeting & Motivation / Break Countdown / Shift Change Countdown */}
         <div className="dash-card dash-greeting">
-          {showBreakCountdown && countdownMsRemaining !== null && countdownEmployee ? (
+          {taskSplitInlinePhase !== null && (selectedWindow === '17' || selectedWindow === '21') ? (
+            <div className="greeting-compact">
+              <div className="greeting-text-compact greeting-text-compact--split">50 / 50 split</div>
+            </div>
+          ) : showBreakCountdown && countdownMsRemaining !== null && countdownEmployee ? (
             <div className="greeting-compact break-countdown">
               <div className="break-countdown-time">
                 ☕ {Math.floor(countdownMsRemaining / 60_000)}:{String(Math.floor((countdownMsRemaining % 60_000) / 1000)).padStart(2, '0')}
@@ -10411,19 +14795,18 @@ function App() {
           ) : (
             <div className="greeting-compact">
               <div className="greeting-text-compact">{getGreeting(timeOfDay)}</div>
-              <div className="motivational-quote-compact">{MOTIVATIONAL_QUOTES[currentQuoteIndex]}</div>
             </div>
           )}
         </div>
       </div>
+      )}
 
       {/* Shift HUD (2-player, concise). Shows only active shift (day for 11/5, night for 9/10). */}
       {(() => {
         const isDay = selectedShift === 'day'
-        const played = shiftHudLeaders.filter((r) => r.score > 0)
-        const p1 = played[0]
-        const p2 = played[1]
-        const extra = Math.max(0, played.length - 2)
+        const { p1, p2, extra } = shiftHudDisplaySlots
+        // Crown / tie / close-match comparisons use the 5PM (leaderboard) number after cutover so
+        // HUD highlights match what feeds the leaderboard.
         const winnerScore = p1 ? p1.score : null
         const p2Score = p2 ? p2.score : null
         const p1Wins = winnerScore !== null && (p2Score === null || winnerScore > p2Score)
@@ -10439,66 +14822,297 @@ function App() {
         const showP1Crown = !!p1 && (p1Wins || tie || closeMatch)
         const showP2Crown = !!p2 && (tie || closeMatch)
 
-        return (
-          <div className={`shift-hud ${isDay ? 'day' : 'night'} ${shiftHudPulse ? 'reward-pulse' : ''}`}>
-            {/* Window Selector (Left Side, mirrors Calculator on right) */}
-            <div className="window-selector-float">
-              <div className="segmented segmented-compact" role="group" aria-label="Timeframe selector">
-                {WINDOWS.map((w) => (
-                  <button
-                    key={w.key}
-                    className={w.key === selectedWindow ? 'active' : ''}
-                    onTouchStart={beginTap}
-                    onTouchMove={moveTap}
-                    onTouchEnd={(e) => endTap(() => handleWindowChange(w.key), e)}
-                    onClick={() => {
-                      if (shouldIgnoreClick()) return
-                      handleWindowChange(w.key)
-                    }}
-                  >
-                    {getWindowLabel(selectedDate, w.key)}
-                  </button>
-                ))}
-              </div>
-              {windowLocked && (
-                <div className="window-lock-indicator" aria-label="Window locked" title="Locked until unlock time">
-                  🔒
-                </div>
-              )}
-            </div>
+        const p1HudLabels = shiftHudSlotLabelsForDisplay(p1 ? displayLabelsByEmployee[p1.name] : undefined)
+        const p2HudLabels = shiftHudSlotLabelsForDisplay(p2 ? displayLabelsByEmployee[p2.name] : undefined)
 
-            {/* Center Menu button (between time selector and calculator) */}
-            <button
-              className="menu-fab"
-              type="button"
-              aria-label="Open more menu"
-              onTouchStart={beginTap}
-              onTouchMove={moveTap}
-              onTouchEnd={(e) =>
-                endTap(() => {
-                  captureScrollYForNextLock()
-                  setShowMenu(true)
-                }, e)
-              }
-              onClick={() => {
-                if (shouldIgnoreClick()) return
+        const windowSelectorEl = (
+          <div className="window-selector-float">
+            <div className="segmented segmented-compact" role="group" aria-label="Timeframe selector">
+              {WINDOWS.map((w) => (
+                <button
+                  key={w.key}
+                  className={w.key === selectedWindow ? 'active' : ''}
+                  onTouchStart={beginTap}
+                  onTouchMove={moveTap}
+                  onTouchEnd={(e) => endTap(() => handleWindowChange(w.key), e)}
+                  onClick={() => {
+                    if (shouldIgnoreClick()) return
+                    handleWindowChange(w.key)
+                  }}
+                >
+                  {getWindowLabel(selectedDate, w.key)}
+                </button>
+              ))}
+            </div>
+            {effectiveWindowLocked && (
+              <div className="window-lock-indicator" aria-label="Window locked" title="Locked until unlock time">
+                🔒
+              </div>
+            )}
+          </div>
+        )
+
+        const menuFabEl = (
+          <button
+            className={uiVariant === 'v3' ? 'menu-fab menu-fab--v3-home' : 'menu-fab'}
+            type="button"
+            aria-label={uiVariant === 'v3' ? 'Open home' : 'Open more menu'}
+            onTouchStart={beginTap}
+            onTouchMove={moveTap}
+            onTouchEnd={(e) =>
+              endTap(() => {
                 captureScrollYForNextLock()
                 setShowMenu(true)
-              }}
-            >
-              More
-            </button>
+              }, e)
+            }
+            onClick={() => {
+              if (shouldIgnoreClick()) return
+              captureScrollYForNextLock()
+              setShowMenu(true)
+            }}
+          >
+            {uiVariant === 'v3' ? 'Home' : 'More'}
+          </button>
+        )
+
+        const calcFabEl = (
+          <button
+            className="calc-fab"
+            type="button"
+            aria-label="Open calculator"
+            onTouchStart={beginTap}
+            onTouchMove={moveTap}
+            onTouchEnd={(e) =>
+              endTap(() => {
+                captureScrollYForNextLock()
+                setShowCalculator(true)
+              }, e)
+            }
+            onClick={() => {
+              if (shouldIgnoreClick()) return
+              captureScrollYForNextLock()
+              setShowCalculator(true)
+            }}
+          >
+            Calculator
+          </button>
+        )
+
+        const diceFabVisible =
+          isDiceEnabledForChannel(taskOverrides, deploymentChannel) &&
+          selectedWindow !== '11' &&
+          !(selectedWindow === '21' && isSoloModeActiveForWindow(selectedDateKey, '21'))
+        const diceIsSplitWindowTrigger = selectedWindow === '17' || selectedWindow === '21'
+        const diceDisabled = diceIsSplitWindowTrigger
+          ? taskSplitCandidateIds.length === 0
+          : randomTaskPickPool.length === 0
+        const diceLabel = diceIsSplitWindowTrigger
+          ? taskSplitInlinePhase !== null
+            ? 'Exit fair task split view'
+            : 'Open fair task split setup'
+          : 'Open a random incomplete task'
+        const diceTitle = diceIsSplitWindowTrigger
+          ? taskSplitInlinePhase !== null
+            ? 'Exit split view'
+            : 'Generate fair task split for this window'
+          : 'Pick a random task'
+        const diceTitleResolved =
+          diceDisabled && diceIsSplitWindowTrigger
+            ? 'No incomplete tasks to split in this window'
+            : diceDisabled
+              ? 'No random incomplete tasks available'
+              : diceTitle
+        const diceFabEl = diceFabVisible ? (
+          <button
+            className="random-task-fab"
+            type="button"
+            aria-label={diceLabel}
+            title={diceTitleResolved}
+            aria-pressed={diceIsSplitWindowTrigger ? taskSplitInlinePhase !== null : undefined}
+            disabled={diceDisabled}
+            onTouchStart={beginTap}
+            onTouchMove={moveTap}
+            onTouchEnd={(e) => {
+              e.stopPropagation()
+              endTap(() => handleDiceTap(), e)
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (shouldIgnoreClick()) return
+              handleDiceTap()
+            }}
+          >
+            🎲
+          </button>
+        ) : null
+
+        const greetingEl =
+          taskSplitInlinePhase !== null && (selectedWindow === '17' || selectedWindow === '21') ? (
+            <div className="greeting-compact">
+              <div className="greeting-text-compact greeting-text-compact--split">50 / 50 split</div>
+            </div>
+          ) : showBreakCountdown && countdownMsRemaining !== null && countdownEmployee ? (
+            <div className="greeting-compact break-countdown">
+              <div className="break-countdown-time">
+                ☕ {Math.floor(countdownMsRemaining / 60_000)}:{String(Math.floor((countdownMsRemaining % 60_000) / 1000)).padStart(2, '0')}
+              </div>
+              <div className="break-countdown-label">until {countdownEmployee}'s break</div>
+            </div>
+          ) : showShiftChangeCountdown ? (
+            <div className="greeting-compact break-countdown">
+              <div className="break-countdown-time">
+                ⏰ {Math.floor(shiftChangeMsRemaining / 60_000)}:{String(Math.floor((shiftChangeMsRemaining % 60_000) / 1000)).padStart(2, '0')}
+              </div>
+              <div className="break-countdown-label">until shift change</div>
+            </div>
+          ) : (
+            <div className="greeting-compact">
+              <div className="greeting-text-compact">{getGreeting(timeOfDay)}</div>
+            </div>
+          )
+
+        if (uiVariant === 'v3') {
+          return (
+            <>
+              <div
+                className={`traq-v3-hero-unified shift-hud ${isDay ? 'day' : 'night'} ${shiftHudPulse ? 'reward-pulse' : ''}`}
+                aria-label="Shift and task progress"
+              >
+                <div className="shift-hud-header traq-v3-hero-unified-header" ref={shiftHudHeaderRef}>
+                  {extra > 0 && (
+                    <div className="shift-hud-extra" ref={shiftHudExtraRef}>
+                      +{extra}
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className="traq-v3-hero-unified-triad"
+                  role="group"
+                  aria-label="Shift leaders and task completion"
+                >
+                  <div
+                    className={`traq-v3-hero-slot-col traq-v3-hero-slot-col--p1 shift-player-slot shift-player-slot--v3-accent ${p1 ? 'filled' : ''}`}
+                    style={shiftPlayerSlotAccentStyle(p1 ? employeeColors[p1.name] : undefined, 'start')}
+                  >
+                    <div className="slot-main">
+                      <div className="slot-name">
+                        {p1 ? p1.name : '—'} {showP1Crown ? <span className="slot-crown">👑</span> : null}
+                      </div>
+                      {p1 && p1HudLabels.length > 0 && (
+                        <div className="slot-labels">
+                          {p1HudLabels.map((label) => (
+                            <span key={label.id} className="slot-label-chip" title={label.description}>
+                              {label.emoji} {label.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      className={`slot-score ${showDayAmPmSplit ? 'slot-score--split' : ''} ${scoreAnim?.slot === 'p1' ? 'reward-pop' : ''}`}
+                      ref={p1ScoreRef}
+                    >
+                      <ShiftHudScoreDisplay
+                        row={p1}
+                        scoreOverride={p1ScoreOverrideRef.current ?? p1ScoreOverride}
+                        showDayAmPmSplit={showDayAmPmSplit}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    className={`top-progress traq-v3-hero-unified-progress ${taskProgress.total === 0 ? 'empty' : ''}`}
+                    role="progressbar"
+                    aria-label="Task completion"
+                    aria-valuemin={0}
+                    aria-valuemax={taskProgress.total}
+                    aria-valuenow={taskProgress.resolved}
+                    ref={topProgressRef}
+                  >
+                    <div
+                      className="progress-percent"
+                      style={
+                        progressGradient
+                          ? {
+                              background: progressGradient,
+                              WebkitBackgroundClip: 'text',
+                              WebkitTextFillColor: 'transparent',
+                              backgroundClip: 'text',
+                            }
+                          : undefined
+                      }
+                    >
+                      {taskProgress.percent}%
+                    </div>
+                    <div className="dash-progress-sub">
+                      {taskProgress.resolved}/{taskProgress.total} done
+                    </div>
+                  </div>
+
+                  <div
+                    className={`traq-v3-hero-slot-col traq-v3-hero-slot-col--p2 shift-player-slot shift-player-slot--v3-accent ${p2 ? 'filled' : ''}`}
+                    style={shiftPlayerSlotAccentStyle(p2 ? employeeColors[p2.name] : undefined, 'end')}
+                  >
+                    <div className="slot-main">
+                      <div className="slot-name">
+                        {p2 ? p2.name : '—'} {showP2Crown ? <span className="slot-crown">👑</span> : null}
+                      </div>
+                      {p2 && p2HudLabels.length > 0 && (
+                        <div className="slot-labels">
+                          {p2HudLabels.map((label) => (
+                            <span key={label.id} className="slot-label-chip" title={label.description}>
+                              {label.emoji} {label.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      className={`slot-score ${showDayAmPmSplit ? 'slot-score--split' : ''} ${scoreAnim?.slot === 'p2' ? 'reward-pop' : ''}`}
+                      ref={p2ScoreRef}
+                    >
+                      <ShiftHudScoreDisplay
+                        row={p2}
+                        scoreOverride={p2ScoreOverrideRef.current ?? p2ScoreOverride}
+                        showDayAmPmSplit={showDayAmPmSplit}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="traq-v3-hero-unified-track-wrap" aria-hidden="true">
+                  <div className="progress-track">
+                    <div
+                      className="progress-fill"
+                      style={{
+                        width: `${taskProgress.percent}%`,
+                        background: progressGradient || undefined,
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="traq-v3-controls-quote-row" aria-label="Time window, message, and actions">
+                <div className="traq-v3-window-wrap">
+                  {windowSelectorEl}
+                </div>
+                <div className="traq-v3-greeting-inline">{greetingEl}</div>
+                <div className="traq-v3-trailing-actions">
+                  {menuFabEl}
+                  {diceFabEl}
+                  {calcFabEl}
+                </div>
+              </div>
+            </>
+          )
+        }
+
+        return (
+          <div className={`shift-hud ${isDay ? 'day' : 'night'} ${shiftHudPulse ? 'reward-pulse' : ''}`}>
+            {windowSelectorEl}
+            {menuFabEl}
             <div className="shift-hud-header" ref={shiftHudHeaderRef}>
-              <div className="shift-hud-title">
-                <span className="shift-hud-label">{isDay ? 'Day Shift' : 'Night Shift'}</span>
-              </div>
-              <div className="shift-hud-note">
-                {selectedWindow === '17'
-                  ? 'Start at 4, complete by 5.'
-                  : selectedWindow === '21'
-                    ? 'Starts at 6:30, complete promptly.'
-                    : 'Complete by 11:30.'}
-              </div>
               {extra > 0 && (
                 <div className="shift-hud-extra" ref={shiftHudExtraRef}>
                   +{extra}
@@ -10519,9 +15133,9 @@ function App() {
                   <div className="slot-name">
                     {p1 ? p1.name : '—'} {showP1Crown ? <span className="slot-crown">👑</span> : null}
                   </div>
-                  {p1 && displayLabelsByEmployee[p1.name]?.length > 0 && (
+                  {p1 && p1HudLabels.length > 0 && (
                     <div className="slot-labels">
-                      {displayLabelsByEmployee[p1.name].map(label => (
+                      {p1HudLabels.map((label) => (
                         <span key={label.id} className="slot-label-chip" title={label.description}>
                           {label.emoji} {label.name}
                         </span>
@@ -10530,10 +15144,14 @@ function App() {
                   )}
                 </div>
                 <div
-                  className={`slot-score ${scoreAnim?.slot === 'p1' ? 'reward-pop' : ''}`}
+                  className={`slot-score ${showDayAmPmSplit ? 'slot-score--split' : ''} ${scoreAnim?.slot === 'p1' ? 'reward-pop' : ''}`}
                   ref={p1ScoreRef}
                 >
-                  {p1 ? (p1ScoreOverride ?? p1.score) : '—'}
+                  <ShiftHudScoreDisplay
+                    row={p1}
+                    scoreOverride={p1ScoreOverrideRef.current ?? p1ScoreOverride}
+                    showDayAmPmSplit={showDayAmPmSplit}
+                  />
                 </div>
               </div>
 
@@ -10549,9 +15167,9 @@ function App() {
                   <div className="slot-name">
                     {p2 ? p2.name : '—'} {showP2Crown ? <span className="slot-crown">👑</span> : null}
                   </div>
-                  {p2 && displayLabelsByEmployee[p2.name]?.length > 0 && (
+                  {p2 && p2HudLabels.length > 0 && (
                     <div className="slot-labels">
-                      {displayLabelsByEmployee[p2.name].map(label => (
+                      {p2HudLabels.map((label) => (
                         <span key={label.id} className="slot-label-chip" title={label.description}>
                           {label.emoji} {label.name}
                         </span>
@@ -10560,10 +15178,14 @@ function App() {
                   )}
                 </div>
                 <div
-                  className={`slot-score ${scoreAnim?.slot === 'p2' ? 'reward-pop' : ''}`}
+                  className={`slot-score ${showDayAmPmSplit ? 'slot-score--split' : ''} ${scoreAnim?.slot === 'p2' ? 'reward-pop' : ''}`}
                   ref={p2ScoreRef}
                 >
-                  {p2 ? (p2ScoreOverride ?? p2.score) : '—'}
+                  <ShiftHudScoreDisplay
+                    row={p2}
+                    scoreOverride={p2ScoreOverrideRef.current ?? p2ScoreOverride}
+                    showDayAmPmSplit={showDayAmPmSplit}
+                  />
                 </div>
               </div>
             </div>
@@ -10611,155 +15233,441 @@ function App() {
         </div>
       )}
 
-      <div className="tasks-section">
-        <button
-          className="calc-fab"
-          type="button"
-          aria-label="Open calculator"
-          onTouchStart={beginTap}
-          onTouchMove={moveTap}
-          onTouchEnd={(e) =>
-            endTap(() => {
-              captureScrollYForNextLock()
-              setShowCalculator(true)
-            }, e)
-          }
-          onClick={() => {
-            if (shouldIgnoreClick()) return
-            captureScrollYForNextLock()
-            setShowCalculator(true)
-          }}
-        >
-          Calculator
-        </button>
+      {/* Window unlock-status card: shows when tasks unlock, with a live MM:SS countdown in the final 30 min. */}
+      {effectiveWindowLocked && windowUnlockTargetMs !== null && (() => {
+        const isDay = selectedShift === 'day'
+        const inFinal30 = windowUnlockTargetMs - now.getTime() <= 30 * 60_000
+        const unlockTimeLabel = new Date(windowUnlockTargetMs).toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+        })
+        const remainingMs = Math.max(0, windowUnlockTargetMs - unlockCountdownNowMs)
+        const mm = Math.floor(remainingMs / 60_000)
+        const ss = Math.floor((remainingMs % 60_000) / 1000)
+        return (
+          <div className={`window-unlock-card ${isDay ? 'day' : 'night'}`} role="status" aria-live="polite">
+            <span className="window-unlock-card-label">{inFinal30 ? 'Tasks unlock in' : 'Tasks unlock at'}</span>
+            {inFinal30 ? (
+              <span className="window-unlock-card-countdown">
+                {mm}:{String(ss).padStart(2, '0')}
+              </span>
+            ) : (
+              <span className="window-unlock-card-time">{unlockTimeLabel}</span>
+            )}
+          </div>
+        )
+      })()}
 
-        <div className="task-grid">
-          {shouldShowDailyTaskTeaser ? (
-            <DailyTaskTeaserCard
-              ref={dailyTaskTeaserCardRef}
-              label={
-                activeDailyTaskRun?.revealedAtMs
-                  ? activeDailyTaskDef?.name || (isDemoDaySelected ? 'Demo Task' : "Today's Task")
-                  : isDemoDaySelected
-                    ? 'Demo Task'
-                    : "Today's Task"
-              }
-              completed={!!activeDailyTaskRun?.completedAtMs}
-              completedBy={
-                (activeDailyTaskRun?.completedByList && activeDailyTaskRun.completedByList.length
-                  ? activeDailyTaskRun.completedByList.join(' + ')
-                  : '') ||
-                activeDailyTaskRun?.completedBy ||
-                ''
-              }
-              attention={
-                !prefersReducedMotion &&
-                !(activeDailyTaskRun?.revealedAtMs || activeDailyTaskRun?.completedAtMs)
-              }
-              onOpen={() => {
-                if (shouldIgnoreClick()) return
-                captureScrollYForNextLock()
-                // Re-open behavior: if already revealed (but not completed), always start at Materials.
-                if (activeDailyTaskRun?.revealedAtMs && !activeDailyTaskRun?.completedAtMs) {
-                  setDailyTaskStep(1)
-                }
-                setShowDailyTaskModal(true)
-              }}
+      <div className={`tasks-section${uiVariant === 'v3' ? ' tasks-section--v3' : ''}`}>
+        {uiVariant !== 'v3' && (
+          <div className="tasks-section-fabs">
+            {isDiceEnabledForChannel(taskOverrides, deploymentChannel) && selectedWindow !== '11' &&
+            !(selectedWindow === '21' && isSoloModeActiveForWindow(selectedDateKey, '21')) ? (() => {
+              const diceIsSplitWindowTrigger = selectedWindow === '17' || selectedWindow === '21'
+              const diceDisabled = diceIsSplitWindowTrigger
+                ? taskSplitCandidateIds.length === 0
+                : randomTaskPickPool.length === 0
+              const diceLabel = diceIsSplitWindowTrigger
+                ? taskSplitInlinePhase !== null
+                  ? 'Exit fair task split view'
+                  : 'Open fair task split setup'
+                : 'Open a random incomplete task'
+              const diceTitle = diceIsSplitWindowTrigger
+                ? taskSplitInlinePhase !== null
+                  ? 'Exit split view'
+                  : 'Generate fair task split for this window'
+                : 'Pick a random task'
+              const diceTitleResolved =
+                diceDisabled && diceIsSplitWindowTrigger
+                  ? 'No incomplete tasks to split in this window'
+                  : diceDisabled
+                    ? 'No random incomplete tasks available'
+                    : diceTitle
+              return (
+                <button
+                  className="random-task-fab"
+                  type="button"
+                  aria-label={diceLabel}
+                  title={diceTitleResolved}
+                  aria-pressed={diceIsSplitWindowTrigger ? taskSplitInlinePhase !== null : undefined}
+                  disabled={diceDisabled}
+                  onTouchStart={beginTap}
+                  onTouchMove={moveTap}
+                  onTouchEnd={(e) => {
+                    e.stopPropagation()
+                    endTap(() => handleDiceTap(), e)
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (shouldIgnoreClick()) return
+                    handleDiceTap()
+                  }}
+                >
+                  🎲
+                </button>
+              )
+            })() : null}
+            <button
+              className="calc-fab"
+              type="button"
+              aria-label="Open calculator"
               onTouchStart={beginTap}
               onTouchMove={moveTap}
               onTouchEnd={(e) =>
                 endTap(() => {
                   captureScrollYForNextLock()
-                  // Re-open behavior: if already revealed (but not completed), always start at Materials.
-                  if (activeDailyTaskRun?.revealedAtMs && !activeDailyTaskRun?.completedAtMs) {
-                    setDailyTaskStep(1)
-                  }
-                  setShowDailyTaskModal(true)
+                  setShowCalculator(true)
                 }, e)
               }
-            />
+              onClick={() => {
+                if (shouldIgnoreClick()) return
+                captureScrollYForNextLock()
+                setShowCalculator(true)
+              }}
+            >
+              Calculator
+            </button>
+          </div>
+        )}
+
+        {(selectedWindow === '17' || selectedWindow === '21') && taskSplitInlinePhase !== null ? (
+          <TaskSplitSuggestPanel
+            windowKey={selectedWindow as TaskSplitSuggestWindowKey}
+            windowLabel={selectedWindow === '17' ? '5PM' : '9PM'}
+            phase={taskSplitInlinePhase}
+            evacuating={splitEvacuating}
+            onExit={closeTaskSplitInline}
+            onRegenerate={taskSplitOnRegenerate}
+            result={taskSplitResult}
+            taskState={taskState}
+            dateKey={selectedDateKey}
+            effectiveWindowTaskIds={taskSplitEffectiveWindowTaskIds}
+            orderedTaskIds={currentTasks.map((t) => t.id)}
+            towelsSplitEffective={isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)}
+            candidateTaskIds={taskSplitCandidateIds}
+            allTasks={allTasks}
+            employeeColors={employeeColors}
+            nightStageLabels={taskSplitNightStageLabels}
+            taskStages={taskStages}
+            splitHudPoints={taskSplitHudFloats}
+            renderIceSideCard={(task: Task, side: 'left' | 'right') => {
+              // Virtual side card: render a TaskCard with the name overridden to "Left Ice" / "Right Ice".
+              // Show the side's draft assignee (if filled) as the preview; tap opens the combined-ice
+              // drawer pre-pointed at this side's picker.
+              const draftKey = `${selectedDateKey}:${selectedWindow}:${task.id}`
+              const draft = iceSidesDraftByKey[draftKey]
+              const sideAssignee = side === 'left' ? draft?.left : draft?.right
+              const virtualTask: Task = {
+                ...task,
+                id: `${task.id}::${side}`,
+                name: side === 'left' ? 'Left Ice' : 'Right Ice',
+              }
+              const baseStatus = statusByTask[task.id]?.status ?? 'pending'
+              return (
+                <TaskCard
+                  key={virtualTask.id}
+                  task={virtualTask}
+                  status={baseStatus === 'done' ? 'pending' : baseStatus}
+                  completion={undefined}
+                  showNewBadge={false}
+                  showUpdatedRequirementsBadge={false}
+                  highlightEarlyCompletable={false}
+                  deferredBadgeAt={null}
+                  previewAssignees={sideAssignee ? [sideAssignee] : undefined}
+                  iceDraftPreview={undefined}
+                  towelDraftPreview={undefined}
+                  interactionLocked={false}
+                  hiddenForActiveModal={false}
+                  isAdmin={isAdmin}
+                  dragReorderEnabled={false}
+                  draggedTaskId={null}
+                  dragOverTaskId={null}
+                  urgency="none"
+                  isPulsing={false}
+                  employeeColors={employeeColors}
+                  didNotNeedToComplete={false}
+                  soloModeActive={isSoloModeActiveForWindow(selectedDateKey, selectedWindow)}
+                  onTaskClick={() => {
+                    taskSplitOpenPrefillRef.current = { taskId: task.id, iceSide: side }
+                    handleTaskClick(task.id, { bypassSyntheticClickGuard: true })
+                  }}
+                  onTaskTouchStart={() => {}}
+                  onTaskTouchMove={() => {}}
+                  onTaskTouchEnd={() => {}}
+                  onDragStart={() => {}}
+                  onDragEnd={() => {}}
+                  onDragEnter={() => {}}
+                  onDragLeave={() => {}}
+                  onDragOver={() => {}}
+                  onDrop={() => {}}
+                />
+              )
+            }}
+            renderTaskCard={(task: Task) => {
+              const taskStatus = statusByTask[task.id]?.status ?? 'pending'
+              const completion = statusByTask[task.id]?.completion
+              const urgency = getTaskUrgency(taskStatus, selectedDate, selectedWindow, new Date(tick))
+              const iceDraftPreview =
+                (task.id === 'ice-5pm' || task.id === 'ice-close') && !completion
+                  ? iceSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
+                  : undefined
+              const towelDraftPreview =
+                (task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
+                !completion &&
+                isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
+                  ? towelSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
+                  : undefined
+              return (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  status={taskStatus}
+                  completion={completion}
+                  showNewBadge={!!showNewBadgeByTaskId[task.id]}
+                  showUpdatedRequirementsBadge={!!showUpdatedRequirementsBadgeByTaskId[task.id]}
+                  highlightEarlyCompletable={false}
+                  deferredBadgeAt={null}
+                  previewAssignees={undefined}
+                  iceDraftPreview={iceDraftPreview}
+                  towelDraftPreview={towelDraftPreview}
+                  interactionLocked={false}
+                  hiddenForActiveModal={activeTaskId === task.id && !isOrderReportTaskId}
+                  isAdmin={isAdmin}
+                  dragReorderEnabled={false}
+                  draggedTaskId={null}
+                  dragOverTaskId={null}
+                  urgency={urgency}
+                  isPulsing={false}
+                  employeeColors={employeeColors}
+                  didNotNeedToComplete={isV3Ui && !!completion?.didNotNeedToComplete}
+                  onUndoDidNotNeed={isV3Ui ? undoV3DidNotNeedToComplete : undefined}
+                  soloModeActive={isSoloModeActiveForWindow(selectedDateKey, selectedWindow)}
+                  onTaskClick={handleSplitSuggestCardClick}
+                  onTaskTouchStart={() => {}}
+                  onTaskTouchMove={() => {}}
+                  onTaskTouchEnd={() => {}}
+                  onDragStart={() => {}}
+                  onDragEnd={() => {}}
+                  onDragEnter={() => {}}
+                  onDragLeave={() => {}}
+                  onDragOver={() => {}}
+                  onDrop={() => {}}
+                />
+              )
+            }}
+            errorBanner={taskSplitErrorBanner}
+          />
+        ) : (
+        <div
+          className={`task-grid${taskGridCelebrating ? ' task-grid--evacuating' : ''}${
+            taskGridEntered ? ' task-grid--entered' : ''
+          }${taskCardsJiggle ? ' task-grid--jiggle' : ''}`}
+        >
+          {/* v3 + stage dividers: daily task placement is window-specific; otherwise keep above grid */}
+          {dailyTaskInlineTeaserEl && !stagedTasks ? dailyTaskInlineTeaserEl : null}
+          {selectedWindowIsTraining && taskProgress.percent < 100 && !showInlineWindowCelebration ? (
+            <div className="training-banner" key="training-shift-banner">
+              <div className="training-banner__label">TRAINING SHIFT</div>
+              <div className="training-banner__sub">All players will receive 50 points</div>
+            </div>
+          ) : null}
+          {showNightSoloActiveBanner ? (
+            <div className="night-solo-prompt-card night-solo-prompt-card--active" key="night-solo-active">
+              <div>
+                <div className="night-solo-prompt-card__active-label">Night solo active</div>
+                <div className="night-solo-prompt-card__active-sub">
+                  Close tasks can be completed alone without splitting. Close score is capped at 70.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="night-solo-prompt-card__btn"
+                disabled={isInitialSyncing || isSaving}
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) => endTap(() => void setNightSoloModeActive(false), e)}
+                onClick={() => {
+                  if (shouldIgnoreClick()) return
+                  void setNightSoloModeActive(false)
+                }}
+              >
+                Turn off
+              </button>
+            </div>
           ) : null}
           {currentTasks.length === 0 && <div className="grid-empty">No tasks configured.</div>}
-          {currentTasks.map((task) => {
-            const taskStatus = statusByTask[task.id]?.status ?? 'pending'
-            const urgency = getTaskUrgency(taskStatus, selectedDate, selectedWindow, new Date(tick))
-            const highlightEarlyCompletable =
-              isTodaySelected &&
-              task.id === 'yum-yum-close' &&
-              (selectedWindow === '17' || selectedWindow === '21') &&
-              taskStatus !== 'done'
-            const deferredBadgeAt =
-              task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift
-                ? selectedCloseLabel
-                : null
-            const completion = statusByTask[task.id]?.completion
-            const interactionLocked =
-              (selectedWindow === '17' && !!completion?.deferredToClose) ||
-              (task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift)
-            const previewAssignees =
-              !completion?.assignees?.length && task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift
-                ? orderReportEmployees.filter(Boolean)
-                : undefined
-            const iceDraftPreview =
-              (task.id === 'ice-5pm' || task.id === 'ice-close') && !completion
-                ? iceSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
-                : undefined
-            const towelDraftPreview =
-              (task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
-              !completion &&
-              isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
-                ? towelSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
-                : undefined
-            return (
-              <TaskCard
-                key={task.id}
-                task={task}
-                status={taskStatus}
-                completion={completion}
-                showNewBadge={!!showNewBadgeByTaskId[task.id]}
-                showUpdatedRequirementsBadge={!!showUpdatedRequirementsBadgeByTaskId[task.id]}
-                highlightEarlyCompletable={highlightEarlyCompletable}
-                deferredBadgeAt={deferredBadgeAt}
-                previewAssignees={previewAssignees}
-                iceDraftPreview={iceDraftPreview}
-                towelDraftPreview={towelDraftPreview}
-                interactionLocked={interactionLocked}
-                isAdmin={isAdmin}
-                draggedTaskId={draggedTaskId}
-                dragOverTaskId={dragOverTaskId}
-                urgency={urgency}
-                isPulsing={task.id === pulseTaskId}
-                employeeColors={employeeColors}
-                onTaskClick={handleTaskClick}
-                onTaskTouchStart={handleTaskTouchStart}
-                onTaskTouchMove={handleTaskTouchMove}
-                onTaskTouchEnd={handleTaskTouchEnd}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
-                onDragEnter={handleDragEnter}
-                onDragLeave={handleDragLeave}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
-              />
-            )
-          })}
+          {(() => {
+            if (showInlineWindowCelebration && windowCompleteCelebration) {
+              return (
+                <WindowCompleteCelebration
+                  celebration={windowCompleteCelebration}
+                  onTileClick={handleWindowCompleteTileClick}
+                  onCompletionTypingFinished={onWindowCompleteAiTypingFinished}
+                />
+              )
+            }
+
+            let taskEvacStaggerNext = 0
+            const renderCard = (task: Task) => {
+              const taskStatus = statusByTask[task.id]?.status ?? 'pending'
+              const urgency = getTaskUrgency(taskStatus, selectedDate, selectedWindow, new Date(tick))
+              const highlightEarlyCompletable =
+                isTodaySelected &&
+                task.id === 'yum-yum-close' &&
+                (selectedWindow === '17' || selectedWindow === '21') &&
+                taskStatus !== 'done'
+              const deferredBadgeAt =
+                task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift
+                  ? selectedCloseLabel
+                  : null
+              const completion = statusByTask[task.id]?.completion
+              const interactionLocked =
+                (selectedWindow === '17' && !!completion?.deferredToClose) ||
+                (task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift)
+              const previewAssignees =
+                !completion?.assignees?.length && task.id === 'order-report-5pm' && selectedWindow === '17' && selectedBothDoubleShift
+                  ? orderReportEmployees.filter(Boolean)
+                  : undefined
+              const iceDraftPreview =
+                (task.id === 'ice-5pm' || task.id === 'ice-close') && !completion
+                  ? iceSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
+                  : undefined
+              const towelDraftPreview =
+                (task.id === 'towels' || task.id === 'towels-5pm' || task.id === 'towels-close') &&
+                !completion &&
+                isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
+                  ? towelSidesDraftByKey[`${selectedDateKey}:${selectedWindow}:${task.id}`] || undefined
+                  : undefined
+              const evacuationStaggerIndex = taskGridCelebrating ? taskEvacStaggerNext++ : undefined
+              return (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  status={taskStatus}
+                  completion={completion}
+                  showNewBadge={!!showNewBadgeByTaskId[task.id]}
+                  showUpdatedRequirementsBadge={!!showUpdatedRequirementsBadgeByTaskId[task.id]}
+                  highlightEarlyCompletable={highlightEarlyCompletable}
+                  deferredBadgeAt={deferredBadgeAt}
+                  previewAssignees={previewAssignees}
+                  iceDraftPreview={iceDraftPreview}
+                  towelDraftPreview={towelDraftPreview}
+                  interactionLocked={interactionLocked}
+                  hiddenForActiveModal={activeTaskId === task.id && !isOrderReportTaskId}
+                  isAdmin={isAdmin}
+                  dragReorderEnabled={uiVariant !== 'v3'}
+                  draggedTaskId={draggedTaskId}
+                  dragOverTaskId={dragOverTaskId}
+                  urgency={urgency}
+                  isPulsing={task.id === pulseTaskId}
+                  employeeColors={employeeColors}
+                  didNotNeedToComplete={isV3Ui && !!completion?.didNotNeedToComplete}
+                  onUndoDidNotNeed={isV3Ui ? undoV3DidNotNeedToComplete : undefined}
+                  soloModeActive={isSoloModeActiveForWindow(selectedDateKey, selectedWindow)}
+                  onTaskClick={handleTaskClick}
+                  onTaskTouchStart={handleTaskTouchStart}
+                  onTaskTouchMove={handleTaskTouchMove}
+                  onTaskTouchEnd={handleTaskTouchEnd}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                  onDragEnter={handleDragEnter}
+                  onDragLeave={handleDragLeave}
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                  evacuationStaggerIndex={evacuationStaggerIndex}
+                />
+              )
+            }
+
+            if (stagedTasks) {
+              if (isV3Ui) {
+                const isDone = (id: string) => statusByTask[id]?.status === 'done'
+                const stage1Pending = stagedTasks.stage1.filter((t) => !isDone(t.id))
+                const stage2Pending = stagedTasks.stage2.filter((t) => !isDone(t.id))
+                const dailyTaskUnderStage2ForThisWindow = selectedWindow === '11'
+                return (
+                  <>
+                    <div
+                      className={`task-grid__upper-strip${
+                        windowCompleteStageCollapse ? ' task-grid__upper-strip--collapsed' : ''
+                      }`}
+                    >
+                      <div className="stage-divider" key="stage-div-1">
+                        {stagedTasks.label1}
+                      </div>
+                      {!dailyTaskUnderStage2ForThisWindow ? dailyTaskInlineTeaserEl : null}
+                      {stage1Pending.map(renderCard)}
+                      <div className="stage-divider" key="stage-div-2">
+                        {stagedTasks.label2}
+                      </div>
+                      {stage2Pending.map(renderCard)}
+                      {dailyTaskUnderStage2ForThisWindow ? (
+                        <>
+                          <div className="stage-divider stage-divider--daily" key="stage-div-daily">
+                            Daily task
+                          </div>
+                          {dailyTaskInlineTeaserEl}
+                        </>
+                      ) : null}
+                    </div>
+                    {v3CompletedTasksOrdered.length > 0 && (
+                      <>
+                        <div ref={completedTasksAnchorRef} className="completed-tasks-anchor" aria-hidden="true" />
+                        <div ref={completedTasksStageRef} className="stage-divider stage-divider--completed" key="stage-div-done">
+                          Completed tasks
+                        </div>
+                        {v3CompletedTasksOrdered.map(renderCard)}
+                      </>
+                    )}
+                  </>
+                )
+              }
+              const dailyTaskUnderStage2ForThisWindow = selectedWindow === '11'
+              return (
+                <>
+                  <div className="stage-divider" key="stage-div-1">{stagedTasks.label1}</div>
+                  {!dailyTaskUnderStage2ForThisWindow ? dailyTaskInlineTeaserEl : null}
+                  {stagedTasks.stage1.map(renderCard)}
+                  <div className="stage-divider" key="stage-div-2">{stagedTasks.label2}</div>
+                  {stagedTasks.stage2.map(renderCard)}
+                  {dailyTaskUnderStage2ForThisWindow ? (
+                    <>
+                      <div className="stage-divider stage-divider--daily" key="stage-div-daily">
+                        Daily task
+                      </div>
+                      {dailyTaskInlineTeaserEl}
+                    </>
+                  ) : null}
+                </>
+              )
+            }
+
+            if (isV3Ui) {
+              const isDone = (id: string) => statusByTask[id]?.status === 'done'
+              const pendingTasks = currentTasks.filter((t) => !isDone(t.id))
+              return (
+                <>
+                  {pendingTasks.map(renderCard)}
+                  {v3CompletedTasksOrdered.length > 0 && (
+                    <>
+                      <div ref={completedTasksAnchorRef} className="completed-tasks-anchor" aria-hidden="true" />
+                      <div ref={completedTasksStageRef} className="stage-divider stage-divider--completed" key="v3-grid-done">
+                        Completed tasks
+                      </div>
+                      {v3CompletedTasksOrdered.map(renderCard)}
+                    </>
+                  )}
+                </>
+              )
+            }
+
+            return currentTasks.map(renderCard)
+          })()}
         </div>
+        )}
 
         {isAdmin && (
           <div className="admin-test-buttons">
-            <button
-              className="admin-reminder-test"
-              type="button"
-              onTouchStart={beginTap}
-              onTouchMove={moveTap}
-              onTouchEnd={(e) => endTap(() => startReminder('TEST'), e)}
-              onClick={() => {
-                if (shouldIgnoreClick()) return
-                startReminder('TEST')
-              }}
-            >
-              Test task reminder flash
-            </button>
             <button
               className="admin-reminder-test"
               type="button"
@@ -10776,15 +15684,225 @@ function App() {
           </div>
         )}
 
+        {showBetaDemoModeFooter ? (
+          <div className="beta-demo-mode-footer" role="region" aria-label="Demo mode">
+            {!demoDayKey ? (
+              <button type="button" className="beta-demo-mode-footer__start" onClick={startRandomDemoDay}>
+                Demo mode
+              </button>
+            ) : (
+              <div className="beta-demo-mode-footer__row">
+                <span className="beta-demo-mode-footer__date" title="Local-only sandbox date">
+                  Demo {demoDayKey}
+                </span>
+                <button type="button" className="beta-demo-mode-footer__btn" onClick={reshuffleDemoDailyTask}>
+                  New task
+                </button>
+                <button type="button" className="beta-demo-mode-footer__btn beta-demo-mode-footer__exit" onClick={exitDemoDay}>
+                  Exit
+                </button>
+              </div>
+            )}
+            {showBetaScreensaverPreview ? (
+              <>
+                <button
+                  type="button"
+                  className="beta-demo-mode-footer__screensaver"
+                  onClick={() => openScreensaverPreview()}
+                >
+                  Preview screensaver
+                </button>
+                <button
+                  type="button"
+                  className="beta-demo-mode-footer__screensaver-demo"
+                  title="Random: sample two-name quote, or break / shift countdown (static preview times)"
+                  onClick={() => openScreensaverBetaDemoQuoteOrCountdown()}
+                >
+                  Preview quote or countdown
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              className="beta-demo-mode-footer__screensaver-demo"
+              title="Play the window complete celebration animation"
+              onTouchStart={beginTap}
+              onTouchMove={moveTap}
+              onTouchEnd={(e) => endTap(() => triggerBetaWindowCompleteAnimation(), e)}
+              onClick={() => {
+                if (shouldIgnoreClick()) return
+                triggerBetaWindowCompleteAnimation()
+              }}
+            >
+              Test completion animation
+            </button>
+          </div>
+        ) : null}
+
+        {!demoDayKey ? (
+          <div className="bottom-date-nav" role="region" aria-label="Choose day to view">
+            <div className="bottom-date-nav__row">
+              <button
+                type="button"
+                className="bottom-date-nav__arrow"
+                aria-label="Previous day"
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) => endTap(() => handleDateChange(addDays(selectedDate, -1)), e)}
+                onClick={() => {
+                  if (shouldIgnoreClick()) return
+                  handleDateChange(addDays(selectedDate, -1))
+                }}
+              >
+                ◀
+              </button>
+              <label className="bottom-date-nav__pill-wrap">
+                <span className="bottom-date-nav__pill-face" aria-hidden="true">
+                  <span className="bottom-date-nav__cal">📅</span>
+                  <span className="bottom-date-nav__label">{displayDate(selectedDate)}</span>
+                </span>
+                <input
+                  type="date"
+                  className="bottom-date-nav__native-input"
+                  value={selectedDateKey}
+                  aria-label="Pick a date"
+                  onChange={(e) => {
+                    const v = e.target.value
+                    if (!v) return
+                    handleDateChange(startOfDay(parseDateKey(v)))
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="bottom-date-nav__arrow"
+                aria-label="Next day"
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) => endTap(() => handleDateChange(addDays(selectedDate, 1)), e)}
+                onClick={() => {
+                  if (shouldIgnoreClick()) return
+                  handleDateChange(addDays(selectedDate, 1))
+                }}
+              >
+                ▶
+              </button>
+              {!isTodaySelected ? (
+                <button
+                  type="button"
+                  className="bottom-date-nav__today"
+                  onTouchStart={beginTap}
+                  onTouchMove={moveTap}
+                  onTouchEnd={(e) => endTap(() => snapBrowseContextToLiveNow(), e)}
+                  onClick={() => {
+                    if (shouldIgnoreClick()) return
+                    snapBrowseContextToLiveNow()
+                  }}
+                >
+                  Back to today
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {uiVariant === 'v3' ? (
+          <div className="app-settings-fab-wrap">
+            <button
+              type="button"
+              className="app-settings-fab"
+              aria-label="Settings"
+              onTouchStart={beginTap}
+              onTouchMove={moveTap}
+              onTouchEnd={(e) => endTap(() => setShowAppSettingsMenu(true), e)}
+              onClick={() => {
+                if (shouldIgnoreClick()) return
+                setShowAppSettingsMenu(true)
+              }}
+            >
+              <span className="app-settings-fab__icon" aria-hidden>
+                ⚙️
+              </span>
+              <span className="app-settings-fab__label">Settings</span>
+            </button>
+          </div>
+        ) : null}
+
         <div className="powered-by-footer">
-          <img className="powered-by-image" src={poweredByUrl} alt="Powered by" loading="lazy" />
-          <div className="powered-by-version">TRAQ version 2.2</div>
+          <button
+            type="button"
+            className="powered-by-unlock-btn"
+            aria-label="Powered by"
+            onTouchStart={beginTap}
+            onTouchMove={moveTap}
+            onTouchEnd={(e) => endTap(handlePoweredByUnlockTap, e)}
+            onClick={() => {
+              if (shouldIgnoreClick()) return
+              handlePoweredByUnlockTap()
+            }}
+          >
+            <img className="powered-by-image" src={poweredByUrl} alt="" loading="lazy" />
+          </button>
+          <div className="powered-by-version">Version 1</div>
         </div>
+      </div>
       </div>
 
       <CalculatorOverlay open={showCalculator} onClose={() => setShowCalculator(false)} />
 
+      {splitIcePromptOpen && (
+        <div
+          className="selector-backdrop"
+          onTouchStart={beginTap}
+          onTouchMove={moveTap}
+          onTouchEnd={(e) => endTap(() => setSplitIcePromptOpen(false), e)}
+          onClick={() => {
+            if (shouldIgnoreClick()) return
+            setSplitIcePromptOpen(false)
+          }}
+        >
+          <div
+            className={`selector-card${isV31 ? ' selector-card--v31' : ''}`}
+            onTouchStart={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="selector-header-center">
+              <h3>Split Ice?</h3>
+            </div>
+            <div className="split-ice-prompt__row">
+              <button
+                type="button"
+                className="split-ice-prompt__choice"
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) => endTap(() => handleSplitIceChoice(true), e)}
+                onClick={() => {
+                  if (shouldIgnoreClick()) return
+                  handleSplitIceChoice(true)
+                }}
+              >
+                Split Ice
+              </button>
+              <button
+                type="button"
+                className="split-ice-prompt__choice"
+                onTouchStart={beginTap}
+                onTouchMove={moveTap}
+                onTouchEnd={(e) => endTap(() => handleSplitIceChoice(false), e)}
+                onClick={() => {
+                  if (shouldIgnoreClick()) return
+                  handleSplitIceChoice(false)
+                }}
+              >
+                One Person
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <DailyTaskModal
+        uiVariant={uiVariant}
         open={showDailyTaskModal}
         onClose={() => {
           setShowDailyTaskModal(false)
@@ -10846,7 +15964,7 @@ function App() {
           }}
         >
           <div
-            className="selector-card"
+            className={`selector-card${isV31 ? ' selector-card--v31' : ''}`}
             onTouchStart={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
@@ -10856,7 +15974,7 @@ function App() {
             </div>
             
             <div className="employee-grid">
-              {employees.map((user) => (
+              {activeEmployees.map((user) => (
                 <button
                   key={user}
                   className={`employee-option ${dailyTaskEmployees.includes(user) ? 'selected' : ''}`}
@@ -10934,7 +16052,7 @@ function App() {
           <OrderReportOverlay
             open
             employees={orderReportEmployees}
-            allEmployees={employees}
+            allEmployees={activeEmployees}
             onChangeEmployees={(pair) => setOrderReportEmployeesOverride(pair)}
             initialCounts={completion?.orderReportCounts}
             description={orderReportOverlayDescription}
@@ -10963,16 +16081,14 @@ function App() {
           }}
         >
           <div
-            className="modal-sheet"
+            className={uiVariant === 'v3' ? 'modal-sheet home-menu-sheet--v3' : 'modal-sheet'}
             onTouchStart={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
-              <div className="modal-title">
-                <h2>More</h2>
-              </div>
+              <div className="modal-title">{uiVariant === 'v3' ? null : <h2>More</h2>}</div>
               <button
-                className="close-button"
+                className={uiVariant === 'v3' ? 'close-button home-menu-close--v3' : 'close-button'}
                 onTouchStart={(e) => {
                   recordTouch()
                   setShowMenu(false)
@@ -10987,9 +16103,13 @@ function App() {
               </button>
             </div>
 
-            <div className="modal-body more-menu-body">
+            <div
+              className={
+                uiVariant === 'v3' ? 'modal-body home-menu-body--v3' : 'modal-body more-menu-body'
+              }
+            >
               <button
-                className="more-menu-btn"
+                className={uiVariant === 'v3' ? 'home-menu-tile' : 'more-menu-btn'}
                 type="button"
                 onTouchStart={beginTap}
                 onTouchMove={moveTap}
@@ -11005,13 +16125,13 @@ function App() {
                   setShowTimeOff(true)
                 }}
               >
-                <span className="more-menu-btn-icon">📅</span>
-                <span className="more-menu-btn-label">Time Off</span>
-                <span className="more-menu-btn-arrow">›</span>
+                <span className={uiVariant === 'v3' ? 'home-menu-tile-icon' : 'more-menu-btn-icon'}>📅</span>
+                <span className={uiVariant === 'v3' ? 'home-menu-tile-label' : 'more-menu-btn-label'}>Time Off</span>
+                {uiVariant === 'v3' ? null : <span className="more-menu-btn-arrow">›</span>}
               </button>
 
               <button
-                className="more-menu-btn"
+                className={uiVariant === 'v3' ? 'home-menu-tile' : 'more-menu-btn'}
                 type="button"
                 onTouchStart={beginTap}
                 onTouchMove={moveTap}
@@ -11031,13 +16151,13 @@ function App() {
                   beginNotifyManagementFlow()
                 }}
               >
-                <span className="more-menu-btn-icon">🛠️</span>
-                <span className="more-menu-btn-label">Report Issue</span>
-                <span className="more-menu-btn-arrow">›</span>
+                <span className={uiVariant === 'v3' ? 'home-menu-tile-icon' : 'more-menu-btn-icon'}>🛠️</span>
+                <span className={uiVariant === 'v3' ? 'home-menu-tile-label' : 'more-menu-btn-label'}>Report Issue</span>
+                {uiVariant === 'v3' ? null : <span className="more-menu-btn-arrow">›</span>}
               </button>
 
               <button
-                className="more-menu-btn"
+                className={uiVariant === 'v3' ? 'home-menu-tile home-menu-tile--stock' : 'more-menu-btn'}
                 type="button"
                 onTouchStart={beginTap}
                 onTouchMove={moveTap}
@@ -11055,30 +16175,61 @@ function App() {
                   setShowStockReports(true)
                 }}
               >
-                <span className="more-menu-btn-icon">📦</span>
-                <span className="more-menu-btn-label">OUT / LOW STOCK</span>
-                <span className="more-menu-btn-arrow">›</span>
+                <span className={uiVariant === 'v3' ? 'home-menu-tile-icon' : 'more-menu-btn-icon'}>📦</span>
+                <span className={uiVariant === 'v3' ? 'home-menu-tile-label' : 'more-menu-btn-label'}>OUT / LOW STOCK</span>
+                {stockReportsPending.length > 0 ? (
+                  <span
+                    className={
+                      uiVariant === 'v3'
+                        ? `home-menu-tile-badge${
+                            stockReportsOutPendingCount > 0
+                              ? ' home-menu-tile-badge--urgent'
+                              : ' home-menu-tile-badge--low'
+                          }`
+                        : `more-menu-btn-badge${
+                            stockReportsOutPendingCount > 0
+                              ? ' more-menu-btn-badge--urgent'
+                              : ' more-menu-btn-badge--low'
+                          }`
+                    }
+                    aria-label={`${stockReportsPending.length} pending stock reports`}
+                  >
+                    {stockReportsPending.length}
+                  </span>
+                ) : null}
+                {uiVariant === 'v3' ? null : <span className="more-menu-btn-arrow">›</span>}
               </button>
 
-              <a
-                className="more-menu-btn"
-                href="/pos"
-                onClick={() => setShowMenu(false)}
-              >
-                <span className="more-menu-btn-icon">💵</span>
-                <span className="more-menu-btn-label">Cash Only POS</span>
-                <span className="more-menu-btn-arrow">›</span>
-              </a>
+              {(uiVariant !== 'v3' || v3AdminPosEnabled) && (
+                <a
+                  className={uiVariant === 'v3' ? 'home-menu-tile' : 'more-menu-btn'}
+                  href="/pos"
+                  onClick={() => setShowMenu(false)}
+                >
+                  <span className={uiVariant === 'v3' ? 'home-menu-tile-icon' : 'more-menu-btn-icon'}>💵</span>
+                  <span className={uiVariant === 'v3' ? 'home-menu-tile-label' : 'more-menu-btn-label'}>Cash Only POS</span>
+                  {uiVariant === 'v3' ? null : <span className="more-menu-btn-arrow">›</span>}
+                </a>
+              )}
 
-              <a
-                className="more-menu-btn"
-                href="/admin"
-                onClick={() => setShowMenu(false)}
-              >
-                <span className="more-menu-btn-icon">🔐</span>
-                <span className="more-menu-btn-label">Admin</span>
-                <span className="more-menu-btn-arrow">›</span>
-              </a>
+              {uiVariant === 'v3' && (
+                <button
+                  type="button"
+                  className="home-menu-tile home-menu-tile--locked home-menu-tile--locked-secret"
+                  aria-label="Training mode, locked"
+                  onTouchStart={beginTap}
+                  onTouchMove={moveTap}
+                  onTouchEnd={(e) => endTap(() => handleTrainingSecretTap(), e)}
+                  onClick={() => {
+                    if (shouldIgnoreClick()) return
+                    handleTrainingSecretTap()
+                  }}
+                >
+                  <span className="home-menu-tile-icon">🎓</span>
+                  <span className="home-menu-tile-label">Training mode</span>
+                  <span className="home-menu-tile-locked-badge">Locked</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -11109,31 +16260,27 @@ function App() {
           }}
         >
           <div
-            className="modal-sheet modal-sheet-tall"
+            className={`modal-sheet modal-sheet-tall${uiVariant === 'v3' ? ' stock-modal--v3' : ''}`}
             onTouchStart={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
               <div className="modal-title">
                 <h2>
-                  {stockWizardStep === 'who'
-                    ? 'Who are you?'
-                    : stockWizardStep === 'kind'
-                      ? 'What are you reporting?'
-                      : stockWizardStep === 'item'
-                        ? 'Type the Item'
-                        : 'OUT / LOW STOCK'}
+                  {stockWizardStep === 'kind'
+                    ? 'What are you reporting?'
+                    : stockWizardStep === 'item'
+                      ? 'Type the Item'
+                      : 'OUT / LOW STOCK'}
                 </h2>
               </div>
               <button
-                className="close-button"
+                className={uiVariant === 'v3' ? 'close-button home-menu-close--v3' : 'close-button'}
                 onTouchStart={(e) => {
                   recordTouch()
                   if (stockWizardStep === 'item') {
                     setStockWizardStep('kind')
                   } else if (stockWizardStep === 'kind') {
-                    setStockWizardStep('who')
-                  } else if (stockWizardStep === 'who') {
                     resetStockWizardToList()
                   } else {
                     resetStockWizardToList()
@@ -11146,8 +16293,6 @@ function App() {
                   if (stockWizardStep === 'item') {
                     setStockWizardStep('kind')
                   } else if (stockWizardStep === 'kind') {
-                    setStockWizardStep('who')
-                  } else if (stockWizardStep === 'who') {
                     resetStockWizardToList()
                   } else {
                     resetStockWizardToList()
@@ -11170,161 +16315,152 @@ function App() {
             <div className="modal-body stock-modal-body">
               {!stockWizardStep && (
                 <div className="stock-list-view">
-                  <button
-                    className="stock-new-btn"
-                    type="button"
-                    onTouchStart={beginTap}
-                    onTouchMove={moveTap}
-                    onTouchEnd={(e) => endTap(() => beginStockReportFlow(), e)}
-                    onClick={() => {
-                      if (shouldIgnoreClick()) return
-                      beginStockReportFlow()
-                    }}
-                  >
-                    + Report Item
-                  </button>
-
-                  <div className="stock-recent-title">Most recent reports</div>
-
-                  {stockReports.length === 0 ? (
-                    <div className="stock-empty">No reports yet.</div>
-                  ) : (
-                    <div className="stock-report-list">
-                      {stockReports.map((r) => {
-                        const createdMs =
-                          typeof r.createdAtMs === 'number'
-                            ? r.createdAtMs
-                            : r.createdAt
-                              ? Date.parse(r.createdAt)
-                              : 0
-                        const createdLabel = createdMs
-                          ? new Date(createdMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-                          : ''
-
-                        return (
-                          <div key={r.id} className={`stock-report-card stock-status-${r.status}`}>
-                            <div className="stock-report-header">
-                              <div className="stock-report-item">{r.item}</div>
-                              <div className="stock-report-actions">
-                                <span className={`stock-status-chip stock-status-${r.status}`}>
-                                  {r.status === 'pending' ? 'Pending' : 'Finished'}
-                                </span>
-                                {isAdmin && r.status === 'pending' ? (
-                                  <button
-                                    className="stock-finish-btn"
-                                    type="button"
-                                    disabled={stockFinishingId === r.id}
-                                    onTouchStart={beginTap}
-                                    onTouchMove={moveTap}
-                                    onTouchEnd={(e) =>
-                                      endTap(() => {
-                                        setStockFinishingId(r.id)
-                                        void setStockReportStatus(r.id, 'finished')
-                                          .catch((err) => {
-                                            console.error('Failed to finish stock report:', err)
-                                          })
-                                          .finally(() => {
-                                            setStockFinishingId(null)
-                                          })
-                                      }, e)
-                                    }
-                                    onClick={() => {
-                                      if (shouldIgnoreClick()) return
-                                      setStockFinishingId(r.id)
-                                      void setStockReportStatus(r.id, 'finished')
-                                        .catch((err) => {
-                                          console.error('Failed to finish stock report:', err)
-                                        })
-                                        .finally(() => {
-                                          setStockFinishingId(null)
-                                        })
-                                    }}
-                                  >
-                                    {stockFinishingId === r.id ? '…' : '✓ Finish'}
-                                  </button>
-                                ) : null}
-                                {isAdmin ? (
-                                  <button
-                                    className="stock-delete-btn"
-                                    type="button"
-                                    disabled={stockDeletingId === r.id}
-                                    onTouchStart={beginTap}
-                                    onTouchMove={moveTap}
-                                    onTouchEnd={(e) =>
-                                      endTap(() => {
-                                        if (!confirm('Delete this report?')) return
-                                        setStockDeletingId(r.id)
-                                        void deleteStockReport(r.id)
-                                          .catch((err) => {
-                                            console.error('Failed to delete stock report:', err)
-                                          })
-                                          .finally(() => {
-                                            setStockDeletingId(null)
-                                          })
-                                      }, e)
-                                    }
-                                    onClick={() => {
-                                      if (shouldIgnoreClick()) return
-                                      if (!confirm('Delete this report?')) return
-                                      setStockDeletingId(r.id)
-                                      void deleteStockReport(r.id)
-                                        .catch((err) => {
-                                          console.error('Failed to delete stock report:', err)
-                                        })
-                                        .finally(() => {
-                                          setStockDeletingId(null)
-                                        })
-                                    }}
-                                  >
-                                    {stockDeletingId === r.id ? '…' : '🗑 Delete'}
-                                  </button>
-                                ) : null}
-                              </div>
-                            </div>
-                            <div className="stock-report-meta">
-                              <span className={`stock-kind-chip stock-kind-${r.kind}`}>
-                                {r.kind === 'low' ? 'Low Stock' : 'Out of Stock'}
-                              </span>
-                              {createdLabel ? <span className="stock-report-time">• {createdLabel}</span> : null}
-                              {r.createdBy ? <span className="stock-report-by">• {r.createdBy}</span> : null}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {stockWizardStep === 'who' && (
-                <div className="timeoff-who-view">
-                  <p className="timeoff-help">Tap your name to report an item.</p>
-                  <div className="timeoff-employee-list">
-                    {employees.map((name) => (
+                  {stockReportsPending.length === 0 && stockReportsFinished.length === 0 ? (
+                    <>
+                      <div className="stock-empty">No reports yet.</div>
                       <button
-                        key={name}
-                        className={`timeoff-employee-btn ${stockReporterName === name ? 'selected' : ''}`}
+                        className="stock-new-btn"
                         type="button"
                         onTouchStart={beginTap}
                         onTouchMove={moveTap}
-                        onTouchEnd={(e) =>
-                          endTap(() => {
-                            setStockReporterName(name)
-                            setStockError(null)
-                            setStockWizardStep('kind')
-                          }, e)
-                        }
+                        onTouchEnd={(e) => endTap(() => beginStockReportFlow(), e)}
                         onClick={() => {
                           if (shouldIgnoreClick()) return
-                          setStockReporterName(name)
-                          setStockError(null)
-                          setStockWizardStep('kind')
+                          beginStockReportFlow()
                         }}
                       >
-                        {name}
+                        + Report Item
                       </button>
-                    ))}
-                  </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="stock-recent-title stock-section-header stock-section-header--active">
+                        <span className="stock-section-header-label">Active</span>
+                        {stockReportsPending.length > 0 ? (
+                          <span
+                            className={`stock-section-count stock-section-count--${
+                              stockReportsOutPendingCount > 0 ? 'out' : 'low'
+                            }`}
+                          >
+                            {stockReportsPending.length}
+                          </span>
+                        ) : null}
+                      </div>
+                      {stockReportsPending.length === 0 ? (
+                        <div className="stock-empty stock-empty-active">No active items.</div>
+                      ) : (
+                        <div className="stock-bubbles-scroll">
+                          <StockPendingReportList
+                            reports={stockReportsPending}
+                            emptyMessage="No active items."
+                            renderCard={(r) => (
+                              <StockItemBubble
+                                key={r.id}
+                                report={r}
+                                beginTap={beginTap}
+                                moveTap={moveTap}
+                                endTap={endTap}
+                                shouldIgnoreClick={shouldIgnoreClick}
+                                showFinishButton={isAdmin && r.status === 'pending'}
+                                finishing={stockFinishingId === r.id}
+                                onFinish={() => {
+                                  setStockFinishingId(r.id)
+                                  void setStockReportStatus(r.id, 'finished')
+                                    .catch((err) => {
+                                      console.error('Failed to finish stock report:', err)
+                                    })
+                                    .finally(() => {
+                                      setStockFinishingId(null)
+                                    })
+                                }}
+                                deleting={stockDeletingId === r.id}
+                                onDelete={() => {
+                                  if (!confirm('Delete this report?')) return
+                                  setStockDeletingId(r.id)
+                                  void deleteStockReport(r.id)
+                                    .catch((err) => {
+                                      console.error('Failed to delete stock report:', err)
+                                    })
+                                    .finally(() => {
+                                      setStockDeletingId(null)
+                                    })
+                                  void sendStockReportEmailNotification({
+                                    kind: r.kind,
+                                    item: `${r.item} (deleted)`,
+                                    by: r.createdBy || undefined,
+                                    reportedAtIso: new Date().toISOString(),
+                                  })
+                                  setStockSendFxNonce((n) => n + 1)
+                                  setStockSendFxVisible(true)
+                                  if (stockSendFxTimeoutRef.current) window.clearTimeout(stockSendFxTimeoutRef.current)
+                                  stockSendFxTimeoutRef.current = window.setTimeout(() => {
+                                    setStockSendFxVisible(false)
+                                  }, 1600)
+                                }}
+                              />
+                            )}
+                          />
+                        </div>
+                      )}
+
+                      <button
+                        className="stock-new-btn"
+                        type="button"
+                        onTouchStart={beginTap}
+                        onTouchMove={moveTap}
+                        onTouchEnd={(e) => endTap(() => beginStockReportFlow(), e)}
+                        onClick={() => {
+                          if (shouldIgnoreClick()) return
+                          beginStockReportFlow()
+                        }}
+                      >
+                        + Report Item
+                      </button>
+
+                      {stockReportsFinished.length > 0 ? (
+                        <>
+                          <div className="stock-recent-title">Resolved</div>
+                          <div className="stock-bubble-grid">
+                            {stockReportsFinished.map((r) => (
+                              <StockItemBubble
+                                key={r.id}
+                                report={r}
+                                beginTap={beginTap}
+                                moveTap={moveTap}
+                                endTap={endTap}
+                                shouldIgnoreClick={shouldIgnoreClick}
+                                showFinishButton={false}
+                                deleting={stockDeletingId === r.id}
+                                onDelete={() => {
+                                  if (!confirm('Delete this report?')) return
+                                  setStockDeletingId(r.id)
+                                  void deleteStockReport(r.id)
+                                    .catch((err) => {
+                                      console.error('Failed to delete stock report:', err)
+                                    })
+                                    .finally(() => {
+                                      setStockDeletingId(null)
+                                    })
+                                  void sendStockReportEmailNotification({
+                                    kind: r.kind,
+                                    item: `${r.item} (deleted)`,
+                                    by: r.createdBy || undefined,
+                                    reportedAtIso: new Date().toISOString(),
+                                  })
+                                  setStockSendFxNonce((n) => n + 1)
+                                  setStockSendFxVisible(true)
+                                  if (stockSendFxTimeoutRef.current) window.clearTimeout(stockSendFxTimeoutRef.current)
+                                  stockSendFxTimeoutRef.current = window.setTimeout(() => {
+                                    setStockSendFxVisible(false)
+                                  }, 1600)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               )}
 
@@ -11668,7 +16804,7 @@ function App() {
                   <p className="timeoff-help">Select your name, then submit your report.</p>
                   <div className="notify-who-scroll">
                     <div className="timeoff-employee-list">
-                      {employees.map((name) => (
+                      {activeEmployees.map((name) => (
                         <button
                           key={name}
                           className={`timeoff-employee-btn ${notifyReporterName === name ? 'selected' : ''}`}
@@ -11752,7 +16888,7 @@ function App() {
           }}
         >
           <div
-            className="modal-sheet modal-sheet-tall"
+            className={`modal-sheet modal-sheet-tall${uiVariant === 'v3' ? ' timeoff-modal--v3' : ''}`}
             onTouchStart={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
@@ -11767,7 +16903,7 @@ function App() {
                 </h2>
               </div>
               <button
-                className="close-button"
+                className={uiVariant === 'v3' ? 'close-button home-menu-close--v3' : 'close-button'}
                 onTouchStart={(e) => {
                   recordTouch()
                   if (timeOffWizardStep) {
@@ -11810,10 +16946,10 @@ function App() {
               </button>
             </div>
 
-            <div className="modal-body timeoff-modal-body">
+            <div className="modal-body timeoff-modal-body timeoff-content">
               {/* List View */}
               {!timeOffWizardStep && (
-                <div className="timeoff-list-view">
+                <div className="timeoff-list-view timeoff-view timeoff-view--list">
                   <button
                     className="timeoff-new-btn"
                     type="button"
@@ -11888,10 +17024,10 @@ function App() {
 
               {/* Step 1: Who are you? */}
               {timeOffWizardStep === 'who' && (
-                <div className="timeoff-who-view">
+                <div className="timeoff-who-view timeoff-view timeoff-view--who">
                   <p className="timeoff-help">Select your name to continue.</p>
                   <div className="timeoff-employee-list">
-                    {employees.map((emp) => (
+                    {activeEmployees.map((emp) => (
                       <button
                         key={emp}
                         className={`timeoff-employee-btn ${timeOffSelectedEmployee === emp ? 'selected' : ''}`}
@@ -11915,9 +17051,9 @@ function App() {
 
               {/* Step 2: Your Usual Availability */}
               {timeOffWizardStep === 'availability' && (
-                <div className="timeoff-availability-view">
+                <div className="timeoff-availability-view timeoff-view timeoff-view--availability">
                   {(() => {
-                    const avail = timeOffSelectedEmployee ? availabilityMap[timeOffSelectedEmployee] : null
+                    const avail = timeOffSelectedEmployee ? availabilityState.patterns[timeOffSelectedEmployee] : null
                     if (!avail) {
                       return (
                         <div className="timeoff-no-availability">
@@ -11975,7 +17111,7 @@ function App() {
 
               {/* Step 3: Select Shifts or Date Range */}
               {timeOffWizardStep === 'select' && (
-                <div className="timeoff-select-view">
+                <div className="timeoff-select-view timeoff-view timeoff-view--select">
                   <div className="timeoff-kind-toggle">
                     <button
                       className={timeOffRequestKind === 'shift_blocks' ? 'active' : ''}
@@ -12135,8 +17271,14 @@ function App() {
                       {/* Custom Date Picker Modal (portal so it's not clipped by modal sheet overflow/contain) */}
                       {timeOffDatePickerOpen &&
                         createPortal(
-                          <div className="timeoff-date-picker-overlay" onClick={() => setTimeOffDatePickerOpen(null)}>
-                            <div className="timeoff-date-picker-card" onClick={(e) => e.stopPropagation()}>
+                          <div
+                            className={`timeoff-date-picker-overlay${uiVariant === 'v3' ? ' timeoff-date-picker-overlay--v3' : ''}`}
+                            onClick={() => setTimeOffDatePickerOpen(null)}
+                          >
+                            <div
+                              className={`timeoff-date-picker-card${uiVariant === 'v3' ? ' timeoff-date-picker-card--v3' : ''}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <div className="timeoff-date-picker-header">
                                 <h3>{timeOffDatePickerOpen === 'start' ? 'Select Start Date' : 'Select End Date'}</h3>
                                 <button type="button" onClick={() => setTimeOffDatePickerOpen(null)}>✕</button>
@@ -12272,7 +17414,7 @@ function App() {
 
               {/* Step 4: Reason + Submit */}
               {timeOffWizardStep === 'reason' && (
-                <div className="timeoff-reason-view">
+                <div className="timeoff-reason-view timeoff-view timeoff-view--reason">
                   <div className="timeoff-summary">
                     <h3>Request Summary</h3>
                     <p><strong>Employee:</strong> {timeOffSelectedEmployee}</p>
@@ -12328,7 +17470,7 @@ function App() {
                         if (timeOffRequestKind === 'shift_blocks') {
                           shiftsToSubmit = timeOffSelectedShifts.filter(s => !isShiftInPast(s.dateKey, s.shift))
                         } else {
-                          const avail = availabilityMap[timeOffSelectedEmployee] || null
+                          const avail = availabilityState.patterns[timeOffSelectedEmployee] || null
                           shiftsToSubmit = expandDateRangeToShifts(
                             timeOffDateRange.start,
                             timeOffDateRange.end,
@@ -12433,14 +17575,15 @@ function App() {
 
       {activeTask && !isOrderReportTaskId && (
         <div
-          className="modal-backdrop"
+          className={`modal-backdrop${modalSuccessDismiss ? ' modal-backdrop--success-dismiss' : ''}`}
           onTouchStart={handleModalBackdropTouchStart}
           onClick={() => {
             if (!shouldIgnoreClick()) closeActiveTask()
           }}
         >
           <div
-            className="modal-sheet"
+            className={`modal-sheet${isV31 ? ' modal-sheet--v31-task' : ''}`}
+            ref={modalSheetRef}
             onTouchStart={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
@@ -12455,6 +17598,11 @@ function App() {
                         {isWeighted ? (
                           <span className="weighted-badge" title="Counts for more points">
                             Bonus
+                          </span>
+                        ) : null}
+                        {activeTaskId === 'stock-check' && stockReportsOutPendingCount > 0 ? (
+                          <span className="stock-out-badge" title="Out of stock items">
+                            {stockReportsOutPendingCount} Out of Stock
                           </span>
                         ) : null}
                       </h2>
@@ -12478,16 +17626,98 @@ function App() {
               </button>
             </div>
 
-            <div className="modal-body">
-              {activeTaskId === 'break-selection' ? (
+            <div
+              className={
+                activeTaskId === 'stock-check' ? 'modal-body modal-body--stock-check' : 'modal-body'
+              }
+            >
+              {isV3Ui && activeCompletion?.didNotNeedToComplete && (
+                <div className="v3-modal-no-work-banner">
+                  <p>
+                    Marked as didn&apos;t need to complete — no one was assigned. Tap Undo to clear this, then you can
+                    record who completed it.
+                  </p>
+                  <button
+                    type="button"
+                    className="v3-modal-no-work-undo"
+                    disabled={
+                      isSaving || (!(isTodaySelected || isDemoDaySelected || isAdmin)) || !activeTaskId
+                    }
+                    onTouchStart={beginTap}
+                    onTouchMove={moveTap}
+                    onTouchEnd={(e) =>
+                      endTap(() => {
+                        if (activeTaskId) void undoV3DidNotNeedToComplete(activeTaskId)
+                      }, e)
+                    }
+                    onClick={() => {
+                      if (shouldIgnoreClick()) return
+                      if (activeTaskId) void undoV3DidNotNeedToComplete(activeTaskId)
+                    }}
+                  >
+                    Undo
+                  </button>
+                </div>
+              )}
+              {activeTaskId === 'stock-check' ? (
+                <StockCheckModal
+                  stockReports={stockReports}
+                  beginTap={beginTap}
+                  moveTap={moveTap}
+                  endTap={endTap}
+                  shouldIgnoreClick={shouldIgnoreClick}
+                  isBusy={isInitialSyncing || isSaving}
+                  error={saveError}
+                  assignees={assignees}
+                  splitMode={splitMode}
+                  hasCompletion={!!activeCompletion}
+                  onTapComplete={() => {
+                    setSaveError(null)
+                    setSplitMode(false)
+                    setShowEmployeeSelector(true)
+                  }}
+                  onEnableSplitAndSelect={() => {
+                    setSaveError(null)
+                    setSplitMode(true)
+                    setShowEmployeeSelector(true)
+                  }}
+                  onCreateItem={stockCheckCreateItem}
+                  onDeleteItem={stockCheckDeleteItem}
+                />
+              ) : activeTaskId === 'break-selection' ? (
                 <div className="modal-requirements-scroll" aria-label="Break selection">
                   <div className="break-selection">
+                    <div className="solo-mode-panel">
+                      <button
+                        type="button"
+                        className={`solo-mode-btn ${soloMode?.active ? 'active' : ''}`}
+                        disabled={isInitialSyncing || isSaving || !canEditTaskAssignmentsOnSelectedDate}
+                        onTouchStart={beginTap}
+                        onTouchMove={moveTap}
+                        onTouchEnd={(e) =>
+                          endTap(() => {
+                            void setSoloModeActive(!soloMode?.active)
+                          }, e)
+                        }
+                        onClick={() => {
+                          if (shouldIgnoreClick()) return
+                          void setSoloModeActive(!soloMode?.active)
+                        }}
+                      >
+                        {soloMode?.active ? 'Solo Mode Active' : 'Activate Solo Mode'}
+                      </button>
+                      <div className="solo-mode-note">
+                        {soloMode?.active
+                          ? 'Solo mode is on. 11AM and 5PM tasks will not be marked late today, day-shift score is capped at 70, and both Order Reports are waived if not already filled in.'
+                          : 'Solo mode is off.'}
+                      </div>
+                    </div>
                     <div className="break-help">
                       Pick two employees, choose lunch vs double shift, then pick a break start time. Breaks must fit within{' '}
                       <strong>1:00 PM–4:00 PM</strong>.
                     </div>
 
-                    {(!isTodaySelected && !isAdmin) && (
+                    {!canEditTaskAssignmentsOnSelectedDate && (
                       <div className="note">
                         Viewing {displayDate(selectedDate)}. Editing locked.
                       </div>
@@ -12495,7 +17725,7 @@ function App() {
 
                     <div className="break-slot-grid" aria-label="Break selection slots">
                       {([0, 1] as const).map((idx) => {
-                        const locked = (!isTodaySelected && !isAdmin) || isInitialSyncing || isSaving
+                        const locked = !canEditTaskAssignmentsOnSelectedDate || isInitialSyncing || isSaving
                         const slot = breakDraftSlots[idx]
 
                         const employee = slot?.employee || ''
@@ -12560,33 +17790,89 @@ function App() {
                     ) : null}
                   </div>
                 </div>
+              ) : activeTaskId === 'night-shift-solo-check' ? (
+                <div className="modal-requirements-scroll" aria-label="Night shift solo check">
+                  <div className="night-shift-solo-task-panel">
+                    <div className="night-shift-solo-task-intro">
+                      <h4 className="night-shift-solo-task-title">Check with your manager</h4>
+                      <p className="night-shift-solo-task-copy">
+                        Day shift is in solo mode. Will <strong>night shift</strong> also run solo (one person)?
+                      </p>
+                      <ul className="night-shift-solo-task-bullets">
+                        {NIGHT_SHIFT_SOLO_CHECK_TASK.requirements.map((item, idx) => (
+                          <li key={`${idx}-${item}`}>{renderRequirementText(item)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    {activeCompletion ? (
+                      <p className="night-shift-solo-task-done">Recorded. You can close this task.</p>
+                    ) : !canEditTaskAssignmentsOnSelectedDate ? (
+                      <div className="note">Viewing {displayDate(selectedDate)}. Editing locked.</div>
+                    ) : (
+                      <div className="night-shift-buttons" role="group" aria-label="Night shift solo answer">
+                        <button
+                          type="button"
+                          className="night-shift-btn night-shift-btn--yes"
+                          disabled={isInitialSyncing || isSaving}
+                          onTouchStart={beginTap}
+                          onTouchMove={moveTap}
+                          onTouchEnd={(e) => endTap(() => void completeNightShiftSoloCheck('yes'), e)}
+                          onClick={() => {
+                            if (shouldIgnoreClick()) return
+                            void completeNightShiftSoloCheck('yes')
+                          }}
+                        >
+                          Yes — night is solo
+                        </button>
+                        <button
+                          type="button"
+                          className="night-shift-btn night-shift-btn--no"
+                          disabled={isInitialSyncing || isSaving}
+                          onTouchStart={beginTap}
+                          onTouchMove={moveTap}
+                          onTouchEnd={(e) => endTap(() => void completeNightShiftSoloCheck('no'), e)}
+                          onClick={() => {
+                            if (shouldIgnoreClick()) return
+                            void completeNightShiftSoloCheck('no')
+                          }}
+                        >
+                          No — night has a team
+                        </button>
+                      </div>
+                    )}
+                    {saveError ? <div className="error">{saveError}</div> : null}
+                  </div>
+                </div>
               ) : (activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') ? (
                 <div ref={requirementsScrollRef} className="modal-requirements-scroll" aria-label="Ice selection">
                   {(() => {
                     const locked =
                       isInitialSyncing ||
                       (!(isTodaySelected || isDemoDaySelected) && !isAdmin) ||
-                      (windowLocked && !isAdmin) ||
+                      isWindowTaskLocked(activeTaskId) ||
                       (!!activeCompletion?.assignedByAdmin && !isAdmin)
+                    const tilesLocked = locked || showCompletedResetUx
                     return (
                       <div className="ice-combined">
                         <div className="ice-combined-title">Tap to select who filled each machine</div>
                         <div className="ice-sides-grid">
                           <button
                             type="button"
-                            className={`ice-side-tile ${iceSidesDraft.left ? 'filled' : ''} ${iceFillAnim?.side === 'left' ? 'ice-filling' : ''} ${locked ? 'locked' : ''}`}
-                            disabled={locked}
+                            className={`ice-side-tile ${iceSidesDraft.left ? 'filled' : ''} ${tilesLocked ? 'locked' : ''}`}
+                            disabled={tilesLocked}
                             ref={iceLeftTileRef}
                             onTouchStart={beginTap}
                             onTouchMove={moveTap}
                             onTouchEnd={(e) =>
                               endTap(() => {
+                                if (locked) return
                                 setPendingIceSide('left')
                                 setShowEmployeeSelector(true)
                               }, e)
                             }
                             onClick={() => {
                               if (shouldIgnoreClick()) return
+                              if (locked) return
                               setPendingIceSide('left')
                               setShowEmployeeSelector(true)
                             }}
@@ -12597,19 +17883,21 @@ function App() {
 
                           <button
                             type="button"
-                            className={`ice-side-tile ${iceSidesDraft.right ? 'filled' : ''} ${iceFillAnim?.side === 'right' ? 'ice-filling' : ''} ${locked ? 'locked' : ''}`}
-                            disabled={locked}
+                            className={`ice-side-tile ${iceSidesDraft.right ? 'filled' : ''} ${tilesLocked ? 'locked' : ''}`}
+                            disabled={tilesLocked}
                             ref={iceRightTileRef}
                             onTouchStart={beginTap}
                             onTouchMove={moveTap}
                             onTouchEnd={(e) =>
                               endTap(() => {
+                                if (locked) return
                                 setPendingIceSide('right')
                                 setShowEmployeeSelector(true)
                               }, e)
                             }
                             onClick={() => {
                               if (shouldIgnoreClick()) return
+                              if (locked) return
                               setPendingIceSide('right')
                               setShowEmployeeSelector(true)
                             }}
@@ -12619,7 +17907,24 @@ function App() {
                           </button>
                         </div>
 
-                        {(activeCompletion || iceSidesDraft.left || iceSidesDraft.right) ? (
+                        {showCompletedResetUx ? (
+                          <div className="ice-actions">
+                            <button
+                              className="task-reset-btn task-reset-btn--full"
+                              type="button"
+                              disabled={locked || isSaving}
+                              onTouchStart={beginTap}
+                              onTouchMove={moveTap}
+                              onTouchEnd={(e) => endTap(() => void clearCombinedIceTask({ closeModal: true }), e)}
+                              onClick={() => {
+                                if (shouldIgnoreClick()) return
+                                void clearCombinedIceTask({ closeModal: true })
+                              }}
+                            >
+                              Reset Task
+                            </button>
+                          </div>
+                        ) : (activeCompletion || iceSidesDraft.left || iceSidesDraft.right) ? (
                           <div className="ice-actions">
                             <div className="break-action-buttons">
                               <button
@@ -12640,8 +17945,25 @@ function App() {
                           </div>
                         ) : null}
 
-                        {/* Auto-assign button for Ice (credits last Left/Right) */}
+                        {/* v3: optional ice — no past-user credits; v2: auto-assign credits last Left/Right */}
                         {(isTodaySelected || isDemoDaySelected || isAdmin) && !activeCompletion && (() => {
+                          if (isV3Ui) {
+                            return (
+                              <button
+                                className="auto-assign-btn"
+                                disabled={locked || isSaving}
+                                onTouchStart={beginTap}
+                                onTouchMove={moveTap}
+                                onTouchEnd={(e) => endTap(() => void handleV3OptionalDidNotNeedToComplete(), e)}
+                                onClick={() => {
+                                  if (shouldIgnoreClick()) return
+                                  void handleV3OptionalDidNotNeedToComplete()
+                                }}
+                              >
+                                Didn&apos;t need to complete
+                              </button>
+                            )
+                          }
                           const lastCompletion = findLastTaskCompletion(taskState, activeTaskId, selectedDateKey, selectedWindow)
                           const left = String(lastCompletion?.iceSides?.left || '').trim()
                           const right = String(lastCompletion?.iceSides?.right || '').trim()
@@ -12680,35 +18002,46 @@ function App() {
                     const locked =
                       isInitialSyncing ||
                       (!(isTodaySelected || isDemoDaySelected) && !isAdmin) ||
-                      (windowLocked && !isAdmin) ||
+                      isWindowTaskLocked(activeTaskId) ||
                       (!!activeCompletion?.assignedByAdmin && !isAdmin)
+                    const tilesLocked = locked || showCompletedResetUx
+                    const towelRequirements = (
+                      <div className="requirements-bubbles">
+                        {activeTask.requirements.map((item, idx) => (
+                          <div key={`${idx}-${item}`} className="requirement-bubble">
+                            {renderRequirementText(item)}
+                          </div>
+                        ))}
+                      </div>
+                    )
                     return (
-                      <div className="towel-combined">
-                        <div className="requirements">
-                          <h4>Requirements</h4>
-                          <ul>
-                            {activeTask.requirements.map((item, idx) => (
-                              <li key={`${idx}-${item}`}>{renderRequirementText(item)}</li>
-                            ))}
-                          </ul>
+                      <div className={`ice-combined towel-combined${isV31 ? ' towel-combined--v31' : ''}`}>
+                        <div
+                          className={`task-modal-requirements-panel task-modal-requirements-panel--towel${
+                            isV31 ? ' task-modal-requirements-panel--v31' : ''
+                          }`}
+                        >
+                          {towelRequirements}
                         </div>
                         <div className="ice-combined-title">Tap to select who did each area</div>
-                        <div className="towel-sides-grid">
+                        <div className="ice-sides-grid towel-sides-grid">
                           <button
                             type="button"
-                            className={`towel-side-tile towel-dining-bar ${towelSidesDraft.diningBar ? 'filled' : ''} ${towelFillAnim?.side === 'diningBar' ? 'towel-filling' : ''} ${locked ? 'locked' : ''}`}
-                            disabled={locked}
+                            className={`towel-side-tile towel-dining-bar ${towelSidesDraft.diningBar ? 'filled' : ''} ${tilesLocked ? 'locked' : ''}`}
+                            disabled={tilesLocked}
                             ref={towelDiningTileRef}
                             onTouchStart={beginTap}
                             onTouchMove={moveTap}
                             onTouchEnd={(e) =>
                               endTap(() => {
+                                if (locked) return
                                 setPendingTowelSide('diningBar')
                                 setShowEmployeeSelector(true)
                               }, e)
                             }
                             onClick={() => {
                               if (shouldIgnoreClick()) return
+                              if (locked) return
                               setPendingTowelSide('diningBar')
                               setShowEmployeeSelector(true)
                             }}
@@ -12719,19 +18052,21 @@ function App() {
 
                           <button
                             type="button"
-                            className={`towel-side-tile towel-bowl-station ${towelSidesDraft.bowlStation ? 'filled' : ''} ${towelFillAnim?.side === 'bowlStation' ? 'towel-filling' : ''} ${locked ? 'locked' : ''}`}
-                            disabled={locked}
+                            className={`towel-side-tile towel-bowl-station ${towelSidesDraft.bowlStation ? 'filled' : ''} ${tilesLocked ? 'locked' : ''}`}
+                            disabled={tilesLocked}
                             ref={towelBowlTileRef}
                             onTouchStart={beginTap}
                             onTouchMove={moveTap}
                             onTouchEnd={(e) =>
                               endTap(() => {
+                                if (locked) return
                                 setPendingTowelSide('bowlStation')
                                 setShowEmployeeSelector(true)
                               }, e)
                             }
                             onClick={() => {
                               if (shouldIgnoreClick()) return
+                              if (locked) return
                               setPendingTowelSide('bowlStation')
                               setShowEmployeeSelector(true)
                             }}
@@ -12741,7 +18076,24 @@ function App() {
                           </button>
                         </div>
 
-                        {(activeCompletion || towelSidesDraft.diningBar || towelSidesDraft.bowlStation) ? (
+                        {showCompletedResetUx ? (
+                          <div className="ice-actions">
+                            <button
+                              className="task-reset-btn task-reset-btn--full"
+                              type="button"
+                              disabled={locked || isSaving}
+                              onTouchStart={beginTap}
+                              onTouchMove={moveTap}
+                              onTouchEnd={(e) => endTap(() => void clearCombinedTowelTask({ closeModal: true }), e)}
+                              onClick={() => {
+                                if (shouldIgnoreClick()) return
+                                void clearCombinedTowelTask({ closeModal: true })
+                              }}
+                            >
+                              Reset Task
+                            </button>
+                          </div>
+                        ) : (activeCompletion || towelSidesDraft.diningBar || towelSidesDraft.bowlStation) ? (
                           <div className="ice-actions">
                             <div className="break-action-buttons">
                               <button
@@ -12786,19 +18138,18 @@ function App() {
                       )}
                     </div>
                   ) : null}
-                  <div className="requirements">
+                  <div className="requirements-bubbles">
                     {isTodaySelected &&
                     !activeCompletion &&
                     activeTaskId === 'yum-yum-close' &&
                     (selectedWindow === '17' || selectedWindow === '21') ? (
                       <div className="early-complete-note">This task can be completed early.</div>
                     ) : null}
-                    <h4>Requirements</h4>
-                    <ul>
-                      {activeTask.requirements.map((item, idx) => (
-                        <li key={`${idx}-${item}`}>{renderRequirementText(item)}</li>
-                      ))}
-                    </ul>
+                    {activeTask.requirements.map((item, idx) => (
+                      <div key={`${idx}-${item}`} className="requirement-bubble">
+                        {renderRequirementText(item)}
+                      </div>
+                    ))}
                     {activeCompletion?.deferredToClose && (
                       <div className="deferred-notice">
                         💰 Auto-completed — will be counted at {activeCompletion.deferredToClose}PM
@@ -12809,7 +18160,7 @@ function App() {
               )}
 
               <div className="modal-actions" aria-label="Task actions">
-                {activeTaskId === 'break-selection' ? (
+                {activeTaskId === 'stock-check' || activeTaskId === 'night-shift-solo-check' ? null : activeTaskId === 'break-selection' ? (
                   <>
                     {breakDraftError ? <div className="error">{breakDraftError}</div> : null}
                     {saveError ? <div className="error">{saveError}</div> : null}
@@ -12817,7 +18168,7 @@ function App() {
                       <button
                         className="break-save-btn"
                         type="button"
-                        disabled={isInitialSyncing || isSaving || (!isTodaySelected && !isAdmin)}
+                        disabled={isInitialSyncing || isSaving || !canEditTaskAssignmentsOnSelectedDate}
                         onTouchStart={beginTap}
                         onTouchMove={moveTap}
                         onTouchEnd={(e) => endTap(() => saveBreakPlan(), e)}
@@ -12832,7 +18183,7 @@ function App() {
                         <button
                           className="break-clear-btn"
                           type="button"
-                          disabled={isInitialSyncing || isSaving || (!isTodaySelected && !isAdmin)}
+                          disabled={isInitialSyncing || isSaving || !canEditTaskAssignmentsOnSelectedDate}
                           onTouchStart={beginTap}
                           onTouchMove={moveTap}
                           onTouchEnd={(e) => endTap(() => clearBreakPlan(), e)}
@@ -12867,20 +18218,35 @@ function App() {
                   </>
                 ) : (
                   <>
-                    {!isTodaySelected && !isAdmin && (
+                    {!canEditTaskAssignmentsOnSelectedDate && (
                       <div className="note">
                         Viewing {displayDate(selectedDate)}. Assignment locked.
                       </div>
                     )}
 
-                    {(isTodaySelected || isAdmin) && (
+                    {canEditTaskAssignmentsOnSelectedDate && (
                       <>
-                        {(activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') ||
-                        ((activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
-                          isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow))
-                          ? null
-                          : (
+                        {showCompletedResetUx &&
+                        !(
+                          (activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') ||
+                          ((activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
+                            isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow))
+                        ) && (
                           <div className="completed-by-label">Completed by:</div>
+                        )}
+
+                        {!showCompletedResetUx && lastTogetherStreak && (
+                          <div className="last-completer-streak" aria-label="Last completer">
+                            <span className="last-completer-streak__icon" aria-hidden="true">🔁</span>
+                            <span className="last-completer-streak__label">Last time:</span>
+                            {lastTogetherStreak.names.map((name, idx) => (
+                              <span className="last-completer-streak__entry" key={name}>
+                                {idx > 0 ? <span className="last-completer-streak__sep">·</span> : null}
+                                <span className="last-completer-streak__name">{name}</span>
+                              </span>
+                            ))}
+                            <span className="last-completer-streak__count">×{lastTogetherStreak.count}</span>
+                          </div>
                         )}
 
                         {(() => {
@@ -12888,15 +18254,137 @@ function App() {
                           const isCombinedTowelModal =
                             (activeTaskId === 'towels' || activeTaskId === 'towels-5pm' || activeTaskId === 'towels-close') &&
                             isTowelsSplitEffectiveForDateKey(selectedDateKey, selectedWindow)
-                          const allowEarlyYumYum =
-                            !isAdmin && activeTaskId === 'yum-yum-close' && (selectedWindow === '17' || selectedWindow === '21')
                           const musicSelectionLocked = activeTaskId === 'turn-on-music' && !musicIsActuallyPlaying
-                          const selectionLocked = (windowLocked && !isAdmin && !allowEarlyYumYum) || musicSelectionLocked
+                          const selectionLocked = isWindowTaskLocked(activeTaskId) || musicSelectionLocked
                           if (isCombinedIce || isCombinedTowelModal) {
                             return null
                           }
+                          const splitRequired =
+                            !!activeTask?.requiresSplit && !isSoloModeActiveForWindow(selectedDateKey, selectedWindow)
+                          const showNightSoloPromptInModal =
+                            splitRequired &&
+                            needsNightSoloDecision &&
+                            !activeCompletion &&
+                            !nightSplitChoseTeamSplit &&
+                            canEditTaskAssignmentsOnSelectedDate
+                          if (showCompletedResetUx) {
+                            return (
+                              <div className="selection-buttons">
+                                <div className="completed-assignee-display" aria-label="Completed by">
+                                  {activeCompletion?.assignedByAdmin && !isAdmin ? (
+                                    <>⭐ {assignees.join(' · ')}</>
+                                  ) : (
+                                    assignees.join(' · ')
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  className="task-reset-btn"
+                                  disabled={
+                                    isInitialSyncing ||
+                                    isSaving ||
+                                    selectionLocked ||
+                                    (activeCompletion?.assignedByAdmin && !isAdmin)
+                                  }
+                                  onTouchStart={beginTap}
+                                  onTouchMove={moveTap}
+                                  onTouchEnd={(e) => endTap(() => void resetCompletedTask(), e)}
+                                  onClick={() => {
+                                    if (shouldIgnoreClick()) return
+                                    void resetCompletedTask()
+                                  }}
+                                >
+                                  Reset
+                                </button>
+                              </div>
+                            )
+                          }
                           return (
                             <>
+                              {splitRequired ? (
+                                showNightSoloPromptInModal ? (
+                                  <div className="night-solo-prompt-card night-solo-prompt-card--modal">
+                                    <h4 className="night-solo-prompt-card__title">Just you tonight?</h4>
+                                    <p className="night-solo-prompt-card__copy">
+                                      Working alone on close? Activate solo mode to complete this task alone. Close score is capped at 70.
+                                    </p>
+                                    <div className="night-solo-prompt-card__actions">
+                                      <button
+                                        type="button"
+                                        className="night-solo-prompt-card__btn night-solo-prompt-card__btn--primary"
+                                        disabled={isInitialSyncing || isSaving}
+                                        onTouchStart={beginTap}
+                                        onTouchMove={moveTap}
+                                        onTouchEnd={(e) => endTap(() => void setNightSoloModeActive(true), e)}
+                                        onClick={() => {
+                                          if (shouldIgnoreClick()) return
+                                          void setNightSoloModeActive(true)
+                                        }}
+                                      >
+                                        Activate solo mode
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="night-solo-prompt-card__btn night-solo-prompt-card__btn--secondary"
+                                        disabled={isInitialSyncing || isSaving}
+                                        onTouchStart={beginTap}
+                                        onTouchMove={moveTap}
+                                        onTouchEnd={(e) => endTap(() => handleNightSplitTeamChoice(), e)}
+                                        onClick={() => {
+                                          if (shouldIgnoreClick()) return
+                                          handleNightSplitTeamChoice()
+                                        }}
+                                      >
+                                        Tap to split
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                <div className="selection-buttons">
+                                  <button
+                                    className={`select-employee-btn ${selectionLocked ? 'locked' : ''} ${activeCompletion?.assignedByAdmin && !isAdmin ? 'locked' : ''}`}
+                                    disabled={isInitialSyncing || selectionLocked || (activeCompletion?.assignedByAdmin && !isAdmin)}
+                                    onTouchStart={beginTap}
+                                    onTouchMove={moveTap}
+                                    onTouchEnd={(e) =>
+                                      endTap(() => {
+                                        if (musicSelectionLocked || selectionLocked) return
+                                        setSplitMode(true)
+                                        setShowUnsplitOptions(false)
+                                        if (activeTask?.requiresChecklist && !activeCompletion) {
+                                          setShowChecklistModal(true)
+                                        } else {
+                                          setShowEmployeeSelector(true)
+                                        }
+                                      }, e)
+                                    }
+                                    onClick={() => {
+                                      if (shouldIgnoreClick()) return
+                                      if (musicSelectionLocked || selectionLocked) return
+                                      setSplitMode(true)
+                                      setShowUnsplitOptions(false)
+                                      if (activeTask?.requiresChecklist && !activeCompletion) {
+                                        setShowChecklistModal(true)
+                                      } else {
+                                        setShowEmployeeSelector(true)
+                                      }
+                                    }}
+                                  >
+                                    {activeCompletion?.assignedByAdmin && !isAdmin ? (
+                                      <>⭐ {assignees.join(' · ')}</>
+                                    ) : musicSelectionLocked ? (
+                                      <>▶ Start music first</>
+                                    ) : selectionLocked ? (
+                                      <>🔒 Locked</>
+                                    ) : assignees.length >= 2 ? (
+                                      <>{assignees.join(' · ')} {activeCompletion && <span className="edit-hint">✏️</span>}</>
+                                    ) : (
+                                      'Tap to select split'
+                                    )}
+                                  </button>
+                                </div>
+                                )
+                              ) : (
                               <div className="selection-buttons">
                                 <button
                                   className={`select-employee-btn ${selectionLocked ? 'locked' : ''} ${activeCompletion?.assignedByAdmin && !isAdmin ? 'locked' : ''}`}
@@ -12905,7 +18393,7 @@ function App() {
                                   onTouchMove={moveTap}
                                   onTouchEnd={(e) =>
                                     endTap(() => {
-                                      if (musicSelectionLocked) return
+                                      if (musicSelectionLocked || selectionLocked) return
                                       if (activeTask?.requiresChecklist && !activeCompletion) {
                                         setShowChecklistModal(true)
                                       } else {
@@ -12915,7 +18403,7 @@ function App() {
                                   }
                                   onClick={() => {
                                     if (shouldIgnoreClick()) return
-                                    if (musicSelectionLocked) return
+                                    if (musicSelectionLocked || selectionLocked) return
                                     if (activeTask?.requiresChecklist && !activeCompletion) {
                                       setShowChecklistModal(true)
                                     } else {
@@ -12942,7 +18430,7 @@ function App() {
                                   onTouchMove={moveTap}
                                   onTouchEnd={(e) =>
                                     endTap(() => {
-                                      if (musicSelectionLocked) return
+                                      if (musicSelectionLocked || selectionLocked) return
                                       setSplitMode(true)
                                       setShowUnsplitOptions(false)
                                       if (activeTask?.requiresChecklist && !activeCompletion) {
@@ -12954,7 +18442,7 @@ function App() {
                                   }
                                   onClick={() => {
                                     if (shouldIgnoreClick()) return
-                                    if (musicSelectionLocked) return
+                                    if (musicSelectionLocked || selectionLocked) return
                                     setSplitMode(true)
                                     setShowUnsplitOptions(false)
                                     if (activeTask?.requiresChecklist && !activeCompletion) {
@@ -12975,14 +18463,14 @@ function App() {
                                     onTouchMove={moveTap}
                                     onTouchEnd={(e) =>
                                       endTap(() => {
-                                        if (musicSelectionLocked) return
+                                        if (musicSelectionLocked || selectionLocked) return
                                         setSplitMode(false)
                                         setShowUnsplitOptions((prev) => !prev)
                                       }, e)
                                     }
                                     onClick={() => {
                                       if (shouldIgnoreClick()) return
-                                      if (musicSelectionLocked) return
+                                      if (musicSelectionLocked || selectionLocked) return
                                       setSplitMode(false)
                                       setShowUnsplitOptions((prev) => !prev)
                                     }}
@@ -12991,8 +18479,9 @@ function App() {
                                   </button>
                                 ) : null}
                               </div>
+                              )}
 
-                              {showUnsplitOptions && activeCompletion?.assignees?.length && activeCompletion.assignees.length > 1 ? (
+                              {!splitRequired && showUnsplitOptions && activeCompletion?.assignees?.length && activeCompletion.assignees.length > 1 ? (
                                 <div className="unsplit-options" aria-label="Unsplit options">
                                   <div className="unsplit-label">Keep credit for:</div>
                                   <div className="unsplit-choice-row">
@@ -13055,6 +18544,23 @@ function App() {
 
                               {/* Auto-assign button for Yum Yum Sauce */}
                               {activeTaskId === 'yum-yum-close' && !activeCompletion && (() => {
+                                if (isV3Ui) {
+                                  return (
+                                    <button
+                                      className="auto-assign-btn"
+                                      disabled={isInitialSyncing || isSaving}
+                                      onTouchStart={beginTap}
+                                      onTouchMove={moveTap}
+                                      onTouchEnd={(e) => endTap(() => void handleV3OptionalDidNotNeedToComplete(), e)}
+                                      onClick={() => {
+                                        if (shouldIgnoreClick()) return
+                                        void handleV3OptionalDidNotNeedToComplete()
+                                      }}
+                                    >
+                                      Didn&apos;t need to complete
+                                    </button>
+                                  )
+                                }
                                 const lastCompleter = findLastTaskCompleter(taskState, 'yum-yum-close', selectedDateKey, selectedWindow)
                                 if (!lastCompleter) return null
                                 return (
@@ -13077,6 +18583,23 @@ function App() {
 
                               {/* Auto-assign button for Peanuts Crispy Noodles */}
                               {activeTaskId === 'peanuts-noodles-close' && !activeCompletion && (() => {
+                                if (isV3Ui) {
+                                  return (
+                                    <button
+                                      className="auto-assign-btn"
+                                      disabled={isInitialSyncing || isSaving}
+                                      onTouchStart={beginTap}
+                                      onTouchMove={moveTap}
+                                      onTouchEnd={(e) => endTap(() => void handleV3OptionalDidNotNeedToComplete(), e)}
+                                      onClick={() => {
+                                        if (shouldIgnoreClick()) return
+                                        void handleV3OptionalDidNotNeedToComplete()
+                                      }}
+                                    >
+                                      Didn&apos;t need to complete
+                                    </button>
+                                  )
+                                }
                                 const lastCompleter = findLastTaskCompleter(taskState, 'peanuts-noodles-close', selectedDateKey, selectedWindow)
                                 if (!lastCompleter) return null
                                 return (
@@ -13181,7 +18704,7 @@ function App() {
           >
             {(() => {
               const idx = breakWizardSlotIdx
-              const locked = (!isTodaySelected && !isAdmin) || isInitialSyncing || isSaving
+              const locked = !canEditTaskAssignmentsOnSelectedDate || isInitialSyncing || isSaving
               const slot = breakDraftSlots[idx]
               const otherIdx: 0 | 1 = idx === 0 ? 1 : 0
               const otherEmployee = breakDraftSlots[otherIdx]?.employee || ''
@@ -13244,7 +18767,7 @@ function App() {
 
                   {breakWizardStep === 'employee' && (
                     <div className="employee-grid">
-                      {employees.map((user) => (
+                      {activeEmployees.map((user) => (
                         <button
                           key={user}
                           type="button"
@@ -13316,16 +18839,18 @@ function App() {
             endTap(() => {
               setShowEmployeeSelector(false)
               setPendingIceSide(null)
+              setSplitSetupSelecting(false)
             }, e)
           }
           onClick={() => {
             if (shouldIgnoreClick()) return
             setShowEmployeeSelector(false)
             setPendingIceSide(null)
+            setSplitSetupSelecting(false)
           }}
         >
           <div
-            className="selector-card"
+            className={`selector-card${isV31 ? ' selector-card--v31' : ''}`}
             onTouchStart={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
@@ -13339,7 +18864,7 @@ function App() {
                   <h3>Select {pendingTowelSide === 'diningBar' ? 'Dining/Bar Towel' : 'Bowl Station Towel'} Employee</h3>
                 ) : (
                   <>
-                    <h3>Select {splitMode ? 'Two Employees' : 'Employee'}</h3>
+                    <h3>{splitSetupSelecting ? 'Who is working?' : `Select ${splitMode ? 'Two Employees' : 'Employee'}`}</h3>
                     {splitMode && (
                       <div className="selection-counter">
                         {assignees.length} of 2 selected
@@ -13351,8 +18876,21 @@ function App() {
             </div>
             
             {(() => {
-              const isQuickMode = !showAllEmployeesInSelector && selectorShiftEmployees.length >= 2
-              const users = isQuickMode ? selectorShiftEmployees : employees
+              const restrictToSplit = splitPickerRestrict
+              const requiresSplitForcedQuick =
+                !!activeTask?.requiresSplit &&
+                !isSoloModeActiveForWindow(selectedDateKey, selectedWindow) &&
+                selectorShiftEmployees.length >= 2
+              const isQuickMode =
+                !splitSetupSelecting &&
+                (!!restrictToSplit ||
+                  requiresSplitForcedQuick ||
+                  (!showAllEmployeesInSelector && selectorShiftEmployees.length >= 2))
+              const users = restrictToSplit
+                ? restrictToSplit
+                : isQuickMode
+                  ? displaySelectorEmployees
+                  : activeEmployees
               return (
                 <>
                   <div className={`employee-grid ${isQuickMode ? 'quick-select' : ''}`}>
@@ -13442,8 +18980,9 @@ function App() {
                         }
                         return
                       }
-                      // Check if employee needs to select a color (only when adding, not deselecting)
-                      if (!assignees.includes(user) && !employeeColorsRef.current[user]) {
+                      // Check if employee needs to select a color (only when adding, not deselecting).
+                      // Skipped for the dice "who is working?" pick — that doesn't complete a task.
+                      if (!splitSetupSelecting && !assignees.includes(user) && !employeeColorsRef.current[user]) {
                         setPendingColorEmployee(user)
                         setPendingColorAction('task')
                         setShowColorPicker(true)
@@ -13456,9 +18995,9 @@ function App() {
                     if (shouldIgnoreClick()) return
                     if (activeTaskId === 'turn-on-music' && !musicIsActuallyPlaying) return
                     const isIceSidePick = (activeTaskId === 'ice-5pm' || activeTaskId === 'ice-close') && !!pendingIceSide
-                    // Check for pending notifications before selecting
+                    // Check for pending notifications before selecting (skipped for the dice "who is working?" pick).
                     const pendingNotifs = getPendingNotificationsForEmployee(notifications, user)
-                    if (pendingNotifs.length > 0) {
+                    if (!splitSetupSelecting && pendingNotifs.length > 0) {
                       setPendingNotifEmployee(user)
                       setPendingNotifQueue(pendingNotifs)
                       setPendingNotifIndex(0)
@@ -13521,8 +19060,9 @@ function App() {
                       }
                       return
                     }
-                    // Check if employee needs to select a color (only when adding, not deselecting)
-                    if (!assignees.includes(user) && !employeeColorsRef.current[user]) {
+                    // Check if employee needs to select a color (only when adding, not deselecting).
+                    // Skipped for the dice "who is working?" pick — that doesn't complete a task.
+                    if (!splitSetupSelecting && !assignees.includes(user) && !employeeColorsRef.current[user]) {
                       setPendingColorEmployee(user)
                       setPendingColorAction('task')
                       setShowColorPicker(true)
@@ -13536,7 +19076,7 @@ function App() {
                     ))}
                   </div>
 
-                  {isQuickMode && (
+                  {isQuickMode && !restrictToSplit && (
                     <div className="employee-selector-actions">
                       <button
                         type="button"
@@ -13801,6 +19341,7 @@ function App() {
                   try {
                     const res = await fetch(fileUrl, { mode: 'cors' })
                     const data = await res.arrayBuffer()
+                    const pdfjsLib = await loadPdfJs()
                     const pdf = await pdfjsLib.getDocument({ data }).promise
                     const numPages = pdf.numPages
                     container.innerHTML = ''
@@ -14283,12 +19824,12 @@ function App() {
                 <h3>Weekly Availability</h3>
                 <p className="admin-help">Set each employee's usual working shifts. This helps with time off requests.</p>
                 
-                {employees.length === 0 ? (
+                {activeEmployees.length === 0 ? (
                   <div className="admin-empty">Add employees first.</div>
                 ) : (
                   <div className="admin-availability-list">
-                    {employees.map((emp) => {
-                      const avail = availabilityMap[emp] || null
+                    {activeEmployees.map((emp) => {
+                      const avail = availabilityState.patterns[emp] || null
                       const isEditing = adminAvailabilityEditingEmployee === emp
                       
                       return (
@@ -14305,9 +19846,13 @@ function App() {
                                   setAdminAvailabilityEditingEmployee(emp)
                                   // Initialize availability if not set
                                   if (!avail) {
-                                    const newMap = { ...availabilityMap }
-                                    newMap[emp] = createDefaultWeeklyAvailability()
-                                    setAvailabilityMap(newMap)
+                                    setAvailabilityState((prev) => ({
+                                      ...prev,
+                                      patterns: {
+                                        ...prev.patterns,
+                                        [emp]: createDefaultWeeklyAvailability(),
+                                      },
+                                    }))
                                   }
                                 }
                               }}
@@ -14330,7 +19875,8 @@ function App() {
                                 <div className="admin-availability-grid-row">
                                   <div className="admin-availability-shift-label">Lunch</div>
                                   {DAY_OF_WEEK_KEYS.map((day) => {
-                                    const currentAvail = availabilityMap[emp] || createDefaultWeeklyAvailability()
+                                    const currentAvail =
+                                      availabilityState.patterns[emp] || createDefaultWeeklyAvailability()
                                     const isAvailable = currentAvail[day]?.lunch ?? false
                                     return (
                                       <button
@@ -14340,9 +19886,15 @@ function App() {
                                         onClick={async () => {
                                           const newAvail = { ...currentAvail }
                                           newAvail[day] = { ...newAvail[day], lunch: !isAvailable }
-                                          const newMap = { ...availabilityMap, [emp]: newAvail }
-                                          setAvailabilityMap(newMap)
-                                          await saveAvailability(newMap)
+                                          const changeDateKey = formatDateKey(startOfDay(new Date()))
+                                          const nextState = applyEmployeeAvailabilityUpdate(
+                                            availabilityState,
+                                            emp,
+                                            newAvail,
+                                            changeDateKey
+                                          )
+                                          setAvailabilityState(nextState)
+                                          await saveAvailabilityState(nextState)
                                         }}
                                       >
                                         {isAvailable ? '✓' : ''}
@@ -14353,7 +19905,8 @@ function App() {
                                 <div className="admin-availability-grid-row">
                                   <div className="admin-availability-shift-label">Dinner</div>
                                   {DAY_OF_WEEK_KEYS.map((day) => {
-                                    const currentAvail = availabilityMap[emp] || createDefaultWeeklyAvailability()
+                                    const currentAvail =
+                                      availabilityState.patterns[emp] || createDefaultWeeklyAvailability()
                                     const isAvailable = currentAvail[day]?.dinner ?? false
                                     return (
                                       <button
@@ -14363,9 +19916,15 @@ function App() {
                                         onClick={async () => {
                                           const newAvail = { ...currentAvail }
                                           newAvail[day] = { ...newAvail[day], dinner: !isAvailable }
-                                          const newMap = { ...availabilityMap, [emp]: newAvail }
-                                          setAvailabilityMap(newMap)
-                                          await saveAvailability(newMap)
+                                          const changeDateKey = formatDateKey(startOfDay(new Date()))
+                                          const nextState = applyEmployeeAvailabilityUpdate(
+                                            availabilityState,
+                                            emp,
+                                            newAvail,
+                                            changeDateKey
+                                          )
+                                          setAvailabilityState(nextState)
+                                          await saveAvailabilityState(nextState)
                                         }}
                                       >
                                         {isAvailable ? '✓' : ''}
@@ -14449,6 +20008,48 @@ function App() {
                       ))}
                     </div>
                   </div>
+
+                  {uiVariant === 'v3' && (adminTaskWindows['11'] || adminTaskWindows['21']) && (
+                    <div className="admin-notif-label">
+                      Stage Assignment
+                      {adminTaskWindows['11'] && (
+                        <div style={{ marginTop: 6 }}>
+                          <span style={{ fontSize: 13, opacity: 0.7 }}>11AM:</span>
+                          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                            {([1, 2] as const).map((s) => (
+                              <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                                <input
+                                  type="radio"
+                                  name="admin-task-stage-11"
+                                  checked={(adminTaskStages['11'] ?? 2) === s}
+                                  onChange={() => setAdminTaskStages({ ...adminTaskStages, '11': s })}
+                                />
+                                Stage {s}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {adminTaskWindows['21'] && (
+                        <div style={{ marginTop: 6 }}>
+                          <span style={{ fontSize: 13, opacity: 0.7 }}>9/10PM:</span>
+                          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                            {([1, 2] as const).map((s) => (
+                              <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                                <input
+                                  type="radio"
+                                  name="admin-task-stage-21"
+                                  checked={(adminTaskStages['21'] ?? 2) === s}
+                                  onChange={() => setAdminTaskStages({ ...adminTaskStages, '21': s })}
+                                />
+                                Stage {s}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <label className="admin-notif-label">
                     Weight (default 1)
@@ -14584,6 +20185,22 @@ function App() {
                     title="Enable split Towels UI for future windows without changing history."
                   >
                     {adminApplyingTowelsSplit ? 'Applying Towels Split…' : 'Apply Towels Split (11AM, 5PM & 9PM)'}
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-header-btn"
+                    disabled={!isAdmin || adminTogglingDice}
+                    onClick={() => {
+                      if (!isAdmin) return
+                      void toggleDiceEnabled()
+                    }}
+                    title="When enabled, staff see the 🎲 next to the greeting on 5PM & 9PM only (hidden on 11 AM)."
+                  >
+                    {adminTogglingDice
+                      ? 'Updating Dice…'
+                      : taskOverrides?.diceEnabled === true
+                        ? 'Disable 🎲 (random / fair split)'
+                        : 'Enable 🎲 (random / fair split)'}
                   </button>
                 </div>
 
@@ -14737,6 +20354,160 @@ function App() {
                   Create the “Today’s Task” golden-card tasks. Weekly quotas are <strong>exact per Sun–Sat</strong>.
                   Overrides are allowed and may break quotas (we’ll show warnings).
                 </p>
+                <p className="admin-help" style={{ marginTop: -4 }}>
+                  <strong>Recent runs:</strong> Rows that say “Completed by …” include <strong>Edit history</strong> to fix
+                  the label shown in this list (not the catalog) and who completed the task.
+                </p>
+
+                <h3 style={{ marginTop: 12 }}>Recent daily task runs (last 30 days)</h3>
+                {adminDailyRunsLoading ? (
+                  <div className="admin-empty">Loading…</div>
+                ) : adminDailyRunsRecent.length === 0 ? (
+                  <div className="admin-empty">No runs found.</div>
+                ) : (
+                  <div className="admin-timeoff-list">
+                    {adminDailyRunsRecent.slice(0, 30).map((r) => {
+                      const name = getDailyTaskRunHistoryTitle(r, dailyTaskCatalog.tasks)
+                      const completedBy = formatDailyTaskRunCompletedBy(r)
+                      const status = r.completedAtMs
+                        ? `Completed by ${completedBy || 'unknown'}`
+                        : r.revealedAtMs
+                        ? 'Revealed'
+                        : 'Selected'
+                      const canEditHistory =
+                        r.taskId === '__none__' ||
+                        (typeof r.completedAtMs === 'number' && Number.isFinite(r.completedAtMs))
+                      return (
+                        <div key={r.dateKey} className="admin-timeoff-card">
+                          <div className="admin-timeoff-header">
+                            <span className="admin-timeoff-employee">{r.dateKey}</span>
+                            <span className="admin-timeoff-status admin-timeoff-status-approved">{status}</span>
+                          </div>
+                          <div className="admin-timeoff-shifts">
+                            <strong>Task:</strong> {name}
+                          </div>
+                          {canEditHistory ? (
+                            <div style={{ marginTop: 10 }}>
+                              <button
+                                type="button"
+                                className="admin-notif-send"
+                                onClick={() => openAdminDailyRunHistoryEdit(r)}
+                              >
+                                Edit history
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {adminDailyRunHistoryEdit ? (
+                  <div
+                    className="admin-modal-backdrop"
+                    role="presentation"
+                    onClick={() => {
+                      if (!adminDailyRunHistorySaving) setAdminDailyRunHistoryEdit(null)
+                    }}
+                  >
+                    <div className="admin-modal-sheet" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+                      <div className="admin-modal-header">
+                        <div className="admin-modal-title">
+                          <h3>Edit daily run</h3>
+                          <div className="admin-modal-sub">{adminDailyRunHistoryEdit.dateKey}</div>
+                        </div>
+                        <button
+                          type="button"
+                          className="admin-header-btn"
+                          disabled={adminDailyRunHistorySaving}
+                          onClick={() => setAdminDailyRunHistoryEdit(null)}
+                        >
+                          Close
+                        </button>
+                      </div>
+                      <p className="admin-help" style={{ marginTop: 0 }}>
+                        Updates the saved run only (not the catalog task). Clear the title or match the catalog name to
+                        remove a custom title. For <strong>— No task —</strong> days, completer fields can be left blank.
+                      </p>
+                      {adminDailyRunHistoryError ? (
+                        <div style={{ marginBottom: 10, color: '#b91c1c', fontWeight: 700, fontSize: 14 }}>
+                          {adminDailyRunHistoryError}
+                        </div>
+                      ) : null}
+                      <label className="admin-label">Title in history</label>
+                      <input
+                        type="text"
+                        className="admin-notif-input"
+                        style={{ width: '100%', marginBottom: 12 }}
+                        value={adminDailyRunHistoryTitle}
+                        onChange={(e) => setAdminDailyRunHistoryTitle(e.target.value)}
+                        disabled={adminDailyRunHistorySaving}
+                      />
+                      <label className="admin-label">Completed by (1st)</label>
+                      <input
+                        type="text"
+                        className="admin-notif-input"
+                        style={{ width: '100%', marginBottom: 12 }}
+                        value={adminDailyRunHistoryEmp1}
+                        onChange={(e) => setAdminDailyRunHistoryEmp1(e.target.value)}
+                        disabled={adminDailyRunHistorySaving}
+                      />
+                      <label className="admin-label">Completed by (2nd, optional)</label>
+                      <input
+                        type="text"
+                        className="admin-notif-input"
+                        style={{ width: '100%', marginBottom: 12 }}
+                        value={adminDailyRunHistoryEmp2}
+                        onChange={(e) => setAdminDailyRunHistoryEmp2(e.target.value)}
+                        disabled={adminDailyRunHistorySaving}
+                      />
+                      {adminDailyRunHistoryEdit.taskId === '__none__' ? (
+                        <>
+                          <label className="admin-label">Count work toward task (scheduling)</label>
+                          <p className="admin-help" style={{ marginTop: 0, marginBottom: 8 }}>
+                            Optional. Credits this day toward recency and monthly/weekly-from-runs logic for a real
+                            catalog task while keeping this day as &quot;No task&quot; on the card.
+                          </p>
+                          <select
+                            className="admin-notif-input"
+                            style={{ width: '100%', marginBottom: 12 }}
+                            value={adminDailyRunHistoryCreditTaskId}
+                            onChange={(e) => setAdminDailyRunHistoryCreditTaskId(e.target.value)}
+                            disabled={adminDailyRunHistorySaving}
+                          >
+                            <option value="">(none)</option>
+                            {(dailyTaskCatalog.tasks || [])
+                              .filter(isDailyTaskSchedulable)
+                              .map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.name || t.id}
+                                </option>
+                              ))}
+                          </select>
+                        </>
+                      ) : null}
+                      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>
+                        <button
+                          type="button"
+                          className="admin-header-btn"
+                          disabled={adminDailyRunHistorySaving}
+                          onClick={() => setAdminDailyRunHistoryEdit(null)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="admin-notif-send"
+                          disabled={adminDailyRunHistorySaving}
+                          onClick={() => void saveAdminDailyRunHistoryEdit()}
+                        >
+                          {adminDailyRunHistorySaving ? 'Saving…' : 'Save'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 {adminDailySaveError ? <div className="admin-empty">{adminDailySaveError}</div> : null}
 
@@ -14857,7 +20628,7 @@ function App() {
                 ) : (
                   <div className="admin-timeoff-list">
                     {[...(dailyTaskCatalog.tasks || [])]
-                      .filter(isDailyTaskEnabled)
+                      .filter(isDailyTaskSchedulable)
                       .slice()
                       .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
                       .map((t) => {
@@ -14955,7 +20726,7 @@ function App() {
                 </div>
 
                 {(() => {
-                  const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled)
+                  const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskSchedulable)
                   const next7 = Array.from({ length: 7 }).map((_, i) => addDaysToDateKey(todayDateKey, i))
                   const weekStarts = Array.from(new Set(next7.map((dk) => getWeekStartDateKeySunday(dk))))
                   const warnings = Array.from(
@@ -14990,12 +20761,19 @@ function App() {
                               : '(unassigned)'
                           const pick = adminDailyOverridePickByDateKey[dk] ?? currentId
                           const label = parseDateKey(dk).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+                          const parsedEntry = parseWeekDayEntry(entry)
+                          const approvalStatus = getDayApprovalStatus(parsedEntry)
                           return (
                             <div key={dk} className="admin-timeoff-card">
                               <div className="admin-timeoff-header">
                                 <span className="admin-timeoff-employee">{label}</span>
-                                <span className={`admin-timeoff-status ${entry?.source === 'override' ? 'admin-timeoff-status-approved' : 'admin-timeoff-status-pending'}`}>
-                                  {entry?.source === 'override' ? 'Override' : 'Auto'}
+                                <span className="admin-timeoff-header-badges">
+                                  <span className={`admin-timeoff-status admin-timeoff-status--approval-${approvalStatus}`}>
+                                    {approvalStatusLabel(approvalStatus)}
+                                  </span>
+                                  <span className={`admin-timeoff-status ${entry?.source === 'override' ? 'admin-timeoff-status-approved' : 'admin-timeoff-status-pending'}`}>
+                                    {entry?.source === 'override' ? 'Override' : 'Auto'}
+                                  </span>
                                 </span>
                               </div>
                               <div className="admin-timeoff-shifts">
@@ -15059,38 +20837,6 @@ function App() {
                     </>
                   )
                 })()}
-
-                <h3 style={{ marginTop: 18 }}>Recent daily task runs (last 30 days)</h3>
-                {adminDailyRunsLoading ? (
-                  <div className="admin-empty">Loading…</div>
-                ) : adminDailyRunsRecent.length === 0 ? (
-                  <div className="admin-empty">No runs found.</div>
-                ) : (
-                  <div className="admin-timeoff-list">
-                    {adminDailyRunsRecent.slice(0, 30).map((r) => {
-                      const t = (dailyTaskCatalog.tasks || []).find((x) => x.id === r.taskId) || null
-                      const name = t?.name || r.taskId
-                      const completedBy =
-                        (r.completedByList && r.completedByList.length ? r.completedByList.join(' + ') : '') || r.completedBy || ''
-                      const status = r.completedAtMs
-                        ? `Completed by ${completedBy || 'unknown'}`
-                        : r.revealedAtMs
-                        ? 'Revealed'
-                        : 'Selected'
-                      return (
-                        <div key={r.dateKey} className="admin-timeoff-card">
-                          <div className="admin-timeoff-header">
-                            <span className="admin-timeoff-employee">{r.dateKey}</span>
-                            <span className="admin-timeoff-status admin-timeoff-status-approved">{status}</span>
-                          </div>
-                          <div className="admin-timeoff-shifts">
-                            <strong>Task:</strong> {name}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
               </div>
             ) : adminView === 'timeoff' ? (
               <div className="admin-section">
@@ -15312,7 +21058,7 @@ function App() {
                       disabled={notifSending}
                     >
                       <option value="all">All Employees</option>
-                      {employees.map((emp) => (
+                      {activeEmployees.map((emp) => (
                         <option key={emp} value={emp}>{emp}</option>
                       ))}
                     </select>
@@ -16151,40 +21897,7 @@ function App() {
                   <button
                     className="add-employee-btn"
                     style={{ marginBottom: 12 }}
-                    onClick={() => {
-                      if (!demoPrevNavRef.current) {
-                        demoPrevNavRef.current = { date: selectedDate, windowKey: selectedWindow, follow: followCurrentWindow }
-                      }
-                      const key = generateRandomDemoDateKey(todayKey)
-                      setDemoDayKey(key)
-                      setSelectedDate(startOfDay(parseDateKey(key)))
-                      setSelectedWindow('11')
-                      setFollowCurrentWindow(false)
-                      setActiveTaskId(null)
-                      setShowEmployeeSelector(false)
-                      setShowChecklistModal(false)
-                      setShowDailyTaskModal(false)
-                      setShowDailyTaskEmployeeSelector(false)
-                      setDailyTaskEmployees([])
-                      setDailyTaskStep(-1)
-                      setDailyTaskRevealing(false)
-                      // Seed a random demo daily task that is NOT yet revealed/completed (local-only).
-                      setDemoDailyTaskRunByDateKey((prev) => {
-                        const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled)
-                        if (!enabled.length) return prev
-                        const picked = enabled[Math.floor(Math.random() * enabled.length)]
-                        return {
-                          ...prev,
-                          [key]: {
-                            dateKey: key,
-                            taskId: picked.id,
-                            selectedAtMs: Date.now(),
-                            selectedBy: 'demo',
-                          },
-                        }
-                      })
-                      setShowAdminPanel(false)
-                    }}
+                    onClick={startRandomDemoDay}
                   >
                     🧪 Start Demo Day (Random)
                   </button>
@@ -16193,85 +21906,14 @@ function App() {
                     <button
                       className="add-employee-btn"
                       style={{ marginBottom: 12, background: '#666' }}
-                      onClick={() => {
-                        const key = demoDayKey
-                        setDemoDayKey(null)
-                        // Clear local-only demo break selection + task completions
-                        setDemoBreakSelectionByDateKey((prev) => {
-                          const next = { ...prev }
-                          if (key) delete next[key]
-                          return next
-                        })
-                        setDemoDailyTaskRunByDateKey((prev) => {
-                          const next = { ...prev }
-                          if (key) delete next[key]
-                          return next
-                        })
-                        setTaskState((prev) => {
-                          if (!key) return prev
-                          const next: TaskState = { ...prev }
-                          delete next[key]
-                          return next
-                        })
-                        setBreakSelection(null)
-                        setActiveTaskId(null)
-                        setShowEmployeeSelector(false)
-                        setShowChecklistModal(false)
-                        setShowDailyTaskModal(false)
-                        setShowDailyTaskEmployeeSelector(false)
-                        setDailyTaskEmployees([])
-                        setDailyTaskEmployees([])
-                        setDailyTaskStep(-1)
-                        setDailyTaskRevealing(false)
-
-                        // Restore navigation (fallback: today/current window)
-                        const restore = demoPrevNavRef.current
-                        demoPrevNavRef.current = null
-                        if (restore) {
-                          setSelectedDate(startOfDay(restore.date))
-                          setSelectedWindow(restore.windowKey)
-                          setFollowCurrentWindow(restore.follow)
-                        } else {
-                          setSelectedDate(startOfDay(new Date()))
-                          setSelectedWindow(getCurrentWindow())
-                          setFollowCurrentWindow(true)
-                        }
-                        setShowAdminPanel(false)
-                      }}
+                      onClick={exitDemoDay}
                     >
                       ✕ Exit Demo Day
                     </button>
                   ) : null}
 
                   {demoDayKey ? (
-                    <button
-                      className="add-employee-btn"
-                      style={{ marginBottom: 12 }}
-                      onClick={() => {
-                        const key = demoDayKey
-                        if (!key) return
-                        setShowDailyTaskModal(false)
-                        setShowDailyTaskEmployeeSelector(false)
-                        setDailyTaskEmployees([])
-                        setDailyTaskStep(-1)
-                        setDailyTaskRevealing(false)
-                        setDemoDailyTaskRunByDateKey((prev) => {
-                          const enabled = (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled)
-                          if (!enabled.length) return prev
-                          const picked = enabled[Math.floor(Math.random() * enabled.length)]
-                          return {
-                            ...prev,
-                            [key]: {
-                              dateKey: key,
-                              taskId: picked.id,
-                              selectedAtMs: Date.now(),
-                              selectedBy: 'demo',
-                            },
-                          }
-                        })
-                        setShowAdminPanel(false)
-                      }}
-                    >
+                    <button className="add-employee-btn" style={{ marginBottom: 12 }} onClick={reshuffleDemoDailyTask}>
                       🎲 New Demo Daily Task
                     </button>
                   ) : null}
@@ -16853,7 +22495,7 @@ function App() {
           }}
         >
           <div
-            className="leaderboard-panel lb-v2"
+            className={`leaderboard-panel lb-v2${uiVariant === 'v3' ? ' lb-v2-v3' : ''}`}
             onTouchStart={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
@@ -16992,15 +22634,22 @@ function App() {
                           : rank === 3 ? '50%'
                           : `${Math.max(20, 40 - (rank - 4) * 5)}%`
                         
-                        const barClass = rank === 1 ? 'lb-v2-podium-bar lb-v2-podium-bar-gold' : 'lb-v2-podium-bar'
-                        
-                        // Avatar classes: special for ranks 1-3, standard for 4+
-                        const avatarClass = rank === 1 
-                          ? 'lb-v2-podium-avatar lb-v2-podium-avatar-gold lb-v2-podium-avatar-medal'
-                          : rank <= 3
-                          ? 'lb-v2-podium-avatar lb-v2-podium-avatar-medal'
-                          : 'lb-v2-podium-avatar lb-v2-podium-avatar-rank'
-                        
+                        const barClass =
+                          uiVariant === 'v3'
+                            ? 'lb-v2-podium-bar lb-v2-podium-bar-v3'
+                            : rank === 1
+                              ? 'lb-v2-podium-bar lb-v2-podium-bar-gold'
+                              : 'lb-v2-podium-bar'
+
+                        const avatarClass =
+                          uiVariant === 'v3'
+                            ? `lb-v2-podium-avatar lb-v2-podium-avatar-v3${rank === 1 ? ' lb-v2-podium-avatar-v3--first' : ''}`
+                            : rank === 1
+                              ? 'lb-v2-podium-avatar lb-v2-podium-avatar-gold lb-v2-podium-avatar-medal'
+                              : rank <= 3
+                                ? 'lb-v2-podium-avatar lb-v2-podium-avatar-medal'
+                                : 'lb-v2-podium-avatar lb-v2-podium-avatar-rank'
+
                         const delay = `${idx * 0.1}s`
                         
                         return (
@@ -17024,20 +22673,28 @@ function App() {
                             } : {})}
                           >
                             {rank === 1 && <div className="lb-v2-podium-crown">👑</div>}
-                            <div className={avatarClass} style={{ background: getAccentColor(player.name) }}>
-                              {medal !== null ? medal : (
-                                <>
-                                  {rank}
-                                  {isTied && <span className="lb-v2-tied-badge-small">=</span>}
-                                </>
-                              )}
-                            </div>
+                            {uiVariant === 'v3' ? (
+                              <div className={avatarClass}>
+                                <span className="lb-v2-podium-avatar-initials">
+                                  {leaderboardDisplayInitials(player.name)}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className={avatarClass} style={{ background: getAccentColor(player.name) }}>
+                                {medal !== null ? medal : (
+                                  <>
+                                    {rank}
+                                    {isTied && <span className="lb-v2-tied-badge-small">=</span>}
+                                  </>
+                                )}
+                              </div>
+                            )}
                             <div className="lb-v2-podium-name">{player.name}{isTied && <span className="lb-v2-tied-badge">=</span>}</div>
                             <div className="lb-v2-podium-score">{lbScoreDisplayByName[player.name] ?? player.score} pts</div>
                             {leaderboardView === 'month' && (
                               <div className="lb-v2-podium-shifts">{player.shiftsPlayed} shifts</div>
                             )}
-                            {podiumLabels.length > 0 && (
+                            {uiVariant !== 'v3' && podiumLabels.length > 0 && (
                               <div className="lb-v2-podium-labels">
                                 {podiumLabels.slice(0, 2).map(label => (
                                   <span key={label.id} className="lb-v2-label lb-v2-podium-label" title={label.description}>
@@ -17142,11 +22799,18 @@ function App() {
 
                     {/* Shift List */}
                     <div className="calculation-shift-list">
-                      {history.shifts.map((entry, idx) => (
+                      {history.shifts.map((entry, idx) => {
+                        // Post-cutover the "Day" leaderboard score is 5PM-only — flag it in the
+                        // employee's history modal so the number isn't confused with old blends.
+                        const dayUsesPmOnly =
+                          new Date(`${entry.dateKey}T00:00:00`).getTime() >=
+                          SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS
+                        const dayLabel = dayUsesPmOnly ? '☀️ Day (5PM)' : '☀️ Day'
+                        return (
                         <div key={`${entry.dateKey}-${entry.shift}-${idx}`} className="calculation-shift-entry">
                           <div className="calculation-shift-date">{entry.displayDate}</div>
                           <div className={`calculation-shift-type ${entry.shift}`}>
-                            {entry.shift === 'day' ? '☀️ Day' : '🌙 Night'}
+                            {entry.shift === 'day' ? dayLabel : '🌙 Night'}
                           </div>
                           <div className="calculation-shift-score-container">
                             <div 
@@ -17156,7 +22820,8 @@ function App() {
                             <span className="calculation-shift-score">{entry.score} pts</span>
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
 
                     {/* Calculation Footer */}
@@ -17214,7 +22879,11 @@ function App() {
               </div>
               <div className="points-section">
                 <h3>Day Shift</h3>
-                <p>Your 5PM tasks form your base score, plus a small bonus from 11AM tasks (up to +16 pts).</p>
+                <p>
+                  Your <strong>5PM</strong> task completions form your day-shift leaderboard score.
+                  Your <strong>11AM</strong> score is shown separately at the top of the screen and does
+                  not change your leaderboard total.
+                </p>
               </div>
               <div className="points-section">
                 <h3>Night Shift</h3>
@@ -17233,7 +22902,7 @@ function App() {
         </div>
       )}
 
-      {musicReminderActive && (
+      {musicReminderEnabled && musicReminderActive && (
         <div
           className={`music-reminder-overlay ${musicReminderFlashOn ? 'flashOn' : 'flashOff'}`}
           role="alert"
@@ -17272,35 +22941,6 @@ function App() {
         </div>
       )}
 
-      {reminderActive && (
-        <div
-          className={`task-reminder-overlay ${reminderVisible ? 'visible' : ''}`}
-          role="alert"
-          aria-live="assertive"
-          aria-label="Task reminder"
-          onPointerDownCapture={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            setReminderActive(false)
-            setReminderVisible(false)
-            if (reminderTimeoutRef.current) window.clearTimeout(reminderTimeoutRef.current)
-            armNextReminder()
-          }}
-          onTouchStartCapture={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            setReminderActive(false)
-            setReminderVisible(false)
-            if (reminderTimeoutRef.current) window.clearTimeout(reminderTimeoutRef.current)
-            armNextReminder()
-          }}
-        >
-          {reminderVisible ? (
-            <div className="task-reminder-text">Please Complete {reminderLabel} Tasks!</div>
-          ) : null}
-        </div>
-      )}
-
       {/* Break celebration overlay */}
       {breakCelebration?.show && (
         <div className="break-celebration-overlay" role="alert" aria-live="polite">
@@ -17313,6 +22953,117 @@ function App() {
           </div>
         </div>
       )}
+
+      {screensaverEnabled ? (
+        <Screensaver
+          visible={screensaverOpen}
+          onDismiss={() => dismissScreensaver({ absorbGhostTap: true })}
+          timeOfDay={timeOfDay}
+          shiftProgress={screensaverShiftProgress}
+          progressGradient={progressGradient}
+          suggestedTask={screensaverSuggestedTask}
+          greetingHeadline={screensaverGreetingProps.headline}
+          greetingQuote={screensaverGreetingProps.quote}
+          greetingQuoteShowAiBadge={screensaverGreetingProps.showAiBadge}
+          greetingAttributionBelowQuote={screensaverGreetingProps.attributionBelowQuote}
+          countdown={
+            screensaverBetaDemoOverride?.kind === 'countdown'
+              ? screensaverBetaDemoOverride.value
+              : screensaverBetaDemoOverride?.kind === 'quote'
+                ? null
+                : screensaverCountdown
+          }
+        />
+      ) : null}
+
+      {screensaverDismissShield ? (
+        <div
+          className="screensaver-dismiss-shield"
+          aria-hidden
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+          onPointerUp={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+          }}
+        />
+      ) : null}
+
+      {dailyTaskFloatingNotificationEl}
+
+      {showGoodMorning &&
+        createPortal(
+          <div
+            className="good-morning-overlay"
+            role="button"
+            tabIndex={0}
+            aria-label="Good morning. Tap to continue."
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                dismissGoodMorning()
+              }
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+            }}
+            onPointerUp={(e) => {
+              if (!e.isPrimary) return
+              e.stopPropagation()
+              e.preventDefault()
+              const el = e.currentTarget as HTMLElement
+              try {
+                el.releasePointerCapture(e.pointerId)
+              } catch {
+                /* already released */
+              }
+              dismissGoodMorning()
+            }}
+            onPointerCancel={(e) => {
+              try {
+                ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+              } catch {
+                /* ignore */
+              }
+            }}
+            onClick={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+            }}
+          >
+            <div className="good-morning-overlay-inner">
+              <h1 className="good-morning-title">Good Morning!</h1>
+              <div className="good-morning-time">
+                {new Date(goodMorningOverlayClock).toLocaleTimeString(undefined, {
+                  hour: 'numeric',
+                  minute: '2-digit',
+                  second: '2-digit',
+                })}
+              </div>
+              <div className="good-morning-date">
+                {new Date(goodMorningOverlayClock).toLocaleDateString(undefined, {
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </div>
+              <div className="good-morning-brand-row" aria-hidden="true">
+                <img className="good-morning-brand-logo" src={traqLogoUrl} alt="" draggable={false} />
+              </div>
+              <p className="good-morning-tap-hint">Tap anywhere to continue</p>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

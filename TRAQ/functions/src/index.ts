@@ -1,8 +1,36 @@
 import * as admin from 'firebase-admin'
 import * as functions from 'firebase-functions/v1'
 import nodemailer from 'nodemailer'
+import { validateQuoteContext } from './ai/quoteTypes'
+import { generateShiftQuote } from './ai/generateShiftQuote'
+import { validateWindowCompleteMessageContext } from './ai/windowCompleteTypes'
+import { generateWindowCompleteMessage } from './ai/generateWindowCompleteMessage'
+import { generateDailyTaskSchedule } from './ai/generateDailyTaskSchedule'
+import { validateTaskSplitRequestPayload } from './ai/taskSplitTypes'
+import { generateTaskSplitChoice, pickFinalVariant } from './ai/generateTaskSplitChoice'
 
 admin.initializeApp()
+
+// Allow `undefined` fields to be silently dropped on Firestore writes.
+// Several Spotify endpoints return optional fields (`display_name`, `email`)
+// that may be missing, and we'd rather just omit them than refuse the write.
+try {
+  admin.firestore().settings({ ignoreUndefinedProperties: true })
+} catch {
+  // settings() can only be called before the first use; ignore second-call errors in tests.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Spotify Web Playback integration (house-account streaming for the iPad).
+// We expose Firestore-trigger functions (mirroring the AI request pattern) so
+// the client never sees the long-lived refresh_token and so we don't depend on
+// allUsers permissions for callable/HTTP functions.
+// ─────────────────────────────────────────────────────────────────────────────
+export { processSpotifyOAuthRequest } from './spotify/handleOAuthCodeExchange'
+export { processSpotifyTokenRequest } from './spotify/handleTokenRequest'
+export { processSpotifySearchRequest } from './spotify/handleSearchRequest'
+export { processSpotifyPlaybackCommand } from './spotify/handlePlaybackCommand'
+export { processSpotifyDisconnect } from './spotify/handleDisconnect'
 
 // Manager destination (hard-coded per your request)
 const MANAGER_EMAIL = 'jeremiahw12310@gmail.com'
@@ -148,180 +176,204 @@ export const emailManagerOnTimeOffRequestCreated = functions
     }
   })
 
+// Job application manager emails: client-side EmailJS from the apply page (same as time off / stock).
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Job Application Email Notification
+// AI-generated shift quotes (Firestore trigger — works around org IAM policy
+// that blocks allUsers on callable/HTTP functions)
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ApplicationDoc = {
-  name: string
-  email: string
-  birthDate: string
-  address: string
-  phone: string
-  availability: string[]
-  availabilityOther?: string
-  employmentHistory: string
-  felonyConviction: boolean
-  status: string
-  createdAt: string
-  createdAtMs: number
-  notes?: string
-
-  // function-internal markers
-  managerEmailSentAt?: string
-  managerEmailClaimedAt?: string
-  managerEmailLastError?: string
-}
-
-const SHIFT_LABELS: Record<string, string> = {
-  mon_lunch: 'Monday 11am-5pm',
-  tue_lunch: 'Tuesday 11am-5pm',
-  wed_lunch: 'Wednesday 11am-5pm',
-  thu_lunch: 'Thursday 11am-5pm',
-  fri_lunch: 'Friday 11am-5pm',
-  sat_lunch: 'Saturday 11am-5pm',
-  sun_lunch: 'Sunday 11am-5pm',
-  mon_dinner: 'Monday 5pm-9pm',
-  tue_dinner: 'Tuesday 5pm-9pm',
-  wed_dinner: 'Wednesday 5pm-9pm',
-  thu_dinner: 'Thursday 5pm-9pm',
-  fri_dinner: 'Friday 5pm-10pm',
-  sat_dinner: 'Saturday 5pm-10pm',
-  sun_dinner: 'Sunday 5pm-10pm',
-}
-
-const buildApplicationEmailText = (id: string, app: ApplicationDoc) => {
-  const availability = (app.availability || [])
-    .map((s) => SHIFT_LABELS[s] || s)
-    .join(', ')
-
-  return [
-    `🔥 New Job Application`,
-    ``,
-    `Name: ${app.name || '(unknown)'}`,
-    `Email: ${app.email || ''}`,
-    `Phone: ${app.phone || ''}`,
-    `Birth Date: ${app.birthDate || ''}`,
-    `Address: ${app.address || ''}`,
-    ``,
-    `Availability:`,
-    availability || '(none selected)',
-    app.availabilityOther ? `Other: ${app.availabilityOther}` : '',
-    ``,
-    `Employment History:`,
-    app.employmentHistory || '(none provided)',
-    ``,
-    `Felony Conviction: ${app.felonyConviction ? 'Yes' : 'No'}`,
-    ``,
-    `Submitted: ${app.createdAt || ''}`,
-    `Application ID: ${id}`,
-  ].filter(Boolean).join('\n')
-}
-
-const buildApplicationEmailHtml = (id: string, app: ApplicationDoc) => {
-  const esc = (x: string) =>
-    String(x || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-
-  const availability = (app.availability || [])
-    .map((s) => `<span style="display: inline-block; background: #e5e7eb; padding: 2px 8px; border-radius: 4px; margin: 2px; font-size: 13px;">${esc(SHIFT_LABELS[s] || s)}</span>`)
-    .join(' ')
-
-  return `
-    <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; max-width: 600px;">
-      <div style="background: linear-gradient(135deg, #d11a2a 0%, #a0121f 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0;">
-        <h2 style="margin: 0; font-size: 24px;">🔥 New Job Application</h2>
-      </div>
-      <div style="background: #fff; border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 12px 12px;">
-        <div style="margin-bottom: 16px;">
-          <div style="font-size: 20px; font-weight: 700; color: #111;">${esc(app.name || 'Unknown')}</div>
-          <div style="color: #666; font-size: 14px;">Submitted ${esc(app.createdAt || '')}</div>
-        </div>
-        
-        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-          <tr>
-            <td style="padding: 8px 0; color: #666; width: 120px; vertical-align: top;"><b>Email</b></td>
-            <td style="padding: 8px 0;"><a href="mailto:${esc(app.email)}" style="color: #d11a2a;">${esc(app.email)}</a></td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666; vertical-align: top;"><b>Phone</b></td>
-            <td style="padding: 8px 0;"><a href="tel:${esc(app.phone)}" style="color: #d11a2a;">${esc(app.phone)}</a></td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666; vertical-align: top;"><b>Birth Date</b></td>
-            <td style="padding: 8px 0;">${esc(app.birthDate)}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666; vertical-align: top;"><b>Address</b></td>
-            <td style="padding: 8px 0;">${esc(app.address)}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666; vertical-align: top;"><b>Availability</b></td>
-            <td style="padding: 8px 0;">${availability || '<em>None selected</em>'}${app.availabilityOther ? `<br><em style="color: #666;">Other: ${esc(app.availabilityOther)}</em>` : ''}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666; vertical-align: top;"><b>Employment</b></td>
-            <td style="padding: 8px 0; white-space: pre-wrap;">${esc(app.employmentHistory || '(none provided)')}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666; vertical-align: top;"><b>Felony</b></td>
-            <td style="padding: 8px 0; font-weight: 700; color: ${app.felonyConviction ? '#dc2626' : '#059669'};">${app.felonyConviction ? 'Yes' : 'No'}</td>
-          </tr>
-        </table>
-        
-        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e7eb; color: #999; font-size: 12px;">
-          Application ID: ${esc(id)}
-        </div>
-      </div>
-    </div>
-  `.trim()
-}
-
-/**
- * Firestore onCreate trigger for new job applications.
- */
-export const emailManagerOnApplicationSubmitted = functions
-  .runWith({ secrets: ['GMAIL_USER', 'GMAIL_APP_PASSWORD'] })
+export const processShiftQuoteRequest = functions
+  .runWith({ secrets: ['OPENAI_API_KEY'], maxInstances: 5 })
   .region('us-central1')
-  .firestore.document('applications/{applicationId}')
-  .onCreate(async (snap, context) => {
-    const applicationId = context.params.applicationId as string
-    const app = snap.data() as ApplicationDoc
-    if (!app || typeof app.name !== 'string') return
-
-    const gmailUser = process.env.GMAIL_USER || ''
-    const gmailPass = process.env.GMAIL_APP_PASSWORD || ''
-    if (!gmailUser || !gmailPass) {
-      console.error('Missing GMAIL_USER or GMAIL_APP_PASSWORD secret in function runtime.')
+  .firestore.document('aiQuoteRequests/{requestId}')
+  .onCreate(async (snap) => {
+    const data = snap.data()
+    const ctx = validateQuoteContext(data)
+    if (!ctx) {
+      await snap.ref.update({ status: 'error', error: 'Invalid context' })
       return
     }
 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: gmailUser,
-        pass: gmailPass,
-      },
-    })
+    const key = process.env.OPENAI_API_KEY || ''
+    if (!key) {
+      await snap.ref.update({ status: 'error', error: 'API key not configured' })
+      return
+    }
 
     try {
-      const subject = `🔥 Bonfire Application: ${app.name || 'New Applicant'}`
-      await transporter.sendMail({
-        from: `Bonfire Hermitage TN <${gmailUser}>`,
-        to: MANAGER_EMAIL,
-        subject,
-        text: buildApplicationEmailText(applicationId, app),
-        html: buildApplicationEmailHtml(applicationId, app),
+      const result = await generateShiftQuote(ctx, key)
+      await snap.ref.update({
+        status: 'complete',
+        greeting: result.greeting,
+        quote: result.quote,
+        source: result.source,
+        expiresAtMs: result.expiresAtMs,
+        presentation: result.presentation,
+        speakerName: result.speakerName ?? '',
       })
-      console.log(`Application email sent for application ${applicationId}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      console.error(`Failed to send application email for application ${applicationId}: ${msg}`)
-      throw e
+      console.error(`processShiftQuoteRequest failed: ${msg}`)
+      await snap.ref.update({ status: 'error', error: msg })
     }
   })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AI window-complete celebration copy (Firestore trigger, same pattern as quotes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const processWindowCompleteMessageRequest = functions
+  .runWith({ secrets: ['OPENAI_API_KEY'], maxInstances: 5 })
+  .region('us-central1')
+  .firestore.document('aiWindowCompleteRequests/{requestId}')
+  .onCreate(async (snap) => {
+    const raw = snap.data() as Record<string, unknown> | undefined
+    if (!raw) {
+      await snap.ref.update({ status: 'error', error: 'Empty document' })
+      return
+    }
+
+    const ctx = validateWindowCompleteMessageContext({
+      deploymentChannel: raw.deploymentChannel,
+      timeOfDay: raw.timeOfDay,
+      windowKey: raw.windowKey,
+      windowLabel: raw.windowLabel,
+      layout: raw.layout,
+      players: raw.players,
+    })
+    if (!ctx) {
+      await snap.ref.update({ status: 'error', error: 'Invalid window-complete context' })
+      return
+    }
+
+    const key = process.env.OPENAI_API_KEY || ''
+    if (!key) {
+      await snap.ref.update({ status: 'error', error: 'OpenAI API key not configured' })
+      return
+    }
+
+    try {
+      const result = await generateWindowCompleteMessage(ctx, key)
+      await snap.ref.update({
+        status: 'complete',
+        message: result.message,
+        source: result.source,
+        expiresAtMs: result.expiresAtMs,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error(`processWindowCompleteMessageRequest failed: ${msg}`)
+      await snap.ref.update({ status: 'error', error: msg })
+    }
+  })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI daily task week scheduling (weekly quota day picks; client validates + merges)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const processDailyTaskScheduleRequest = functions
+  .runWith({ secrets: ['OPENAI_API_KEY'], maxInstances: 5 })
+  .region('us-central1')
+  .firestore.document('aiDailyTaskScheduleRequests/{requestId}')
+  .onCreate(async (snap) => {
+    const raw = snap.data() as Record<string, unknown> | undefined
+    if (!raw || raw.status !== 'pending') {
+      await snap.ref.update({ status: 'error', error: 'Invalid or missing pending request' })
+      return
+    }
+    if (!raw.payload || typeof raw.payload !== 'object') {
+      await snap.ref.update({ status: 'error', error: 'Missing payload' })
+      return
+    }
+
+    const key = process.env.OPENAI_API_KEY || ''
+    if (!key) {
+      await snap.ref.update({ status: 'error', error: 'OpenAI API key not configured' })
+      return
+    }
+
+    try {
+      const systemPrompt =
+        typeof raw.systemPrompt === 'string' && raw.systemPrompt.trim()
+          ? raw.systemPrompt.trim()
+          : undefined
+      const resultJson = await generateDailyTaskSchedule(key, raw.payload, systemPrompt)
+      await snap.ref.update({
+        status: 'complete',
+        resultJson,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error(`processDailyTaskScheduleRequest failed: ${msg}`)
+      await snap.ref.update({ status: 'error', error: msg })
+    }
+  })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI fair task split (dice): client sends score-balanced variants; model picks one
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const processTaskSplitRequest = functions
+  .runWith({ secrets: ['OPENAI_API_KEY'], maxInstances: 5 })
+  .region('us-central1')
+  .firestore.document('aiTaskSplitRequests/{requestId}')
+  .onCreate(async (snap) => {
+    const raw = snap.data() as Record<string, unknown> | undefined
+    if (!raw || raw.status !== 'pending') {
+      await snap.ref.update({ status: 'error', error: 'Invalid or missing pending request' })
+      return
+    }
+    if (!raw.payload || typeof raw.payload !== 'object') {
+      await snap.ref.update({ status: 'error', error: 'Missing payload' })
+      return
+    }
+
+    const payload = validateTaskSplitRequestPayload(raw.payload)
+    if (!payload) {
+      await snap.ref.update({ status: 'error', error: 'Invalid task split payload' })
+      return
+    }
+
+    const key = process.env.OPENAI_API_KEY || ''
+
+    try {
+      const choice = key
+        ? await generateTaskSplitChoice(payload, key)
+        : { choiceIndex: 0, rationale: '', source: 'fallback' as const }
+      const finalVariant = pickFinalVariant(payload, choice)
+      await snap.ref.update({
+        status: 'complete',
+        choiceIndex: choice.choiceIndex,
+        rationale: choice.rationale,
+        source: choice.source,
+        finalAssignment: finalVariant.assignment,
+        finalMask: finalVariant.mask,
+        finalIceMode: finalVariant.iceMode,
+        finalIceSplitAssignment: finalVariant.iceSplitAssignment,
+        finalSharedTaskIds: finalVariant.sharedTaskIds || [],
+        projectedScoreFloatA: finalVariant.projectedScoreFloatA,
+        projectedScoreFloatB: finalVariant.projectedScoreFloatB,
+        scoreDiff: finalVariant.scoreDiff,
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error(`processTaskSplitRequest failed: ${msg}`)
+      const v0 = pickFinalVariant(payload, { choiceIndex: 0, rationale: '', source: 'fallback' })
+      await snap.ref.update({
+        status: 'complete',
+        choiceIndex: 0,
+        rationale: '',
+        source: 'fallback',
+        finalAssignment: v0.assignment,
+        finalMask: v0.mask,
+        finalIceMode: v0.iceMode,
+        finalIceSplitAssignment: v0.iceSplitAssignment,
+        finalSharedTaskIds: v0.sharedTaskIds || [],
+        projectedScoreFloatA: v0.projectedScoreFloatA,
+        projectedScoreFloatB: v0.projectedScoreFloatB,
+        scoreDiff: v0.scoreDiff,
+        error: msg,
+      })
+    }
+  })

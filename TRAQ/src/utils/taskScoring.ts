@@ -1,11 +1,22 @@
-import type { WindowKey, TaskCompletion, TaskState, TaskOverrides } from '../services/firestore'
+import type { WindowKey, TaskCompletion, TaskState, TaskOverrides, FairSplitContractDoc } from '../services/firestore'
+import { applyFairSplitToPointsByWindow } from './fairSplitScoring'
 
 export type ShiftKey = 'day' | 'night'
 
 export type LeaderRow = {
   name: string
   score: number
+  /** Pre-round 0–100 value; use for HUD/celebrations so small early credits (e.g. ice) aren’t lost to `Math.round`. */
+  scoreFloat?: number
   shiftsPlayed: number // 0 or 1 for computeShiftLeadersForState; can be >1 when aggregating
+  /**
+   * v2.2 (May 13, 2026+): On day shift dates ≥ {@link SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS},
+   * `score` is 5PM-only and `dayAmScore` carries the standalone 11AM 0–100 for HUD display.
+   * Undefined for night, pre-cutover dates, or anyone with no 11AM credit.
+   */
+  dayAmScore?: number
+  /** Pre-round float counterpart to {@link dayAmScore}. */
+  dayAmScoreFloat?: number
 }
 
 /**
@@ -20,6 +31,8 @@ export type TaskLike = {
   weight?: number
   createdAtMs?: number
   disabledAtMs?: number
+  /** Admin override: task must be completed by both employees when not in solo mode. */
+  requiresSplit?: boolean
 }
 
 export type WindowMsFns = {
@@ -34,6 +47,67 @@ export const DAILY_TASK_POINTS_EFFECTIVE_MS = new Date(2026, 0, 19, 0, 0, 0, 0).
 // v2.1: Retroactive fix range - apply new scoring logic to Jan 1-18, 2026
 export const RETROACTIVE_FIX_START_MS = new Date(2026, 0, 1, 0, 0, 0, 0).getTime()
 export const RETROACTIVE_FIX_END_MS = new Date(2026, 0, 18, 23, 59, 59, 999).getTime()
+// v2.2 (May 13, 2026+): Day shift leaderboard score uses 5PM window only.
+// 11AM is shown as a separate HUD number (`dayAmScore`) but no longer blends into `score`.
+// Past dates keep the v2.1 20/80 blended math.
+export const SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS = new Date(2026, 4, 13, 0, 0, 0, 0).getTime()
+
+/**
+ * Balanced scoring (v2.1+): optional tasks marked "didn't need to fill" (auto yum/peanuts, or v3
+ * didNotNeedToComplete) remove that task's weight from the window denominator and award no credits
+ * for it. That keeps the same total 0–100 point pool for the remaining work in the window — when
+ * the shift is fully complete, normalized points still top out at 100 per person for that window.
+ *
+ * Ice: legacy v2 auto-assign still awards credits (past assignees), so its weight stays in the
+ * denominator; v3 ice didNotNeedToComplete removes weight and credits (same as yum/peanuts skip).
+ */
+function applyBalancedOptionalTaskDenominatorAdjustments(
+  totalWeight: number,
+  wKey: WindowKey,
+  windowMap: Record<string, TaskCompletion>,
+  taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>
+): number {
+  let t = totalWeight
+
+  const yumYumCompletion = windowMap['yum-yum-close']
+  if (yumYumCompletion?.autoAssigned === true || yumYumCompletion?.didNotNeedToComplete === true) {
+    const w = taskWeightByIdByWindow[wKey]?.['yum-yum-close'] ?? 0
+    t = Math.max(0, t - w)
+  }
+
+  if (wKey === '21') {
+    const peanutsCompletion = windowMap['peanuts-noodles-close']
+    if (peanutsCompletion?.autoAssigned === true || peanutsCompletion?.didNotNeedToComplete === true) {
+      const w = taskWeightByIdByWindow[wKey]?.['peanuts-noodles-close'] ?? 0
+      t = Math.max(0, t - w)
+    }
+  }
+
+  const ice5Completion = windowMap['ice-5pm']
+  if (ice5Completion?.didNotNeedToComplete === true) {
+    const w = taskWeightByIdByWindow[wKey]?.['ice-5pm'] ?? 0
+    t = Math.max(0, t - w)
+  }
+  const iceCloseCompletion = windowMap['ice-close']
+  if (iceCloseCompletion?.didNotNeedToComplete === true) {
+    const w = taskWeightByIdByWindow[wKey]?.['ice-close'] ?? 0
+    t = Math.max(0, t - w)
+  }
+
+  return t
+}
+
+/** Must match {@link applyBalancedOptionalTaskDenominatorAdjustments} — same tasks get no credits. */
+function isBalancedOptionalTaskWithNoCredits(taskId: string, completion: TaskCompletion | undefined): boolean {
+  if (!completion) return false
+  if (taskId === 'yum-yum-close' || taskId === 'peanuts-noodles-close') {
+    return completion.autoAssigned === true || completion.didNotNeedToComplete === true
+  }
+  if (taskId === 'ice-5pm' || taskId === 'ice-close') {
+    return completion.didNotNeedToComplete === true
+  }
+  return false
+}
 
 /**
  * Determine which tasks should be considered "effective" for a given dateKey + window.
@@ -114,29 +188,36 @@ export const getWeightsForDateKey = (args: {
   return { taskWeightByIdByWindow, windowTaskWeights, taskIdsByWindow }
 }
 
-/**
- * Canonical shift scoring (ported from `App.tsx`).
- *
- * Returns a row for anyone who earned credit (including autoAssigned credit), and marks
- * `shiftsPlayed` only when the person had non-autoAssigned participation (with the
- * yum-yum-only night shift exception).
- */
-export const computeShiftLeadersForState = (
+export type ShiftScoringCoreResult = {
+  pointsByWindow: Record<WindowKey, Record<string, number>>
+  creditsByWindow: Record<WindowKey, Record<string, number>>
+  participationCreditsByWindow: Record<WindowKey, Record<string, number>>
+  tasksByPersonByWindow: Record<WindowKey, Record<string, Set<string>>>
+  useSeparateDayAmPm: boolean
+  useBalancedScoring: boolean
+  useDailyTaskPoints: boolean
+  deferredFrom17: Array<{ taskId: string; completion: TaskCompletion; weight: number }>
+  deferredWeightTotal17: number
+}
+
+export function computeShiftScoringCore(
   state: TaskState,
   dateKey: string,
   shift: ShiftKey,
   SHIFT_WINDOWS: Record<ShiftKey, WindowKey[]>,
   windowTaskWeights: Record<WindowKey, number>,
   taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>
-): LeaderRow[] => {
+): ShiftScoringCoreResult | null {
   const dateMap = state[dateKey]
-  if (!dateMap) return []
+  if (!dateMap) return null
 
   // v2.1: Check if this date uses balanced scoring (calculate once, reuse)
   const dateMs = new Date(`${dateKey}T00:00:00`).getTime()
   const isInRetroactiveRange = dateMs >= RETROACTIVE_FIX_START_MS && dateMs <= RETROACTIVE_FIX_END_MS
   const useBalancedScoring = dateMs >= BALANCED_SHIFT_SCORING_EFFECTIVE_MS || isInRetroactiveRange
   const useDailyTaskPoints = dateMs >= DAILY_TASK_POINTS_EFFECTIVE_MS || isInRetroactiveRange
+  // v2.2: On/after cutover, day shift `score` is 5PM-only and 11AM is HUD-only.
+  const useSeparateDayAmPm = dateMs >= SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS
 
   // Deferred-to-close support:
   // Some 5PM ('17') tasks are auto-completed but should be scored at close (9/10PM).
@@ -173,27 +254,15 @@ export const computeShiftLeadersForState = (
     if (shift === 'day' && wKey === '17') totalWeight = Math.max(0, totalWeight - deferredWeightTotal17)
     if (shift === 'night' && wKey === '21') totalWeight = totalWeight + deferredWeightTotal17
     
-    // v2.1 (Jan 19, 2026+): Exclude autoAssigned optional tasks from totalWeight
-    // so remaining tasks can still reach 100 points when optional tasks aren't needed.
-    // Note: If manually assigned, these tasks count normally (autoAssigned === false/undefined).
+    // v2.1 (Jan 19, 2026+): denominator = raw window weight minus optional skips (see helper).
     if (useBalancedScoring) {
-      const windowMap = dateMap[wKey] || {}
-      
-      // Check for autoAssigned yum-yum-close (can appear in 5PM or 9PM windows)
-      const yumYumCompletion = windowMap['yum-yum-close']
-      if (yumYumCompletion?.autoAssigned === true) {
-        const yumYumWeight = taskWeightByIdByWindow[wKey]?.['yum-yum-close'] ?? 0
-        totalWeight = Math.max(0, totalWeight - yumYumWeight)
-      }
-      
-      // Check for autoAssigned peanuts-noodles-close (only in 9PM window)
-      if (wKey === '21') {
-        const peanutsCompletion = windowMap['peanuts-noodles-close']
-        if (peanutsCompletion?.autoAssigned === true) {
-          const peanutsWeight = taskWeightByIdByWindow[wKey]?.['peanuts-noodles-close'] ?? 0
-          totalWeight = Math.max(0, totalWeight - peanutsWeight)
-        }
-      }
+      const windowMap = (dateMap[wKey] || {}) as Record<string, TaskCompletion>
+      totalWeight = applyBalancedOptionalTaskDenominatorAdjustments(
+        totalWeight,
+        wKey,
+        windowMap,
+        taskWeightByIdByWindow
+      )
     }
     
     if (!totalWeight) return
@@ -324,12 +393,9 @@ export const computeShiftLeadersForState = (
       // Day scoring should not count tasks deferred to close (and denominator already adjusted).
       if (shift === 'day' && wKey === '17' && completion?.deferredToClose) return
 
-      // v2.1 (Jan 19, 2026+): Skip autoAssigned optional tasks from credit calculation
-      // since we already excluded their weights from totalWeight (they represent "didn't need to fill")
-      if (useBalancedScoring && completion?.autoAssigned === true) {
-        if (taskId === 'yum-yum-close' || taskId === 'peanuts-noodles-close') {
-          return
-        }
+      // v2.1+: Skip credits for the same optional completions whose weight was removed from totalWeight.
+      if (useBalancedScoring && isBalancedOptionalTaskWithNoCredits(taskId, completion)) {
+        return
       }
 
       // Daily tasks are handled separately as bonus points, skip from regular credit calculation
@@ -396,6 +462,82 @@ export const computeShiftLeadersForState = (
     // Save which tasks each person completed in this window
     tasksByPersonByWindow[wKey] = tasksByPerson
   })
+  return {
+    pointsByWindow,
+    creditsByWindow,
+    participationCreditsByWindow,
+    tasksByPersonByWindow,
+    useSeparateDayAmPm,
+    useBalancedScoring,
+    useDailyTaskPoints,
+    deferredFrom17,
+    deferredWeightTotal17,
+  }
+}
+
+/**
+ * Canonical shift scoring (ported from `App.tsx`).
+ *
+ * Returns a row for anyone who earned credit (including autoAssigned credit), and marks
+ * `shiftsPlayed` only when the person had non-autoAssigned participation (with the
+ * yum-yum-only night shift exception).
+ */
+export const computeShiftLeadersForState = (
+  state: TaskState,
+  dateKey: string,
+  shift: ShiftKey,
+  SHIFT_WINDOWS: Record<ShiftKey, WindowKey[]>,
+  windowTaskWeights: Record<WindowKey, number>,
+  taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>,
+  soloModeActive = false,
+  fairSplitContract?: FairSplitContractDoc | null,
+  /**
+   * Secret "training mode": for any window in this list that belongs to the shift, every real
+   * participant of that window has their score forced to 50 (regardless of normal scoring).
+   */
+  trainingWindowKeys?: WindowKey[]
+): LeaderRow[] => {
+  const core = computeShiftScoringCore(
+    state,
+    dateKey,
+    shift,
+    SHIFT_WINDOWS,
+    windowTaskWeights,
+    taskWeightByIdByWindow
+  )
+  if (!core) return []
+
+  let {
+    pointsByWindow,
+    creditsByWindow,
+    participationCreditsByWindow,
+    tasksByPersonByWindow,
+    useSeparateDayAmPm,
+    useBalancedScoring,
+    useDailyTaskPoints,
+    deferredFrom17,
+    deferredWeightTotal17,
+  } = core
+
+  if (fairSplitContract && fairSplitContract.dateKey === dateKey) {
+    const wk = fairSplitContract.windowKey
+    if ((shift === 'day' && wk === '17') || (shift === 'night' && wk === '21')) {
+      applyFairSplitToPointsByWindow({
+        pointsByWindow,
+        state,
+        dateKey,
+        shift,
+        contract: fairSplitContract,
+        windowTaskWeights,
+        taskWeightByIdByWindow,
+        deferredFrom17,
+        deferredWeightTotal17,
+        useBalancedScoring,
+        useDailyTaskPoints,
+      })
+    }
+  }
+
 
   // Fairness notes for your staffing model:
   // v2.1 (Jan 19, 2026+): Day shift is split 20% 11AM + 80% 5PM = 100 max
@@ -439,22 +581,96 @@ export const computeShiftLeadersForState = (
     const playedThisShift = !!played[name]
     if (shift === 'night') {
       const points21 = pointsByWindow['21'][name] ?? 0
-      rows.push({ name, score: Math.max(0, Math.min(100, Math.round(points21))), shiftsPlayed: playedThisShift ? 1 : 0 })
+      const maxScore = soloModeActive ? 70 : 100
+      const sf = Math.max(0, Math.min(maxScore, points21))
+      rows.push({
+        name,
+        score: Math.round(sf),
+        scoreFloat: sf,
+        shiftsPlayed: playedThisShift ? 1 : 0,
+      })
       return
     }
 
     // day shift
     const points17 = pointsByWindow['17'][name] ?? 0
     const points11 = pointsByWindow['11'][name] ?? 0
+    const maxScore = soloModeActive ? 70 : 100
+
+    if (useSeparateDayAmPm) {
+      // v2.2: 5PM-only leaderboard score; 11AM travels alongside as `dayAmScore` for the HUD.
+      // shiftsPlayed counts the day only when there's real 5PM participation, so 11AM-only
+      // employees don't add an empty "day" to the month average denominator.
+      const sf = Math.max(0, Math.min(maxScore, points17))
+      const amSf = Math.max(0, Math.min(100, points11))
+      const pmParticipation = (participationCreditsByWindow['17']?.[name] ?? 0) > 0
+      const row: LeaderRow = {
+        name,
+        score: Math.round(sf),
+        scoreFloat: sf,
+        shiftsPlayed: pmParticipation ? 1 : 0,
+      }
+      if (amSf > 0) {
+        row.dayAmScore = Math.round(amSf)
+        row.dayAmScoreFloat = amSf
+      }
+      rows.push(row)
+      return
+    }
+
     const totalFloat = useBalancedScoring
       ? (points17 * PM_SPLIT_WEIGHT) + (points11 * AM_SPLIT_WEIGHT)
       : points17 + AM_BONUS_WEIGHT * points11
-    const total = Math.max(0, Math.min(100, Math.round(totalFloat)))
-    rows.push({ name, score: total, shiftsPlayed: playedThisShift ? 1 : 0 })
+    const sf = Math.max(0, Math.min(maxScore, totalFloat))
+    const total = Math.round(sf)
+    rows.push({ name, score: total, scoreFloat: sf, shiftsPlayed: playedThisShift ? 1 : 0 })
   })
 
+  // Training mode: force every real participant of a training window in this shift to 50 points.
+  // Participation comes from non-autoAssigned credit in the training window. Runs after fair-split
+  // so training always wins.
+  if (trainingWindowKeys && trainingWindowKeys.length > 0) {
+    const TRAINING_SCORE = 50
+    const rowByName: Record<string, LeaderRow> = {}
+    rows.forEach((r) => {
+      rowByName[r.name] = r
+    })
+    SHIFT_WINDOWS[shift].forEach((w) => {
+      if (!trainingWindowKeys.includes(w)) return
+      Object.keys(participationCreditsByWindow[w] || {}).forEach((name) => {
+        if ((participationCreditsByWindow[w][name] ?? 0) <= 0) return
+        const existing = rowByName[name]
+        if (existing) {
+          existing.score = TRAINING_SCORE
+          existing.scoreFloat = TRAINING_SCORE
+          existing.shiftsPlayed = 1
+        } else {
+          const created: LeaderRow = {
+            name,
+            score: TRAINING_SCORE,
+            scoreFloat: TRAINING_SCORE,
+            shiftsPlayed: 1,
+          }
+          rowByName[name] = created
+          rows.push(created)
+        }
+      })
+    })
+  }
+
   // Deterministic ordering for ties (important for the Shift HUD top-2 selection).
-  return rows.sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
+  // v2.2 day shift: when 5PM scores tie (e.g. early in the day before 5PM unlocks),
+  // break the tie on the 11AM standalone score so the HUD highlights the player who
+  // actually worked 11AM instead of falling through to alphabetical.
+  return rows.sort((a, b) => {
+    const af = a.scoreFloat ?? a.score
+    const bf = b.scoreFloat ?? b.score
+    if (bf !== af) return bf - af
+    const aAm = a.dayAmScoreFloat ?? a.dayAmScore ?? 0
+    const bAm = b.dayAmScoreFloat ?? b.dayAmScore ?? 0
+    if (bAm !== aAm) return bAm - aAm
+    return a.name.localeCompare(b.name)
+  })
 }
 
 // Compute full day leaders (combines day and night shifts, averaging scores)
@@ -463,20 +679,47 @@ export const computeFullDayLeadersForState = (
   dateKey: string,
   SHIFT_WINDOWS: Record<ShiftKey, WindowKey[]>,
   windowTaskWeights: Record<WindowKey, number>,
-  taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>
+  taskWeightByIdByWindow: Record<WindowKey, Record<string, number>>,
+  fairSplitDay17?: FairSplitContractDoc | null,
+  fairSplitNight21?: FairSplitContractDoc | null,
+  trainingWindowKeys?: WindowKey[]
 ): LeaderRow[] => {
   // Get scores for both shifts
-  const dayLeaders = computeShiftLeadersForState(state, dateKey, 'day', SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
-  const nightLeaders = computeShiftLeadersForState(state, dateKey, 'night', SHIFT_WINDOWS, windowTaskWeights, taskWeightByIdByWindow)
+  const dayLeaders = computeShiftLeadersForState(
+    state,
+    dateKey,
+    'day',
+    SHIFT_WINDOWS,
+    windowTaskWeights,
+    taskWeightByIdByWindow,
+    false,
+    fairSplitDay17 ?? null,
+    trainingWindowKeys
+  )
+  const nightLeaders = computeShiftLeadersForState(
+    state,
+    dateKey,
+    'night',
+    SHIFT_WINDOWS,
+    windowTaskWeights,
+    taskWeightByIdByWindow,
+    false,
+    fairSplitNight21 ?? null,
+    trainingWindowKeys
+  )
 
   // Build map by person name
-  const byName: Record<string, { dayScore?: number; nightScore?: number; shifts: number }> = {}
+  const byName: Record<
+    string,
+    { dayScore?: number; nightScore?: number; dayScoreFloat?: number; nightScoreFloat?: number; shifts: number }
+  > = {}
 
   dayLeaders.forEach((row) => {
     // Only count "real" participation as working a shift.
     if (!row.shiftsPlayed) return
     if (!byName[row.name]) byName[row.name] = { shifts: 0 }
     byName[row.name].dayScore = row.score
+    byName[row.name].dayScoreFloat = row.scoreFloat ?? row.score
     byName[row.name].shifts += row.shiftsPlayed
   })
 
@@ -485,17 +728,21 @@ export const computeFullDayLeadersForState = (
     if (!row.shiftsPlayed) return
     if (!byName[row.name]) byName[row.name] = { shifts: 0 }
     byName[row.name].nightScore = row.score
+    byName[row.name].nightScoreFloat = row.scoreFloat ?? row.score
     byName[row.name].shifts += row.shiftsPlayed
   })
 
   // Calculate final scores (average if worked both shifts, otherwise use single shift)
   const rows: LeaderRow[] = Object.keys(byName).map((name) => {
     const data = byName[name]
-    const scores = [data.dayScore, data.nightScore].filter((s) => s !== undefined) as number[]
-    const avgScore = scores.reduce((sum, s) => sum + s, 0) / scores.length
+    const floats = [data.dayScoreFloat, data.nightScoreFloat].filter((s) => s !== undefined) as number[]
+    const avgFloat =
+      floats.length > 0 ? floats.reduce((sum, s) => sum + s, 0) / floats.length : 0
+    const sf = Math.max(0, Math.min(100, avgFloat))
     return {
       name,
-      score: Math.round(avgScore),
+      score: Math.round(sf),
+      scoreFloat: sf,
       shiftsPlayed: data.shifts,
     }
   })

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>TRAQ — Admin</title>
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="TRAQ Admin" />
+
+    <link rel="apple-touch-icon" href="/icons/icon-180.png?v=2" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png?v=2" />
+    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-180.png?v=2" />
+    <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-180.png?v=2" />
+
+    <meta name="theme-color" content="#d11a2a" />
+  </head>
+  <body>
+    <script>
+      (function() {
+        var ua = navigator.userAgent;
+        if (/OS 9_/.test(ua)) {
+          document.documentElement.className += ' ios9-optimized';
+          var meta = document.querySelector('meta[name=\"viewport\"]');
+          if (meta) {
+            var content = meta.getAttribute('content') || '';
+            if (content.indexOf('user-scalable=no') === -1) {
+              if (content.length && content.charAt(content.length - 1) !== ',') content += ',';
+              content += ' maximum-scale=1, user-scalable=no';
+              meta.setAttribute('content', content);
+            }
+          }
+        }
+      })();
+    </script>
+    <div id="root">
+      <div id="loading-fallback" style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1a1a1a;color:white;">
+        <div style="text-align:center;">
+          <div style="font-size:2rem;margin-bottom:1rem;">TRAQ Admin</div>
+          <div id="load-status">Loading...</div>
+          <div id="error-log" style="font-size:0.75rem;color:#ff6b6b;margin-top:1rem;max-width:300px;word-wrap:break-word;"></div>
+        </div>
+      </div>
+    </div>
+    <noscript>
+      <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1a1a1a;color:white;">
+        <div style="text-align:center;padding:20px;">
+          <div style="font-size:2rem;margin-bottom:1rem;">TRAQ Admin</div>
+          <div>JavaScript is required.</div>
+        </div>
+      </div>
+    </noscript>
+    <script>
+      (function() {
+        var logEl = document.getElementById('error-log');
+        var statusEl = document.getElementById('load-status');
+        var errors = [];
+        function log(msg) {
+          errors.push(msg);
+          if (logEl) logEl.innerHTML = errors.join('<br>');
+        }
+        function setStatus(msg) {
+          if (statusEl) statusEl.textContent = msg;
+        }
+        window.onerror = function(msg, url, line) {
+          setStatus('Error occurred');
+          log('ERR: ' + String(msg).substring(0, 100));
+          if (url) log('URL: ' + url.split('/').pop());
+          if (line) log('Line: ' + line);
+          return false;
+        };
+        window.traqDebug = { log: log, setStatus: setStatus };
+        setStatus('Scripts loading...');
+      })();
+    </script>
+    <script type="module" src="/src/main-admin.tsx"></script>
+  </body>
+</html>

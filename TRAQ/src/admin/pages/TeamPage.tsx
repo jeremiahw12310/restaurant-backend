@@ -1,29 +1,37 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import './TeamPage.css'
 import {
-  subscribeToEmployees,
   saveEmployees,
   subscribeToEmployeeColors,
   saveEmployeeColor,
   removeEmployeeColor,
+  renameEmployeeArchive,
+  clearEmployeeArchive,
   type EmployeeColors,
 } from '../../services/firestore'
+import { useEmployeeRoster } from '../../hooks/useEmployeeRoster'
 
-// Preset colors for quick assignment
 const PRESET_COLORS = [
-  '#ef4444', // red
-  '#f97316', // orange
-  '#eab308', // yellow
-  '#22c55e', // green
-  '#14b8a6', // teal
-  '#3b82f6', // blue
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#6b7280', // gray
+  '#ef4444',
+  '#f97316',
+  '#eab308',
+  '#22c55e',
+  '#14b8a6',
+  '#3b82f6',
+  '#8b5cf6',
+  '#ec4899',
+  '#6b7280',
 ]
 
 export function TeamPage() {
-  const [employees, setEmployees] = useState<string[]>([])
+  const {
+    list: employees,
+    activeEmployees,
+    archivedEmployees,
+    archiveEmployee,
+    restoreEmployee,
+  } = useEmployeeRoster()
+
   const [employeeColors, setEmployeeColors] = useState<EmployeeColors>({})
   const [newEmployeeName, setNewEmployeeName] = useState('')
   const [editingEmployee, setEditingEmployee] = useState<string | null>(null)
@@ -31,26 +39,25 @@ export function TeamPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [colorPickerFor, setColorPickerFor] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [showArchivedSection, setShowArchivedSection] = useState(false)
 
-  // Subscribe to employees and colors
   useEffect(() => {
-    const unsubEmployees = subscribeToEmployees((list) => {
-      setEmployees(list)
-    })
-
     const unsubColors = subscribeToEmployeeColors((colors) => {
       setEmployeeColors(colors)
     })
-
-    return () => {
-      unsubEmployees?.()
-      unsubColors?.()
-    }
+    return () => unsubColors?.()
   }, [])
 
-  // Filter employees by search
-  const filteredEmployees = employees.filter((emp) =>
-    emp.toLowerCase().includes(searchQuery.toLowerCase())
+  const q = searchQuery.trim().toLowerCase()
+  const filteredActive = useMemo(
+    () =>
+      activeEmployees.filter((emp) => !q || emp.toLowerCase().includes(q)),
+    [activeEmployees, q]
+  )
+  const filteredArchived = useMemo(
+    () =>
+      archivedEmployees.filter((emp) => !q || emp.toLowerCase().includes(q)),
+    [archivedEmployees, q]
   )
 
   const handleAddEmployee = useCallback(async () => {
@@ -74,24 +81,65 @@ export function TeamPage() {
     }
   }, [employees, newEmployeeName])
 
-  const handleDeleteEmployee = useCallback(async (name: string) => {
-    if (!confirm(`Delete ${name}? This cannot be undone.`)) return
+  const handleDeleteEmployee = useCallback(
+    async (name: string) => {
+      if (!confirm(`Delete ${name}? This cannot be undone.`)) return
 
-    setSaving(true)
-    try {
-      const updated = employees.filter((e) => e !== name)
-      await saveEmployees(updated)
-      // Also remove their color if set
-      if (employeeColors[name]) {
-        await removeEmployeeColor(name)
+      setSaving(true)
+      try {
+        const updated = employees.filter((e) => e !== name)
+        await saveEmployees(updated)
+        await clearEmployeeArchive(name)
+        if (employeeColors[name]) {
+          await removeEmployeeColor(name)
+        }
+      } catch (err) {
+        console.error('Failed to delete employee:', err)
+        alert('Failed to delete employee')
+      } finally {
+        setSaving(false)
       }
-    } catch (err) {
-      console.error('Failed to delete employee:', err)
-      alert('Failed to delete employee')
-    } finally {
-      setSaving(false)
-    }
-  }, [employees, employeeColors])
+    },
+    [employees, employeeColors]
+  )
+
+  const handleArchiveEmployee = useCallback(
+    async (name: string) => {
+      if (
+        !confirm(
+          `Archive ${name}?\n\nThey will be hidden from task and time-off pickers and from the current month's leaderboard. Past completed tasks and history are unchanged.`
+        )
+      ) {
+        return
+      }
+      setSaving(true)
+      try {
+        await archiveEmployee(name)
+        setShowArchivedSection(true)
+      } catch (err) {
+        console.error('Failed to archive employee:', err)
+        alert('Failed to archive employee')
+      } finally {
+        setSaving(false)
+      }
+    },
+    [archiveEmployee]
+  )
+
+  const handleRestoreEmployee = useCallback(
+    async (name: string) => {
+      setSaving(true)
+      try {
+        await restoreEmployee(name)
+      } catch (err) {
+        console.error('Failed to restore employee:', err)
+        alert('Failed to restore employee')
+      } finally {
+        setSaving(false)
+      }
+    },
+    [restoreEmployee]
+  )
 
   const handleRenameEmployee = useCallback(async () => {
     if (!editingEmployee) return
@@ -110,8 +158,8 @@ export function TeamPage() {
     try {
       const updated = employees.map((e) => (e === editingEmployee ? newName : e))
       await saveEmployees(updated)
+      await renameEmployeeArchive(editingEmployee, newName)
 
-      // Transfer color if exists
       const oldColor = employeeColors[editingEmployee]
       if (oldColor) {
         await removeEmployeeColor(editingEmployee)
@@ -151,14 +199,121 @@ export function TeamPage() {
     setEditingName(name)
   }
 
+  const renderMemberRow = (emp: string, archived: boolean) => {
+    const color = employeeColors[emp]
+    const isEditing = editingEmployee === emp
+    const showColorPicker = colorPickerFor === emp
+
+    return (
+      <div key={emp} className={`team-member-card ${archived ? 'team-member-card--archived' : ''}`}>
+        <div className="team-member-info">
+          <button
+            className="team-color-btn"
+            style={{ backgroundColor: color || '#e5e7eb' }}
+            onClick={() => setColorPickerFor(showColorPicker ? null : emp)}
+            title={color ? 'Change color' : 'Set color'}
+            type="button"
+          >
+            {!color && <span className="team-color-empty">+</span>}
+          </button>
+
+          {isEditing ? (
+            <input
+              type="text"
+              className="team-edit-input"
+              value={editingName}
+              onChange={(e) => setEditingName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleRenameEmployee()
+                if (e.key === 'Escape') setEditingEmployee(null)
+              }}
+              onBlur={() => void handleRenameEmployee()}
+              autoFocus
+            />
+          ) : (
+            <span className="team-member-name">
+              {emp}
+              {archived ? <span className="team-archived-badge">Archived</span> : null}
+            </span>
+          )}
+        </div>
+
+        <div className="team-member-actions">
+          {!isEditing && (
+            <>
+              <button
+                type="button"
+                className="team-action-btn"
+                onClick={() => startEditing(emp)}
+                title="Rename"
+              >
+                ✏️
+              </button>
+              {archived ? (
+                <button
+                  type="button"
+                  className="team-action-btn team-action-restore"
+                  onClick={() => void handleRestoreEmployee(emp)}
+                  title="Restore"
+                  disabled={saving}
+                >
+                  Restore
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="team-action-btn team-action-archive"
+                  onClick={() => void handleArchiveEmployee(emp)}
+                  title="Archive"
+                  disabled={saving}
+                >
+                  Archive
+                </button>
+              )}
+              <button
+                type="button"
+                className="team-action-btn team-action-delete"
+                onClick={() => void handleDeleteEmployee(emp)}
+                title="Delete"
+                disabled={saving}
+              >
+                🗑️
+              </button>
+            </>
+          )}
+        </div>
+
+        {showColorPicker && (
+          <div className="team-color-picker">
+            <div className="team-color-picker-grid">
+              {PRESET_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`team-color-option ${color === c ? 'selected' : ''}`}
+                  style={{ backgroundColor: c }}
+                  onClick={() => void handleSetColor(emp, c)}
+                />
+              ))}
+            </div>
+            {color && (
+              <button type="button" className="team-color-remove" onClick={() => void handleRemoveColor(emp)}>
+                Remove color
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="team-page">
       <header className="admin-page-header">
         <h1>Team Management</h1>
-        <p>Manage your team members and their display colors.</p>
+        <p>Manage team members, colors, and archive status. Archived members stay in history but are hidden from pickers.</p>
       </header>
 
-      {/* Add Employee Form */}
       <div className="admin-card team-add-card">
         <h3 className="admin-card-title">
           <span>➕</span> Add Team Member
@@ -170,12 +325,12 @@ export function TeamPage() {
             placeholder="Enter employee name..."
             value={newEmployeeName}
             onChange={(e) => setNewEmployeeName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddEmployee()}
+            onKeyDown={(e) => e.key === 'Enter' && void handleAddEmployee()}
             disabled={saving}
           />
           <button
             className="admin-btn admin-btn-primary"
-            onClick={handleAddEmployee}
+            onClick={() => void handleAddEmployee()}
             disabled={saving || !newEmployeeName.trim()}
           >
             Add Employee
@@ -183,7 +338,6 @@ export function TeamPage() {
         </div>
       </div>
 
-      {/* Search */}
       <div className="team-search-bar">
         <input
           type="text"
@@ -192,104 +346,59 @@ export function TeamPage() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
-        <span className="team-count">{filteredEmployees.length} members</span>
+        <span className="team-count">
+          {filteredActive.length} active
+          {archivedEmployees.length > 0 ? ` · ${archivedEmployees.length} archived` : ''}
+        </span>
       </div>
 
-      {/* Employee List */}
       <div className="admin-card team-list-card">
-        {filteredEmployees.length === 0 ? (
+        {filteredActive.length === 0 && !q ? (
           <div className="admin-empty">
             <span className="admin-empty-icon">👥</span>
-            <h3>{searchQuery ? 'No matches found' : 'No team members yet'}</h3>
-            <p>{searchQuery ? 'Try a different search term' : 'Add your first team member above'}</p>
+            <h3>{activeEmployees.length === 0 && employees.length > 0 ? 'No active members' : 'No team members yet'}</h3>
+            <p>
+              {activeEmployees.length === 0 && employees.length > 0
+                ? 'Expand archived below or restore someone.'
+                : 'Add your first team member above'}
+            </p>
+          </div>
+        ) : filteredActive.length === 0 && q ? (
+          <div className="admin-empty">
+            <h3>No active matches</h3>
+            <p>Try a different search or check archived members.</p>
           </div>
         ) : (
-          <div className="team-list">
-            {filteredEmployees.map((emp) => {
-              const color = employeeColors[emp]
-              const isEditing = editingEmployee === emp
-              const showColorPicker = colorPickerFor === emp
-
-              return (
-                <div key={emp} className="team-member-card">
-                  <div className="team-member-info">
-                    <button
-                      className="team-color-btn"
-                      style={{ backgroundColor: color || '#e5e7eb' }}
-                      onClick={() => setColorPickerFor(showColorPicker ? null : emp)}
-                      title={color ? 'Change color' : 'Set color'}
-                    >
-                      {!color && <span className="team-color-empty">+</span>}
-                    </button>
-                    
-                    {isEditing ? (
-                      <input
-                        type="text"
-                        className="team-edit-input"
-                        value={editingName}
-                        onChange={(e) => setEditingName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleRenameEmployee()
-                          if (e.key === 'Escape') setEditingEmployee(null)
-                        }}
-                        onBlur={handleRenameEmployee}
-                        autoFocus
-                      />
-                    ) : (
-                      <span className="team-member-name">{emp}</span>
-                    )}
-                  </div>
-
-                  <div className="team-member-actions">
-                    {!isEditing && (
-                      <>
-                        <button
-                          className="team-action-btn"
-                          onClick={() => startEditing(emp)}
-                          title="Rename"
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          className="team-action-btn team-action-delete"
-                          onClick={() => handleDeleteEmployee(emp)}
-                          title="Delete"
-                        >
-                          🗑️
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Color Picker Dropdown */}
-                  {showColorPicker && (
-                    <div className="team-color-picker">
-                      <div className="team-color-picker-grid">
-                        {PRESET_COLORS.map((c) => (
-                          <button
-                            key={c}
-                            className={`team-color-option ${color === c ? 'selected' : ''}`}
-                            style={{ backgroundColor: c }}
-                            onClick={() => handleSetColor(emp, c)}
-                          />
-                        ))}
-                      </div>
-                      {color && (
-                        <button
-                          className="team-color-remove"
-                          onClick={() => handleRemoveColor(emp)}
-                        >
-                          Remove color
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+          <div className="team-list">{filteredActive.map((emp) => renderMemberRow(emp, false))}</div>
         )}
       </div>
+
+      {archivedEmployees.length > 0 && (
+        <div className="admin-card team-list-card team-archived-card">
+          <button
+            type="button"
+            className="team-archived-header"
+            onClick={() => setShowArchivedSection((v) => !v)}
+            aria-expanded={showArchivedSection}
+          >
+            <h3 className="admin-card-title">
+              <span>📦</span> Archived ({archivedEmployees.length})
+            </h3>
+            <span className="team-archived-toggle">{showArchivedSection ? 'Collapse' : 'Expand'}</span>
+          </button>
+          {showArchivedSection && (
+            <div className="team-list">
+              {filteredArchived.length === 0 ? (
+                <div className="admin-empty admin-empty--compact">
+                  <p>No archived matches for this search.</p>
+                </div>
+              ) : (
+                filteredArchived.map((emp) => renderMemberRow(emp, true))
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

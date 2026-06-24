@@ -6,7 +6,10 @@
     "traq-caab9": {
       "hosting": {
         "main": ["traq-caab9"],
-        "apply": ["traq-apply"]
+        "beta": ["traq-beta"],
+        "apply": ["traq-apply"],
+        "bonfireapplications": ["bonfireapplications"],
+        "admin": ["traq-admin"]
       }
     }
   }

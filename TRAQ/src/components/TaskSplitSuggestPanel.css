@@ -1,0 +1,605 @@
+/*
+ * Light split panel UI: matches the surrounding task-grid background
+ * (no dark surface). Uses :root tokens from src/App.css so it inherits
+ * the time-aware body gradient and the standard surface/border/shadow.
+ */
+
+.task-split-panel {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto 16px;
+  padding: 4px 4px 8px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+}
+
+/* ─── Active phase fly-out (auto-finish) ──────────────── */
+
+.task-split-panel__active--evacuating {
+  animation: task-split-panel-evac 900ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes task-split-panel-evac {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-32px) scale(0.94);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-split-panel__active--evacuating {
+    animation-duration: 1ms;
+  }
+}
+
+.task-split-panel__btn {
+  padding: 9px 16px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  color: var(--text);
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  transition:
+    transform 120ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.task-split-panel__btn:hover:not(:disabled) {
+  background: #fff;
+  box-shadow: var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.08));
+}
+
+.task-split-panel__btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.task-split-panel__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.task-split-panel__btn--primary {
+  background: var(--gradient-accent, linear-gradient(135deg, #d11a2a, #a0121f));
+  color: #fff;
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 14px rgba(209, 26, 42, 0.18);
+}
+
+.task-split-panel__btn--primary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: 0 8px 18px rgba(209, 26, 42, 0.22);
+}
+
+.task-split-panel__btn--exit {
+  background: var(--gradient-accent, linear-gradient(135deg, #d11a2a, #a0121f));
+  color: #fff;
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 14px rgba(209, 26, 42, 0.18);
+}
+
+.task-split-panel__btn--exit:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: 0 8px 18px rgba(209, 26, 42, 0.22);
+}
+
+/* ─── Error / lead text ───────────────────────────────── */
+
+.task-split-panel__error {
+  margin: 0 6px 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md, 14px);
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.task-split-panel__rationale-card {
+  margin: 0 4px 16px;
+  padding: 14px 16px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+
+.task-split-panel__rationale-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.task-split-panel__rationale-badge {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.task-split-panel__lead {
+  margin: 0 4px 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ─── Active phase: two side columns ──────────────────── */
+
+.task-split-panel__grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+/* Light divider down the middle so each side reads as one person's column */
+.task-split-panel__grid::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background: var(--border, rgba(17, 17, 19, 0.12));
+  pointer-events: none;
+}
+
+.task-split-panel__side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* --player-color set inline per player (name gradient + task glow) */
+}
+
+/* Name card — tinted with the player's chosen color (falls back to flat surface) */
+.task-split-panel__name-card {
+  position: sticky;
+  top: var(--split-sticky-top, 8px);
+  z-index: 5;
+  border-radius: var(--r-md, 14px);
+  padding: 12px 14px;
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  /* Opaque base under the tinted gradient so scrolled task tiles don't show through while pinned. */
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--player-color, transparent) 32%, var(--surface-2, rgba(255, 255, 255, 0.92))) 0%,
+      var(--surface-2, rgba(255, 255, 255, 0.92)) 78%
+    ),
+    var(--surface, #ffffff);
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  text-align: center;
+  overflow: hidden;
+}
+
+.task-split-panel__name {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(22px, 3.2vw, 32px);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--text);
+}
+
+/* ─── Bottom actions (Retry Split + Exit) ─────────────── */
+
+.task-split-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, rgba(17, 17, 19, 0.12));
+}
+
+/* ─── Mini task tiles: 2 per row inside each side ─────── */
+
+.task-split-panel__tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+/* Wrapper around each pending task card — host for the per-player color glow */
+.task-split-panel__tile {
+  border-radius: 20px; /* matches .task-card radius so the halo hugs the card */
+}
+
+/* Colored halo only when the side has a player color (graceful no-op otherwise) */
+.task-split-panel__side[style*="--player-color"] .task-split-panel__tile {
+  box-shadow:
+    0 0 0 1.5px color-mix(in srgb, var(--player-color) 55%, transparent),
+    0 6px 18px color-mix(in srgb, var(--player-color) 30%, transparent);
+  transition: box-shadow 200ms ease;
+}
+
+.task-split-panel__empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 4px;
+}
+
+.task-split-panel__towel-side {
+  margin-top: 4px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* Stage dividers inside pending tile grid (night v3): span both columns like a full-width strip */
+.task-split-panel__tiles .task-split-panel__stage-divider {
+  grid-column: 1 / -1;
+}
+
+/* Match v3 main-grid stage dividers when shell scope does not apply */
+.task-split-panel .task-split-panel__stage-divider.stage-divider {
+  flex: 0 0 100%;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 2px;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent, #d11a2a);
+}
+
+.task-split-panel .task-split-panel__stage-divider.stage-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(209, 26, 42, 0.22);
+}
+
+/* Pending tiles: real <TaskCard /> rendered into each grid cell — make sure
+   the card stretches to fill the cell so the 2-per-row layout looks tidy. */
+.task-split-panel__tiles > .task-card {
+  width: 100%;
+  margin: 0;
+  flex: 1 1 100%;
+  max-width: 100%;
+}
+
+/* ─── Pick phase ──────────────────────────────────────── */
+
+.task-split-panel__pick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.task-split-panel__pick-slot {
+  flex: 1 1 200px;
+  min-height: 70px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  color: var(--text);
+  text-align: left;
+  padding: 10px 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+}
+
+.task-split-panel__pick-slot.is-active {
+  border-color: rgba(209, 26, 42, 0.55);
+  box-shadow:
+    0 0 0 3px rgba(209, 26, 42, 0.15),
+    var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.08));
+}
+
+.task-split-panel__pick-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.task-split-panel__pick-name {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.task-split-panel__picker {
+  margin-top: 10px;
+  padding: 14px;
+  border-radius: var(--r-md, 14px);
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+
+.task-split-panel__picker-title {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+.task-split-panel__picker-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.task-split-panel__picker-option {
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.task-split-panel__picker-option:hover:not(.is-disabled) {
+  background: #f6f7fa;
+  border-color: rgba(17, 17, 19, 0.2);
+}
+
+.task-split-panel__picker-option.is-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.task-split-panel__picker-cancel {
+  margin-top: 10px;
+  width: 100%;
+  padding: 9px;
+  border-radius: 10px;
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.task-split-panel__pick-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+/* ─── Loading phase ───────────────────────────────────── */
+
+.task-split-panel__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  padding: 40px 16px 56px;
+}
+
+.task-split-panel__loading-title {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.task-split-panel__shuffle {
+  position: relative;
+  width: min(440px, 90vw);
+  height: 216px;
+  margin: 8px 0 4px;
+}
+
+.task-split-panel__shuffle-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 112px;
+  padding: 24px 28px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.25;
+  box-shadow: var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.08));
+  transform: translateY(calc(var(--shuffle-depth, 0) * 14px))
+    scale(calc(1 - var(--shuffle-depth, 0) * 0.035));
+  z-index: calc(10 - var(--shuffle-depth, 0));
+  opacity: calc(1 - var(--shuffle-depth, 0) * 0.12);
+  will-change: transform, opacity;
+}
+
+.task-split-panel__shuffle-card.is-shuffling {
+  animation: task-split-shuffle-away 0.44s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes task-split-shuffle-away {
+  0% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+  45% {
+    transform: translateY(-14px) translateX(28px) rotate(4deg) scale(1.03);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(22px) scale(0.9);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-split-panel__shuffle-card.is-shuffling {
+    animation: none;
+  }
+}
+
+/* ─── Split-together row (shared tasks, normal card size) ─ */
+
+.task-split-panel__shared {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, rgba(17, 17, 19, 0.12));
+}
+
+.task-split-panel__shared-heading {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.task-split-panel__shared-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.task-split-panel__shared-card {
+  flex: 0 0 calc((100% - 32px) / 3);
+  max-width: calc((100% - 32px) / 3);
+  min-width: 0;
+}
+
+.task-split-panel__shared-card > .task-card {
+  width: 100%;
+  margin: 0;
+  max-width: 100%;
+}
+
+/* ─── Completed row + fly-down (light) ────────────────── */
+
+.task-split-panel__all-done {
+  margin: 14px 4px 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.task-split-panel__done {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, rgba(17, 17, 19, 0.12));
+}
+
+.task-split-panel__done-heading {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* Completed row: match the normal task grid (3/2/1 per row, full-width cards). */
+.task-split-panel__done-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.task-split-panel__done-card {
+  flex: 0 0 calc((100% - 32px) / 3);
+  max-width: calc((100% - 32px) / 3);
+  min-width: 0;
+}
+
+.task-split-panel__done-card > .task-card {
+  width: 100%;
+  margin: 0;
+  max-width: 100%;
+}
+
+@keyframes task-split-fly-down {
+  0% {
+    opacity: 0.55;
+    transform: translate3d(0, -42px, 0) scale(0.98);
+  }
+  55% {
+    opacity: 1;
+    transform: translate3d(0, -6px, 0) scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.task-split-fly-in {
+  -webkit-animation: task-split-fly-down 1080ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: task-split-fly-down 1080ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  -webkit-animation-delay: var(--task-split-fly-delay, 0ms);
+  animation-delay: var(--task-split-fly-delay, 0ms);
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-split-fly-in {
+    -webkit-animation: none;
+    animation: none;
+  }
+}
+
+/* Narrow screens: keep sides side-by-side, stack tiles 1-up inside each side */
+@media (max-width: 640px) {
+  .task-split-panel__grid {
+    gap: 10px;
+  }
+}
+
+/* Shared + completed rows: match the normal grid responsive columns (2 then 1). */
+@media (max-width: 767px) {
+  .task-split-panel__shared-card,
+  .task-split-panel__done-card {
+    flex: 0 0 calc((100% - 16px) / 2);
+    max-width: calc((100% - 16px) / 2);
+  }
+}
+
+@media (max-width: 500px) {
+  .task-split-panel__shared-card,
+  .task-split-panel__done-card {
+    flex: 0 0 100%;
+    max-width: 100%;
+  }
+}

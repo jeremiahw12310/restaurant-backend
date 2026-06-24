@@ -7,10 +7,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
     "preview": "vite preview",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
     "deploy:hosting:main": "npm run build && firebase deploy --only hosting:main",
-    "deploy:hosting:apply": "npm run build && firebase deploy --only hosting:apply",
+    "deploy:hosting:beta": "npm run build && firebase deploy --only hosting:beta",
+    "deploy:hosting:apply": "npm run build && firebase deploy --only hosting:apply,hosting:bonfireapplications",
+    "deploy:hosting:admin": "npm run build && firebase deploy --only hosting:admin",
     "deploy:traq": "npm run deploy:hosting:main",
     "deploy:apply-site": "npm run deploy:hosting:apply"
   },
@@ -20,7 +23,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.12.0",
-    "recharts": "^3.6.0"
+    "recharts": "^3.6.0",
+    "suncalc": "^1.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -29,6 +33,7 @@
     "@types/node": "^24.10.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/suncalc": "^1.9.2",
     "@vitejs/plugin-legacy": "^7.2.1",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.23",
@@ -41,6 +46,7 @@
     "terser": "^5.44.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^3.2.4"
   }
 }

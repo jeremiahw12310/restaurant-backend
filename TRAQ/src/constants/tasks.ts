@@ -8,6 +8,18 @@ export const ICE_COMBINED_CREATED_AT_MS = new Date(2026, 0, 5, 0, 0, 0, 0).getTi
 
 export const TASKS: Task[] = [
   {
+    id: 'stock-check',
+    name: 'Stock Check',
+    icon: '📦',
+    requirements: [
+      'Review the current OUT / LOW stock list.',
+      'Add any missing items and delete any that were resolved.',
+      'Management will be notified automatically when stock changes.',
+    ],
+    windows: ['11', '17', '21'],
+    weight: 1.2,
+  },
+  {
     id: 'break-selection',
     name: 'Break Selection',
     icon: '☕',

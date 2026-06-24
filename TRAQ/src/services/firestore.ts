@@ -1,5 +1,18 @@
 import { db, waitForFirebase } from '../firebase'
 import {
+  EMPTY_EMPLOYEE_ROSTER,
+  parseEmployeeRoster,
+  renameEmployeeArchiveKey,
+  type EmployeeRoster,
+} from '../utils/employeeRoster'
+export type { EmployeeRoster } from '../utils/employeeRoster'
+import {
+  getDayApprovalStatus,
+  parseWeekDayEntry,
+  withApproval,
+} from '../utils/dailyTaskApproval'
+import { getWeekStartDateKeySunday } from '../utils/dailyTaskWeekGenerator'
+import {
   Timestamp,
   collection,
   collectionGroup,
@@ -28,14 +41,18 @@ const TASK_ORDER_COLLECTION = 'config'
 
 // LocalStorage keys for offline bootstrap
 const LS_EMPLOYEES_KEY = 'traq-employees-v1'
+const LS_EMPLOYEE_ROSTER_KEY = 'traq-employee-roster-v1'
 const LS_EMPLOYEE_COLORS_KEY = 'traq-employee-colors-v1'
 const LS_TASK_ORDER_KEY = 'traq-task-order-v1'
+const LS_TASK_ORDER_V3_KEY = 'traq-task-order-v3-v1'
 const LS_TASK_STATE_KEY = 'traq-task-state-v1'
 const LS_BREAK_SELECTION_PREFIX = 'traq-break-selection-v1:' // + YYYY-MM-DD
+const LS_SOLO_MODE_PREFIX = 'traq-solo-mode-v1:' // + YYYY-MM-DD
 const LS_TASK_CATALOG_KEY = 'traq-task-catalog-v1'
 const LS_TASK_OVERRIDES_KEY = 'traq-task-overrides-v1'
 const LS_DAILY_TASK_CATALOG_KEY = 'traq-daily-task-catalog-v1'
 const LS_DAILY_TASK_WEEK_PREFIX = 'traq-daily-task-week-v1:' // + weekStartDateKey (YYYY-MM-DD)
+const LS_TASK_STAGES_KEY = 'traq-task-stages-v1'
 
 // Track data source for debugging
 export type DataSource = 'firestore-sdk' | 'localStorage' | 'default'
@@ -83,27 +100,48 @@ const assertFirestoreReady = async () => {
   }
 }
 
+const cacheEmployeeRoster = (roster: EmployeeRoster): void => {
+  saveToLocalStorage(LS_EMPLOYEES_KEY, roster.list)
+  saveToLocalStorage(LS_EMPLOYEE_ROSTER_KEY, roster)
+}
+
+const loadEmployeeRosterFromLocalStorage = (): EmployeeRoster => {
+  const cached = getFromLocalStorage<EmployeeRoster | null>(LS_EMPLOYEE_ROSTER_KEY, null)
+  if (cached && Array.isArray(cached.list)) {
+    return parseEmployeeRoster(cached)
+  }
+  const list = getFromLocalStorage<string[]>(LS_EMPLOYEES_KEY, [])
+  return { list, archivedAtMs: {} }
+}
+
 /**
- * Get employees - Firestore SDK, fallback to localStorage
+ * Get full employee roster (list + archive map).
  */
-export const getEmployees = async (): Promise<string[]> => {
+export const getEmployeeRoster = async (): Promise<EmployeeRoster> => {
   try {
     await assertFirestoreReady()
     const docRef = doc(db, EMPLOYEES_COLLECTION, 'employees')
     const docSnap = await getDoc(docRef)
 
     lastEmployeeSource = 'firestore-sdk'
-    if (!docSnap.exists()) return []
-    const list = docSnap.data().list || []
-    saveToLocalStorage(LS_EMPLOYEES_KEY, list)
-    return list
+    if (!docSnap.exists()) return { ...EMPTY_EMPLOYEE_ROSTER }
+    const roster = parseEmployeeRoster(docSnap.data())
+    cacheEmployeeRoster(roster)
+    return roster
   } catch (error) {
-    console.warn('Employees load failed, using localStorage:', error)
+    console.warn('Employee roster load failed, using localStorage:', error)
   }
-  
-  // Fallback to localStorage
+
   lastEmployeeSource = 'localStorage'
-  return getFromLocalStorage<string[]>(LS_EMPLOYEES_KEY, [])
+  return loadEmployeeRosterFromLocalStorage()
+}
+
+/**
+ * Get employees - Firestore SDK, fallback to localStorage
+ */
+export const getEmployees = async (): Promise<string[]> => {
+  const roster = await getEmployeeRoster()
+  return roster.list
 }
 
 /**
@@ -124,34 +162,132 @@ export const saveEmployees = async (employees: string[]): Promise<void> => {
 }
 
 /**
- * Subscribe to employees changes - SDK only
+ * Subscribe to full employee roster - SDK only
  */
-export const subscribeToEmployees = (callback: (employees: string[]) => void): (() => void) => {
+export const subscribeToEmployeeRoster = (callback: (roster: EmployeeRoster) => void): (() => void) => {
   let unsubscribe: (() => void) | null = null
   let cancelled = false
-  
+
   const setup = async () => {
     await waitForFirebase()
     if (cancelled) return
     if (!isFirestoreSDKAvailable()) return
-    
+
     try {
       await assertFirestoreReady()
       if (cancelled) return
       const docRef = doc(db, EMPLOYEES_COLLECTION, 'employees')
       unsubscribe = onSnapshot(docRef, (snap) => {
-        if (snap.exists()) callback((snap.data().list || []) as string[])
+        const roster = snap.exists() ? parseEmployeeRoster(snap.data()) : { ...EMPTY_EMPLOYEE_ROSTER }
+        cacheEmployeeRoster(roster)
+        callback(roster)
       })
     } catch (error) {
-      console.error('Error subscribing to employees:', error)
+      console.error('Error subscribing to employee roster:', error)
     }
   }
-  
+
   setup()
-  
+
   return () => {
     cancelled = true
     if (unsubscribe) unsubscribe()
+  }
+}
+
+/**
+ * Subscribe to employees list only (backward compatible).
+ */
+export const subscribeToEmployees = (callback: (employees: string[]) => void): (() => void) => {
+  return subscribeToEmployeeRoster((roster) => callback(roster.list))
+}
+
+/**
+ * Cached roster for optimistic UI (same source as archive writes).
+ */
+export const getCachedEmployeeRoster = (): EmployeeRoster => loadEmployeeRosterFromLocalStorage()
+
+/**
+ * Archive or restore an employee by name (merge write).
+ * Uses read-modify-write on the full `archivedAtMs` map so names with dots/spaces
+ * are stored correctly (dot-path field updates break on names like "St. John").
+ */
+export const setEmployeeArchived = async (employeeName: string, archived: boolean): Promise<EmployeeRoster> => {
+  const name = employeeName.trim()
+  if (!name) return loadEmployeeRosterFromLocalStorage()
+
+  await assertFirestoreReady()
+  const docRef = doc(db, EMPLOYEES_COLLECTION, 'employees')
+  const docSnap = await getDoc(docRef)
+  const local = loadEmployeeRosterFromLocalStorage()
+  const parsed = docSnap.exists() ? parseEmployeeRoster(docSnap.data()) : local
+  const list = parsed.list.length > 0 ? parsed.list : local.list
+
+  const nextArchived = { ...parsed.archivedAtMs }
+  if (archived) {
+    nextArchived[name] = Date.now()
+  } else {
+    delete nextArchived[name]
+  }
+
+  const nextRoster: EmployeeRoster = { list, archivedAtMs: nextArchived }
+  cacheEmployeeRoster(nextRoster)
+
+  try {
+    if (docSnap.exists()) {
+      await setDoc(docRef, { archivedAtMs: nextArchived }, { merge: true })
+    } else {
+      await setDoc(docRef, { list, archivedAtMs: nextArchived }, { merge: true })
+    }
+  } catch (error) {
+    console.warn('Employee archive update failed:', error)
+    throw error
+  }
+
+  return nextRoster
+}
+
+/**
+ * Rename archive timestamp key when employee is renamed.
+ */
+export const renameEmployeeArchive = async (oldName: string, newName: string): Promise<void> => {
+  const o = oldName.trim()
+  const n = newName.trim()
+  if (!o || !n || o === n) return
+
+  const local = loadEmployeeRosterFromLocalStorage()
+  if (!(o in local.archivedAtMs)) return
+  const nextArchived = renameEmployeeArchiveKey(local.archivedAtMs, o, n)
+  cacheEmployeeRoster({ list: local.list, archivedAtMs: nextArchived })
+
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, EMPLOYEES_COLLECTION, 'employees')
+    await setDoc(docRef, { archivedAtMs: nextArchived }, { merge: true })
+  } catch (error) {
+    console.warn('Employee archive rename failed:', error)
+  }
+}
+
+/**
+ * Remove archive entry when employee is deleted from roster.
+ */
+export const clearEmployeeArchive = async (employeeName: string): Promise<void> => {
+  const name = employeeName.trim()
+  if (!name) return
+
+  const local = loadEmployeeRosterFromLocalStorage()
+  if (!(name in local.archivedAtMs)) return
+  const nextArchived = { ...local.archivedAtMs }
+  delete nextArchived[name]
+  cacheEmployeeRoster({ list: local.list, archivedAtMs: nextArchived })
+
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, EMPLOYEES_COLLECTION, 'employees')
+    await setDoc(docRef, { archivedAtMs: nextArchived }, { merge: true })
+  } catch (error) {
+    console.warn('Employee archive clear failed:', error)
   }
 }
 
@@ -295,9 +431,75 @@ export const saveTaskOrder = async (order: Record<WindowKey, string[]>): Promise
   try {
     await assertFirestoreReady()
     const docRef = doc(db, TASK_ORDER_COLLECTION, 'taskOrder')
-    await setDoc(docRef, { order })
+    await setDoc(docRef, { order }, { merge: true })
   } catch (error) {
     console.warn('Task order save failed:', error)
+  }
+}
+
+/**
+ * v3-only task order (same shape as `order`). Stored alongside `order` under config/taskOrder.
+ */
+export const getTaskOrderV3 = async (): Promise<Record<WindowKey, string[]>> => {
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, TASK_ORDER_COLLECTION, 'taskOrder')
+    const docSnap = await getDoc(docRef)
+    if (!docSnap.exists()) return {} as Record<WindowKey, string[]>
+    const orderV3 = (docSnap.data().orderV3 || {}) as Record<WindowKey, string[]>
+    saveToLocalStorage(LS_TASK_ORDER_V3_KEY, orderV3)
+    return orderV3
+  } catch (error) {
+    console.warn('Task order v3 load failed, using localStorage:', error)
+  }
+  return getFromLocalStorage<Record<WindowKey, string[]>>(LS_TASK_ORDER_V3_KEY, {} as Record<WindowKey, string[]>)
+}
+
+export const saveTaskOrderV3 = async (orderV3: Record<WindowKey, string[]>): Promise<void> => {
+  saveToLocalStorage(LS_TASK_ORDER_V3_KEY, orderV3)
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, TASK_ORDER_COLLECTION, 'taskOrder')
+    await setDoc(docRef, { orderV3 }, { merge: true })
+  } catch (error) {
+    console.warn('Task order v3 save failed:', error)
+  }
+}
+
+export const subscribeToTaskOrderV3 = (
+  callback: (orderV3: Record<WindowKey, string[]>) => void
+): (() => void) => {
+  let unsubscribe: (() => void) | null = null
+  let cancelled = false
+
+  const setup = async () => {
+    await waitForFirebase()
+    if (cancelled) return
+    if (!isFirestoreSDKAvailable()) return
+
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const docRef = doc(db, TASK_ORDER_COLLECTION, 'taskOrder')
+      unsubscribe = onSnapshot(docRef, (snap) => {
+        if (snap.exists()) {
+          const orderV3 = (snap.data().orderV3 || {}) as Record<WindowKey, string[]>
+          saveToLocalStorage(LS_TASK_ORDER_V3_KEY, orderV3)
+          callback(orderV3)
+        } else {
+          callback({} as Record<WindowKey, string[]>)
+        }
+      })
+    } catch (error) {
+      console.error('Error subscribing to task order v3:', error)
+    }
+  }
+
+  setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
   }
 }
 
@@ -406,6 +608,121 @@ export const saveBreakSelection = async (dateKey: string, selection: BreakSelect
   }
 }
 
+// ============ SOLO MODE (per-day day-shift override) ============
+
+export type SoloMode = {
+  active: boolean
+  activatedAt: string // ISO timestamp
+  /** Night-only solo (9/10 PM window); independent of day-shift solo. */
+  nightActive?: boolean
+  nightActivatedAt?: string
+  activatedBy?: string
+}
+
+const soloModeLocalKey = (dateKey: string) => `${LS_SOLO_MODE_PREFIX}${dateKey}`
+
+const getSoloModeFromLocalStorage = (dateKey: string): SoloMode | null => {
+  return getFromLocalStorage<SoloMode | null>(soloModeLocalKey(dateKey), null)
+}
+
+const saveSoloModeToLocalStorage = (dateKey: string, value: SoloMode | null): void => {
+  saveToLocalStorage(soloModeLocalKey(dateKey), value)
+}
+
+/**
+ * Subscribe to solo mode for a given day.
+ * Always emits localStorage value immediately, then live Firestore updates when available.
+ */
+export const subscribeToSoloMode = (
+  dateKey: string,
+  callback: (soloMode: SoloMode | null) => void,
+  onError?: (error: unknown) => void
+): (() => void) => {
+  callback(getSoloModeFromLocalStorage(dateKey))
+
+  let unsubscribe: (() => void) | null = null
+  let cancelled = false
+
+  const setup = async () => {
+    await waitForFirebase()
+    if (cancelled) return
+    if (!isFirestoreSDKAvailable()) return
+
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const docRef = doc(db, 'days', dateKey, 'meta', 'soloMode')
+      unsubscribe = onSnapshot(
+        docRef,
+        (snap) => {
+          if (!snap.exists()) {
+            saveSoloModeToLocalStorage(dateKey, null)
+            callback(null)
+            return
+          }
+          const raw = snap.data() as Record<string, unknown>
+          const parsed: SoloMode = {
+            active: !!raw.active,
+            activatedAt: String(raw.activatedAt || ''),
+            nightActive: !!raw.nightActive,
+            nightActivatedAt:
+              typeof raw.nightActivatedAt === 'string' && raw.nightActivatedAt.trim()
+                ? raw.nightActivatedAt.trim()
+                : undefined,
+            activatedBy:
+              typeof raw.activatedBy === 'string' && raw.activatedBy.trim()
+                ? raw.activatedBy.trim()
+                : undefined,
+          }
+          saveSoloModeToLocalStorage(dateKey, parsed)
+          callback(parsed)
+        },
+        (err) => onError?.(err)
+      )
+    } catch (e) {
+      console.error('Error subscribing to solo mode:', e)
+      onError?.(e)
+    }
+  }
+
+  setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+/**
+ * Save solo mode for a given day.
+ * Always writes to localStorage; attempts Firestore when available.
+ */
+export const saveSoloMode = async (dateKey: string, soloMode: SoloMode | null): Promise<void> => {
+  saveSoloModeToLocalStorage(dateKey, soloMode)
+
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, 'days', dateKey, 'meta', 'soloMode')
+    if (!soloMode || (!soloMode.active && !soloMode.nightActive)) {
+      await setDoc(
+        docRef,
+        {
+          active: false,
+          activatedAt: new Date().toISOString(),
+          nightActive: false,
+          nightActivatedAt: '',
+          activatedBy: '',
+        },
+        { merge: true }
+      )
+      return
+    }
+    await setDoc(docRef, soloMode, { merge: true })
+  } catch (error) {
+    console.warn('Solo mode save failed:', error)
+  }
+}
+
 /**
  * Subscribe to task order changes - SDK only
  */
@@ -432,6 +749,67 @@ export const subscribeToTaskOrder = (callback: (order: Record<WindowKey, string[
   
   setup()
   
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+// ============ TASK STAGES (v3 stage grouping) ============
+
+export type TaskStageMap = Record<string, Partial<Record<WindowKey, 1 | 2>>>
+
+export const getTaskStages = async (): Promise<TaskStageMap> => {
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, 'config', 'taskStages')
+    const docSnap = await getDoc(docRef)
+    if (!docSnap.exists()) return {}
+    const stages = (docSnap.data().stages || {}) as TaskStageMap
+    saveToLocalStorage(LS_TASK_STAGES_KEY, stages)
+    return stages
+  } catch (error) {
+    console.warn('Task stages load failed, using localStorage:', error)
+  }
+  return getFromLocalStorage<TaskStageMap>(LS_TASK_STAGES_KEY, {})
+}
+
+export const saveTaskStages = async (stages: TaskStageMap): Promise<void> => {
+  saveToLocalStorage(LS_TASK_STAGES_KEY, stages)
+  try {
+    await assertFirestoreReady()
+    const docRef = doc(db, 'config', 'taskStages')
+    await setDoc(docRef, { stages })
+  } catch (error) {
+    console.warn('Task stages save failed:', error)
+  }
+}
+
+export const subscribeToTaskStages = (callback: (stages: TaskStageMap) => void): (() => void) => {
+  let unsubscribe: (() => void) | null = null
+  let cancelled = false
+
+  const setup = async () => {
+    await waitForFirebase()
+    if (cancelled) return
+    if (!isFirestoreSDKAvailable()) return
+
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const docRef = doc(db, 'config', 'taskStages')
+      unsubscribe = onSnapshot(docRef, (snap) => {
+        const stages = snap.exists() ? ((snap.data().stages || {}) as TaskStageMap) : {}
+        saveToLocalStorage(LS_TASK_STAGES_KEY, stages)
+        callback(stages)
+      })
+    } catch (error) {
+      console.error('Error subscribing to task stages:', error)
+    }
+  }
+
+  setup()
+
   return () => {
     cancelled = true
     if (unsubscribe) unsubscribe()
@@ -483,12 +861,21 @@ export type TaskOverride = {
   weight?: number
   weightEffectiveAtMs?: number
   weightUpdatedBy?: string
+
+  // Always-split override (optional) - when true, the task must be completed by two employees.
+  // Solo mode (per-date) bypasses this so a single operator can still complete it.
+  requiresSplit?: boolean
+  requiresSplitUpdatedBy?: string
 }
 
 export type TaskOverrides = {
   overrides: Record<string, TaskOverride>
   /** When set, towels (11AM), towels-5pm, and towels-close use split UI (Dining/Bar + Bowl Station) for windows closing at or after this timestamp. */
   towelsSplitEffectiveAtMs?: number
+  /** Admin opt-in: show the 🎲 next to the greeting only when `true` (missing/false = hidden). Shown on 5PM & 9PM only, not on 11 AM. */
+  diceEnabled?: boolean
+  /** When true with `diceEnabled`, 🎲 shows on beta Hosting only (not main). */
+  diceBetaOnly?: boolean
 }
 
 // ============ DAILY TASKS (admin-managed) ============
@@ -512,6 +899,8 @@ export type DailyTaskDef = {
   createdAtMs: number
   updatedAtMs: number
   disabledAtMs?: number
+  /** When set, task stays in catalog/history but is excluded from auto-schedule and override pickers. */
+  archivedAtMs?: number
 }
 
 export type DailyTaskCatalog = {
@@ -532,11 +921,28 @@ export type DailyTaskRun = {
   completedBy?: string
   completedByList?: string[]
   override?: { taskId: string; atMs: number; by: string }
+  /** Admin-only: label shown in Recent Runs / history; does not change catalog or `taskId`. */
+  historyDisplayName?: string
+  /**
+   * When `taskId` is `__none__` (or for crediting work done on a mis-labeled day), counts this catalog
+   * task id toward recency, monthly completion, and weekly completion-from-runs logic.
+   */
+  schedulingCreditTaskId?: string
+}
+
+export type DailyTaskDayApprovalStatus = 'pending' | 'approved' | 'denied'
+
+export type DailyTaskWeekDayEntry = {
+  taskId: string
+  source: 'auto' | 'override'
+  approvalStatus?: DailyTaskDayApprovalStatus
+  approvalAtMs?: number
+  approvalBy?: string
 }
 
 export type DailyTaskWeek = {
   weekStartDateKey: string // Sunday dateKey (YYYY-MM-DD)
-  days: Record<string, { taskId: string; source: 'auto' | 'override' }>
+  days: Record<string, DailyTaskWeekDayEntry>
   generatedAtMs: number
   generatorVersion: string
 }
@@ -717,9 +1123,76 @@ export const adminRecloseDailyTaskRun = async (dateKey: string): Promise<void> =
       revealedBy: deleteField(),
       completedAtMs: deleteField(),
       completedBy: deleteField(),
+      completedByList: deleteField(),
+      historyDisplayName: deleteField(),
     },
     { merge: true }
   )
+}
+
+export type AdminPatchDailyTaskRunHistoryInput = {
+  /** Shown in Recent Runs only; empty string removes override (falls back to catalog name). */
+  historyDisplayName: string
+  /** One or two completer names (trimmed). */
+  completedBy1: string
+  completedBy2?: string
+  /**
+   * For no-task days: optional catalog task id to credit toward scheduling (recency / monthly / weekly-from-runs).
+   * Empty string clears. Ignored when not a no-task run.
+   */
+  schedulingCreditTaskId?: string
+}
+
+/**
+ * Admin: fix display-only history on a daily task run (`dailyTaskRuns/{dateKey}`).
+ * Does not change `taskId` or the catalog. Allowed when the run is **completed** (`completedAtMs`)
+ * or when it is a **no-task** day (`taskId === '__none__'`), including runs that were never completed.
+ */
+export const adminPatchDailyTaskRunHistory = async (
+  dateKey: string,
+  input: AdminPatchDailyTaskRunHistoryInput
+): Promise<void> => {
+  await assertFirestoreReady()
+  const docRef = doc(db, 'dailyTaskRuns', dateKey)
+  const snap = await getDoc(docRef)
+  if (!snap.exists()) {
+    throw new Error('daily-task-run-missing')
+  }
+  const existing = snap.data() as DailyTaskRun
+  const isNoTask = existing.taskId === '__none__'
+  const isCompleted = typeof existing.completedAtMs === 'number' && Number.isFinite(existing.completedAtMs)
+  if (!isCompleted && !isNoTask) {
+    throw new Error('daily-task-run-not-completed')
+  }
+
+  const rawNames = [input.completedBy1, input.completedBy2]
+    .map((s) => (s || '').trim())
+    .filter(Boolean)
+  const unique: string[] = []
+  for (const n of rawNames) {
+    if (!unique.includes(n)) unique.push(n)
+  }
+  if (unique.length === 0 && !isNoTask) {
+    throw new Error('daily-task-run-completers-required')
+  }
+
+  const titleTrim = (input.historyDisplayName || '').trim()
+  const patch: Record<string, unknown> = {}
+  if (unique.length === 0) {
+    patch.completedByList = deleteField()
+    patch.completedBy = deleteField()
+  } else {
+    patch.completedByList = unique
+    patch.completedBy = unique.join(' + ')
+  }
+  patch.historyDisplayName = titleTrim.length === 0 ? deleteField() : titleTrim
+
+  if (isNoTask && input.schedulingCreditTaskId !== undefined) {
+    const credit = (input.schedulingCreditTaskId || '').trim()
+    patch.schedulingCreditTaskId = credit.length === 0 ? deleteField() : credit
+  }
+
+  await setDoc(docRef, patch, { merge: true })
 }
 
 /**
@@ -806,6 +1279,95 @@ export const upsertDailyTaskWeek = async (weekStartDateKey: string, data: Partia
     },
     { merge: true }
   )
+}
+
+/**
+ * Update approval status for one day in a week schedule.
+ */
+export const setDailyTaskDayApproval = async (
+  weekStartDateKey: string,
+  dateKey: string,
+  status: DailyTaskDayApprovalStatus
+): Promise<void> => {
+  await assertFirestoreReady()
+  const docRef = doc(db, 'dailyTaskWeeks', weekStartDateKey)
+  const snap = await getDoc(docRef)
+  const week = snap.exists() ? (snap.data() as DailyTaskWeek) : null
+  const days = { ...(week?.days || {}) }
+  const entry = parseWeekDayEntry(days[dateKey])
+  if (!entry) return
+  days[dateKey] = withApproval(entry, status)
+  await setDoc(
+    docRef,
+    {
+      weekStartDateKey,
+      days,
+      generatedAtMs: week?.generatedAtMs ?? Date.now(),
+      generatorVersion: week?.generatorVersion ?? 'v1',
+    },
+    { merge: true }
+  )
+  const localKey = dailyTaskWeekLocalKey(weekStartDateKey)
+  saveToLocalStorage(localKey, {
+    weekStartDateKey,
+    days,
+    generatedAtMs: week?.generatedAtMs ?? Date.now(),
+    generatorVersion: week?.generatorVersion ?? 'v1',
+  })
+}
+
+export const approveDailyTaskDays = async (
+  weekStartDateKey: string,
+  dateKeys: string[]
+): Promise<void> => {
+  for (const dk of dateKeys) {
+    await setDailyTaskDayApproval(weekStartDateKey, dk, 'approved')
+  }
+}
+
+export const denyDailyTaskDays = async (
+  weekStartDateKey: string,
+  dateKeys: string[]
+): Promise<void> => {
+  for (const dk of dateKeys) {
+    await setDailyTaskDayApproval(weekStartDateKey, dk, 'denied')
+  }
+}
+
+/** Approve every pending day in a week document. */
+export const approveAllPendingInWeek = async (weekStartDateKey: string): Promise<number> => {
+  await assertFirestoreReady()
+  const docRef = doc(db, 'dailyTaskWeeks', weekStartDateKey)
+  const snap = await getDoc(docRef)
+  if (!snap.exists()) return 0
+  const week = snap.data() as DailyTaskWeek
+  const days = { ...(week.days || {}) }
+  let count = 0
+  Object.keys(days).forEach((dk) => {
+    const entry = parseWeekDayEntry(days[dk])
+    if (!entry || getDayApprovalStatus(entry) !== 'pending') return
+    days[dk] = withApproval(entry, 'approved')
+    count += 1
+  })
+  if (count === 0) return 0
+  await setDoc(docRef, { days }, { merge: true })
+  const localKey = dailyTaskWeekLocalKey(weekStartDateKey)
+  saveToLocalStorage(localKey, { ...week, days })
+  return count
+}
+
+/** Approve pending days for specific dateKeys (may span multiple week docs). */
+export const approvePendingDailyTaskDays = async (dateKeys: string[]): Promise<number> => {
+  let count = 0
+  for (const dateKey of dateKeys) {
+    const weekStart = getWeekStartDateKeySunday(dateKey)
+    const week = await getDailyTaskWeek(weekStart)
+    const entry = parseWeekDayEntry(week?.days?.[dateKey])
+    if (!entry || getDayApprovalStatus(entry) !== 'pending') continue
+    await setDailyTaskDayApproval(weekStart, dateKey, 'approved')
+    count += 1
+  }
+  return count
 }
 
 /**
@@ -924,10 +1486,17 @@ export const getTaskOverrides = async (): Promise<TaskOverrides> => {
       saveToLocalStorage(LS_TASK_OVERRIDES_KEY, empty)
       return empty
     }
-    const raw = docSnap.data() as { overrides?: Record<string, TaskOverride>; towelsSplitEffectiveAtMs?: number }
+    const raw = docSnap.data() as {
+      overrides?: Record<string, TaskOverride>
+      towelsSplitEffectiveAtMs?: number
+      diceEnabled?: boolean
+      diceBetaOnly?: boolean
+    }
     const parsed: TaskOverrides = {
       overrides: raw.overrides || {},
       towelsSplitEffectiveAtMs: typeof raw.towelsSplitEffectiveAtMs === 'number' ? raw.towelsSplitEffectiveAtMs : undefined,
+      diceEnabled: typeof raw.diceEnabled === 'boolean' ? raw.diceEnabled : undefined,
+      diceBetaOnly: typeof raw.diceBetaOnly === 'boolean' ? raw.diceBetaOnly : undefined,
     }
     saveToLocalStorage(LS_TASK_OVERRIDES_KEY, parsed)
     return parsed
@@ -973,11 +1542,20 @@ export const subscribeToTaskOverrides = (callback: (value: TaskOverrides) => voi
       unsubscribe = onSnapshot(
         docRef,
         (snap) => {
-          const data = snap.exists() ? (snap.data() as { overrides?: Record<string, TaskOverride>; towelsSplitEffectiveAtMs?: number }) : null
+          const data = snap.exists()
+            ? (snap.data() as {
+                overrides?: Record<string, TaskOverride>
+                towelsSplitEffectiveAtMs?: number
+                diceEnabled?: boolean
+                diceBetaOnly?: boolean
+              })
+            : null
           const next: TaskOverrides = data
             ? {
                 overrides: data.overrides || {},
                 towelsSplitEffectiveAtMs: typeof data.towelsSplitEffectiveAtMs === 'number' ? data.towelsSplitEffectiveAtMs : undefined,
+                diceEnabled: typeof data.diceEnabled === 'boolean' ? data.diceEnabled : undefined,
+                diceBetaOnly: typeof data.diceBetaOnly === 'boolean' ? data.diceBetaOnly : undefined,
               }
             : { overrides: {} }
           lastTaskOverridesSource = 'firestore-sdk'
@@ -1013,6 +1591,7 @@ export type TaskCompletion = {
   lateForgiven?: boolean
   completedEarly?: boolean
   autoAssigned?: boolean
+  didNotNeedToComplete?: boolean
   deferredToClose?: string // '9' or '10' - indicates task was auto-completed due to both employees taking 1hr breaks
   // Order Report: number of orders taken by each employee (keyed by employee name)
   orderReportCounts?: Record<string, number>
@@ -1062,6 +1641,7 @@ export const subscribeToTaskCompletionsForWindow = (
             lateForgiven: raw.lateForgiven as boolean | undefined,
             completedEarly: raw.completedEarly as boolean | undefined,
             autoAssigned: raw.autoAssigned as boolean | undefined,
+            didNotNeedToComplete: raw.didNotNeedToComplete as boolean | undefined,
             deferredToClose: raw.deferredToClose as string | undefined,
             orderReportCounts: raw.orderReportCounts as Record<string, number> | undefined,
             iceSides: rawIceSides
@@ -1146,6 +1726,7 @@ export const subscribeToRecentTaskCompletions = (
             lateForgiven: raw.lateForgiven as boolean | undefined,
             completedEarly: raw.completedEarly as boolean | undefined,
             autoAssigned: raw.autoAssigned as boolean | undefined,
+            didNotNeedToComplete: raw.didNotNeedToComplete as boolean | undefined,
             deferredToClose: raw.deferredToClose as string | undefined,
             orderReportCounts: raw.orderReportCounts as Record<string, number> | undefined,
             iceSides: rawIceSides
@@ -1212,6 +1793,7 @@ export const completeTaskIfAvailable = async (args: CompleteTaskArgs): Promise<v
       lateForgiven: completion.lateForgiven ?? false,
       completedEarly: completion.completedEarly ?? false,
       autoAssigned: completion.autoAssigned ?? false,
+      didNotNeedToComplete: completion.didNotNeedToComplete ?? false,
       deferredToClose: completion.deferredToClose ?? null,
       orderReportCounts: completion.orderReportCounts ?? null,
       iceSides: completion.iceSides ?? null,
@@ -1241,6 +1823,7 @@ export const adminSetTaskCompletion = async (args: CompleteTaskArgs): Promise<vo
       lateForgiven: completion.lateForgiven ?? false,
       completedEarly: completion.completedEarly ?? false,
       autoAssigned: completion.autoAssigned ?? false,
+      didNotNeedToComplete: completion.didNotNeedToComplete ?? false,
       deferredToClose: completion.deferredToClose ?? null,
       orderReportCounts: completion.orderReportCounts ?? null,
       iceSides: completion.iceSides ?? null,
@@ -1553,6 +2136,89 @@ export type StockReport = {
   updatedAtMs?: number
 }
 
+/** Append-only audit trail for stock report lifecycle (admin history). */
+export type StockReportLogAction = 'created' | 'status_changed' | 'deleted'
+
+export type StockReportLogEntry = {
+  id: string
+  ts: string
+  tsMs: number
+  action: StockReportLogAction
+  reportId: string
+  kind: StockReportKind
+  item: string
+  statusBefore?: StockReportStatus
+  statusAfter?: StockReportStatus
+  /** Who performed this action (browser-provided identity, e.g. "A & B"). */
+  actor?: string
+  createdBy?: string
+}
+
+async function appendStockReportLog(
+  entry: Omit<StockReportLogEntry, 'id' | 'ts' | 'tsMs'>
+): Promise<void> {
+  try {
+    await assertFirestoreReady()
+    if (!isFirestoreSDKAvailable()) return
+    const now = new Date()
+    const id = `srl-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`
+    const colRef = collection(db, 'stockReportLogs')
+    await setDoc(doc(colRef, id), {
+      ...entry,
+      ts: now.toISOString(),
+      tsMs: now.getTime(),
+    })
+  } catch (e) {
+    console.warn('Stock report log write failed:', e)
+  }
+}
+
+/**
+ * Subscribe to stock report history (newest first).
+ */
+export const subscribeToStockReportLogs = (
+  callback: (logs: StockReportLogEntry[]) => void,
+  max: number = 300
+): (() => void) => {
+  if (!isFirestoreSDKAvailable()) {
+    callback([])
+    return () => {}
+  }
+  const colRef = collection(db, 'stockReportLogs')
+  const q = query(colRef, orderBy('tsMs', 'desc'), limit(Math.max(1, max)))
+  return onSnapshot(
+    q,
+    (snap) => {
+      const logs: StockReportLogEntry[] = snap.docs.map((d) => {
+        const data = d.data()
+        const action = data.action as string
+        return {
+          id: d.id,
+          ts: typeof data.ts === 'string' ? data.ts : '',
+          tsMs: typeof data.tsMs === 'number' ? data.tsMs : 0,
+          action:
+            action === 'status_changed' || action === 'deleted' || action === 'created'
+              ? action
+              : 'created',
+          reportId: typeof data.reportId === 'string' ? data.reportId : '',
+          kind: data.kind === 'out' ? 'out' : 'low',
+          item: typeof data.item === 'string' ? data.item : '',
+          statusBefore: data.statusBefore === 'finished' || data.statusBefore === 'pending' ? data.statusBefore : undefined,
+          statusAfter: data.statusAfter === 'finished' || data.statusAfter === 'pending' ? data.statusAfter : undefined,
+          actor: typeof data.actor === 'string' ? data.actor : undefined,
+          createdBy: typeof data.createdBy === 'string' ? data.createdBy : undefined,
+        }
+      })
+      logs.sort((a, b) => b.tsMs - a.tsMs)
+      callback(logs)
+    },
+    (err) => {
+      console.error('Stock report logs subscription error:', err)
+      callback([])
+    }
+  )
+}
+
 /**
  * Subscribe to stock reports (newest first).
  * Sorting is client-side to avoid composite index requirements.
@@ -1619,6 +2285,15 @@ export const createStockReport = async (args: {
       : {}),
   }
   await setDoc(docRef, payload)
+  void appendStockReportLog({
+    action: 'created',
+    reportId: id,
+    kind,
+    item,
+    statusAfter: 'pending',
+    ...(payload.createdBy ? { actor: payload.createdBy } : {}),
+    ...(payload.createdBy ? { createdBy: payload.createdBy } : {}),
+  })
   return id
 }
 
@@ -1628,6 +2303,8 @@ export const setStockReportStatus = async (
 ): Promise<void> => {
   await assertFirestoreReady()
   const docRef = doc(db, 'stockReports', id)
+  const snap = await getDoc(docRef)
+  const prev = snap.exists() ? (snap.data() as Omit<StockReport, 'id'>) : null
   const now = new Date()
   const updates: Partial<Omit<StockReport, 'id'>> = {
     status,
@@ -1639,12 +2316,37 @@ export const setStockReportStatus = async (
     updates.finishedAtMs = now.getTime()
   }
   await setDoc(docRef, updates, { merge: true })
+  if (prev && prev.status !== status) {
+    void appendStockReportLog({
+      action: 'status_changed',
+      reportId: id,
+      kind: prev.kind,
+      item: prev.item,
+      statusBefore: prev.status,
+      statusAfter: status,
+      ...(prev.createdBy ? { createdBy: prev.createdBy } : {}),
+    })
+  }
 }
 
-export const deleteStockReport = async (id: string): Promise<void> => {
+export const deleteStockReport = async (id: string, options?: { actor?: string }): Promise<void> => {
   await assertFirestoreReady()
   const docRef = doc(db, 'stockReports', id)
+  const snap = await getDoc(docRef)
+  const prev = snap.exists() ? (snap.data() as Omit<StockReport, 'id'>) : null
   await deleteDoc(docRef)
+  if (prev) {
+    const actor = typeof options?.actor === 'string' && options.actor.trim() ? options.actor.trim() : prev.createdBy
+    void appendStockReportLog({
+      action: 'deleted',
+      reportId: id,
+      kind: prev.kind,
+      item: prev.item,
+      statusBefore: prev.status,
+      ...(actor ? { actor } : {}),
+      ...(prev.createdBy ? { createdBy: prev.createdBy } : {}),
+    })
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1770,7 +2472,15 @@ export type WeeklyAvailability = Record<DayOfWeek, DayAvailability>
 
 export type AvailabilityMap = Record<string, WeeklyAvailability> // employeeName -> availability
 
+export type { AvailabilityMeta, AvailabilityState } from '../utils/availabilityEffective'
+import {
+  EMPTY_AVAILABILITY_STATE,
+  parseAvailabilityDoc,
+  type AvailabilityState,
+} from '../utils/availabilityEffective'
+
 const LS_AVAILABILITY_KEY = 'traq-availability-v1'
+const LS_AVAILABILITY_STATE_KEY = 'traq-availability-v2'
 
 const defaultDayAvailability: DayAvailability = { lunch: false, dinner: false }
 
@@ -1787,45 +2497,61 @@ export const createDefaultWeeklyAvailability = (): WeeklyAvailability => ({
 /**
  * Get availability map for all employees - Firestore SDK, fallback to localStorage
  */
-export const getAvailability = async (): Promise<AvailabilityMap> => {
+export const getAvailabilityState = async (): Promise<AvailabilityState> => {
   try {
     await assertFirestoreReady()
     const docRef = doc(db, 'config', 'availability')
     const docSnap = await getDoc(docRef)
 
-    if (!docSnap.exists()) return {}
-    const data = docSnap.data() as { byEmployee?: AvailabilityMap }
-    const map = data.byEmployee || {}
-    saveToLocalStorage(LS_AVAILABILITY_KEY, map)
-    return map
+    if (!docSnap.exists()) return { ...EMPTY_AVAILABILITY_STATE }
+    const state = parseAvailabilityDoc(docSnap.data() as Parameters<typeof parseAvailabilityDoc>[0])
+    saveToLocalStorage(LS_AVAILABILITY_STATE_KEY, state)
+    return state
   } catch (error) {
     console.warn('Availability load failed, using localStorage:', error)
   }
 
-  // Fallback to localStorage
-  return getFromLocalStorage<AvailabilityMap>(LS_AVAILABILITY_KEY, {})
+  const cached = getFromLocalStorage<AvailabilityState>(LS_AVAILABILITY_STATE_KEY, EMPTY_AVAILABILITY_STATE)
+  if (cached.patterns && Object.keys(cached.patterns).length > 0) {
+    return cached
+  }
+  const legacy = getFromLocalStorage<AvailabilityMap>(LS_AVAILABILITY_KEY, {})
+  return { patterns: legacy, metaByEmployee: {} }
 }
 
-/**
- * Save availability map - Firestore SDK, always saves to localStorage
- */
-export const saveAvailability = async (map: AvailabilityMap): Promise<void> => {
-  // Always save to localStorage as backup
-  saveToLocalStorage(LS_AVAILABILITY_KEY, map)
+/** @deprecated Prefer getAvailabilityState */
+export const getAvailability = async (): Promise<AvailabilityMap> => {
+  const state = await getAvailabilityState()
+  return state.patterns
+}
+
+export const saveAvailabilityState = async (state: AvailabilityState): Promise<void> => {
+  saveToLocalStorage(LS_AVAILABILITY_STATE_KEY, state)
+  saveToLocalStorage(LS_AVAILABILITY_KEY, state.patterns)
 
   try {
     await assertFirestoreReady()
     const docRef = doc(db, 'config', 'availability')
-    await setDoc(docRef, { byEmployee: map })
+    await setDoc(docRef, {
+      byEmployee: state.patterns,
+      metaByEmployee: state.metaByEmployee,
+    })
   } catch (error) {
     console.warn('Availability save failed:', error)
   }
 }
 
+/** @deprecated Prefer saveAvailabilityState after applyEmployeeAvailabilityUpdate */
+export const saveAvailability = async (map: AvailabilityMap): Promise<void> => {
+  await saveAvailabilityState({ patterns: map, metaByEmployee: {} })
+}
+
 /**
  * Subscribe to availability changes - SDK only
  */
-export const subscribeToAvailability = (callback: (map: AvailabilityMap) => void): (() => void) => {
+export const subscribeToAvailability = (
+  callback: (state: AvailabilityState) => void
+): (() => void) => {
   let unsubscribe: (() => void) | null = null
   let cancelled = false
 
@@ -1840,12 +2566,12 @@ export const subscribeToAvailability = (callback: (map: AvailabilityMap) => void
       const docRef = doc(db, 'config', 'availability')
       unsubscribe = onSnapshot(docRef, (snap) => {
         if (snap.exists()) {
-          const data = snap.data() as { byEmployee?: AvailabilityMap }
-          const map = data.byEmployee || {}
-          saveToLocalStorage(LS_AVAILABILITY_KEY, map)
-          callback(map)
+          const state = parseAvailabilityDoc(snap.data() as Parameters<typeof parseAvailabilityDoc>[0])
+          saveToLocalStorage(LS_AVAILABILITY_STATE_KEY, state)
+          saveToLocalStorage(LS_AVAILABILITY_KEY, state.patterns)
+          callback(state)
         } else {
-          callback({})
+          callback({ ...EMPTY_AVAILABILITY_STATE })
         }
       })
     } catch (error) {
@@ -2733,6 +3459,98 @@ export const subscribeToAdminLoginAttempts = (
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// App reload logs - track intentional and unexpected page reloads on kiosks
+// ────────────────────────────────────────────────────────────────────────────
+
+export type AppReloadLogInput = {
+  kind: string
+  ts: string
+  tsMs: number
+  lastAction?: string
+  lastActionSecAgo?: number
+  userAgent?: string
+}
+
+export type AppReloadLogEntry = AppReloadLogInput & {
+  id: string
+}
+
+const LS_RELOAD_LOGS_KEY = 'traq-reload-logs-v1'
+
+export const logAppReload = async (entry: AppReloadLogInput): Promise<void> => {
+  try {
+    await assertFirestoreReady()
+    const colRef = collection(db, 'reloadLogs')
+    const id = `reload-${entry.tsMs}-${Math.random().toString(36).slice(2, 8)}`
+    const docRef = doc(colRef, id)
+    await setDoc(docRef, {
+      kind: entry.kind,
+      ts: entry.ts,
+      tsMs: entry.tsMs,
+      ...(entry.lastAction ? { lastAction: entry.lastAction } : {}),
+      ...(typeof entry.lastActionSecAgo === 'number' ? { lastActionSecAgo: entry.lastActionSecAgo } : {}),
+      ...(entry.userAgent ? { userAgent: entry.userAgent } : {}),
+    })
+  } catch (error) {
+    console.warn('Failed to log app reload:', error)
+  }
+}
+
+export const subscribeToReloadLogs = (
+  callback: (logs: AppReloadLogEntry[]) => void
+): (() => void) => {
+  let unsubscribe: (() => void) | null = null
+  let cancelled = false
+
+  const setup = async () => {
+    await waitForFirebase()
+    if (cancelled) return
+    if (!isFirestoreSDKAvailable()) return
+
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const colRef = collection(db, 'reloadLogs')
+      const q = query(colRef, orderBy('tsMs', 'desc'), limit(100))
+      unsubscribe = onSnapshot(
+        q,
+        (snap) => {
+          const logs: AppReloadLogEntry[] = snap.docs.map((d) => {
+            const data = d.data()
+            return {
+              id: d.id,
+              kind: (data.kind as string) || 'unknown',
+              ts: (data.ts as string) || '',
+              tsMs: (data.tsMs as number) || 0,
+              lastAction: data.lastAction as string | undefined,
+              lastActionSecAgo: data.lastActionSecAgo as number | undefined,
+              userAgent: data.userAgent as string | undefined,
+            }
+          })
+          logs.sort((a, b) => b.tsMs - a.tsMs)
+          saveToLocalStorage(LS_RELOAD_LOGS_KEY, logs)
+          callback(logs)
+        },
+        (err) => {
+          console.error('Reload logs subscription error:', err)
+          callback(getFromLocalStorage<AppReloadLogEntry[]>(LS_RELOAD_LOGS_KEY, []))
+        }
+      )
+    } catch (error) {
+      console.error('Error subscribing to reload logs:', error)
+      callback(getFromLocalStorage<AppReloadLogEntry[]>(LS_RELOAD_LOGS_KEY, []))
+    }
+  }
+
+  setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Selection Logs - track task selections and clearings across all devices
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -3242,5 +4060,336 @@ export const clearPOSOrders = async (): Promise<void> => {
   } catch (error) {
     console.error('POS orders clear failed:', error)
     throw error
+  }
+}
+
+// --- Fair-split contracts (canonical 50/50 baseline + gap) ---
+
+const FAIR_SPLIT_CONTRACTS_COLLECTION = 'fairSplitContracts'
+
+export type FairSplitContractWindowKey = '17' | '21'
+
+export type FairSplitContractDoc = {
+  dateKey: string
+  windowKey: FairSplitContractWindowKey
+  employeeA: string
+  employeeB: string
+  /** Snapshot task ids in the suggestion at last Generate/Regenerate (union of assignment + shared + ice keys). */
+  taskIds: string[]
+  suggestedAssignment: Record<string, string>
+  finalSharedTaskIds: string[]
+  finalIceMode: 'whole' | 'split'
+  finalIceSplitAssignment?: Record<string, { left: string; right: string }>
+  baselinePointsFloatA: number
+  baselinePointsFloatB: number
+  version: number
+  createdAt?: number
+}
+
+export function fairSplitContractDocId(dateKey: string, windowKey: FairSplitContractWindowKey): string {
+  return `${dateKey}__${windowKey}`
+}
+
+function fairSplitContractLocalKey(dateKey: string, windowKey: FairSplitContractWindowKey): string {
+  return `traq:fairSplitContract:${dateKey}:${windowKey}`
+}
+
+/** Synchronous read for split-panel restore before Firestore snapshot arrives. */
+export function readFairSplitContractLocalCache(
+  dateKey: string,
+  windowKey: FairSplitContractWindowKey,
+): FairSplitContractDoc | null {
+  const raw = getFromLocalStorage<Record<string, unknown> | null>(
+    fairSplitContractLocalKey(dateKey, windowKey),
+    null,
+  )
+  return parseFairSplitContractDoc(raw ?? undefined)
+}
+
+export function clearFairSplitContractLocalCache(
+  dateKey: string,
+  windowKey: FairSplitContractWindowKey,
+): void {
+  clearFairSplitContractLocalCacheInternal(dateKey, windowKey)
+}
+
+function cacheFairSplitContractLocally(contract: FairSplitContractDoc): void {
+  saveToLocalStorage(fairSplitContractLocalKey(contract.dateKey, contract.windowKey), contract)
+}
+
+function clearFairSplitContractLocalCacheInternal(dateKey: string, windowKey: FairSplitContractWindowKey): void {
+  try {
+    localStorage.removeItem(fairSplitContractLocalKey(dateKey, windowKey))
+  } catch (e) {
+    console.warn('Fair split contract local cache clear failed:', e)
+  }
+}
+
+function parseFairSplitContractDoc(data: Record<string, unknown> | undefined): FairSplitContractDoc | null {
+  if (!data) return null
+  const dateKey = typeof data.dateKey === 'string' ? data.dateKey : ''
+  const wk = data.windowKey === '17' || data.windowKey === '21' ? data.windowKey : null
+  if (!dateKey || !wk) return null
+  const employeeA = typeof data.employeeA === 'string' ? data.employeeA.trim() : ''
+  const employeeB = typeof data.employeeB === 'string' ? data.employeeB.trim() : ''
+  if (!employeeA || !employeeB) return null
+  const taskIds = Array.isArray(data.taskIds) ? (data.taskIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
+  const suggestedAssignment =
+    data.suggestedAssignment && typeof data.suggestedAssignment === 'object'
+      ? (data.suggestedAssignment as Record<string, string>)
+      : {}
+  const finalSharedTaskIds = Array.isArray(data.finalSharedTaskIds)
+    ? (data.finalSharedTaskIds as unknown[]).filter((x): x is string => typeof x === 'string')
+    : []
+  const finalIceMode = data.finalIceMode === 'split' ? 'split' : 'whole'
+  let finalIceSplitAssignment: FairSplitContractDoc['finalIceSplitAssignment'] = undefined
+  if (data.finalIceSplitAssignment && typeof data.finalIceSplitAssignment === 'object') {
+    const iceOut: NonNullable<FairSplitContractDoc['finalIceSplitAssignment']> = {}
+    for (const [k, v] of Object.entries(data.finalIceSplitAssignment as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue
+      const o = v as Record<string, unknown>
+      const left = typeof o.left === 'string' ? o.left.trim() : ''
+      const right = typeof o.right === 'string' ? o.right.trim() : ''
+      if (left && right) iceOut[k] = { left, right }
+    }
+    if (Object.keys(iceOut).length) finalIceSplitAssignment = iceOut
+  }
+  const baselinePointsFloatA = typeof data.baselinePointsFloatA === 'number' ? data.baselinePointsFloatA : Number(data.baselinePointsFloatA)
+  const baselinePointsFloatB = typeof data.baselinePointsFloatB === 'number' ? data.baselinePointsFloatB : Number(data.baselinePointsFloatB)
+  const version = typeof data.version === 'number' ? data.version : 1
+  const createdAt = typeof data.createdAt === 'number' ? data.createdAt : undefined
+  if (!Number.isFinite(baselinePointsFloatA) || !Number.isFinite(baselinePointsFloatB)) return null
+  return {
+    dateKey,
+    windowKey: wk,
+    employeeA,
+    employeeB,
+    taskIds,
+    suggestedAssignment,
+    finalSharedTaskIds,
+    finalIceMode,
+    finalIceSplitAssignment,
+    baselinePointsFloatA,
+    baselinePointsFloatB,
+    version,
+    createdAt,
+  }
+}
+
+export const setFairSplitContract = async (contract: FairSplitContractDoc): Promise<void> => {
+  await assertFirestoreReady()
+  const id = fairSplitContractDocId(contract.dateKey, contract.windowKey)
+  const ref = doc(db, FAIR_SPLIT_CONTRACTS_COLLECTION, id)
+  const payload: Record<string, unknown> = {
+    dateKey: contract.dateKey,
+    windowKey: contract.windowKey,
+    employeeA: contract.employeeA,
+    employeeB: contract.employeeB,
+    taskIds: contract.taskIds,
+    suggestedAssignment: contract.suggestedAssignment,
+    finalSharedTaskIds: contract.finalSharedTaskIds,
+    finalIceMode: contract.finalIceMode,
+    baselinePointsFloatA: contract.baselinePointsFloatA,
+    baselinePointsFloatB: contract.baselinePointsFloatB,
+    version: contract.version,
+    createdAt: serverTimestamp(),
+  }
+  if (contract.finalIceSplitAssignment && Object.keys(contract.finalIceSplitAssignment).length) {
+    payload.finalIceSplitAssignment = contract.finalIceSplitAssignment
+  }
+  await setDoc(ref, payload, { merge: true })
+  cacheFairSplitContractLocally(contract)
+}
+
+export const deleteFairSplitContract = async (
+  dateKey: string,
+  windowKey: FairSplitContractWindowKey
+): Promise<void> => {
+  try {
+    await assertFirestoreReady()
+    const id = fairSplitContractDocId(dateKey, windowKey)
+    await deleteDoc(doc(db, FAIR_SPLIT_CONTRACTS_COLLECTION, id))
+    clearFairSplitContractLocalCacheInternal(dateKey, windowKey)
+  } catch (e) {
+    // Missing doc is fine
+    const code = typeof e === 'object' && e && 'code' in e ? String((e as { code?: string }).code) : ''
+    if (code !== 'not-found') console.warn('deleteFairSplitContract:', e)
+  }
+}
+
+export const subscribeFairSplitContract = (
+  dateKey: string,
+  windowKey: FairSplitContractWindowKey,
+  callback: (doc: FairSplitContractDoc | null) => void
+): (() => void) => {
+  let cancelled = false
+  let unsubscribe: (() => void) | null = null
+
+  const setup = async () => {
+    if (!isFirestoreSDKAvailable()) return
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const id = fairSplitContractDocId(dateKey, windowKey)
+      const docRef = doc(db, FAIR_SPLIT_CONTRACTS_COLLECTION, id)
+      unsubscribe = onSnapshot(docRef, (snap) => {
+        if (!snap.exists()) {
+          callback(null)
+          return
+        }
+        callback(parseFairSplitContractDoc(snap.data() as Record<string, unknown>))
+      })
+    } catch (error) {
+      console.error('subscribeFairSplitContract:', error)
+      callback(null)
+    }
+  }
+
+  void setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+/** One-shot reads for admin month history (parallel per date × window). */
+export const fetchFairSplitContract = async (
+  dateKey: string,
+  windowKey: FairSplitContractWindowKey
+): Promise<FairSplitContractDoc | null> => {
+  try {
+    await assertFirestoreReady()
+    const id = fairSplitContractDocId(dateKey, windowKey)
+    const snap = await getDoc(doc(db, FAIR_SPLIT_CONTRACTS_COLLECTION, id))
+    if (!snap.exists()) return null
+    return parseFairSplitContractDoc(snap.data() as Record<string, unknown>)
+  } catch {
+    return null
+  }
+}
+
+// --- Training windows (secret training mode: every participant of the window scores 50) ---
+
+const TRAINING_WINDOWS_COLLECTION = 'trainingWindows'
+
+export type TrainingWindowDoc = {
+  dateKey: string
+  windowKey: WindowKey
+  enabled: boolean
+  createdAt?: number
+}
+
+export function trainingWindowDocId(dateKey: string, windowKey: WindowKey): string {
+  return `${dateKey}__${windowKey}`
+}
+
+function parseTrainingWindowDoc(data: Record<string, unknown> | undefined): TrainingWindowDoc | null {
+  if (!data) return null
+  const dateKey = typeof data.dateKey === 'string' ? data.dateKey : ''
+  const wk =
+    data.windowKey === '11' || data.windowKey === '17' || data.windowKey === '21' ? data.windowKey : null
+  if (!dateKey || !wk) return null
+  const enabled = data.enabled === true
+  if (!enabled) return null
+  const createdAt = typeof data.createdAt === 'number' ? data.createdAt : undefined
+  return { dateKey, windowKey: wk, enabled, createdAt }
+}
+
+export const setTrainingWindow = async (dateKey: string, windowKey: WindowKey): Promise<void> => {
+  await assertFirestoreReady()
+  const id = trainingWindowDocId(dateKey, windowKey)
+  const ref = doc(db, TRAINING_WINDOWS_COLLECTION, id)
+  await setDoc(ref, { dateKey, windowKey, enabled: true, createdAt: serverTimestamp() }, { merge: true })
+}
+
+export const deleteTrainingWindow = async (dateKey: string, windowKey: WindowKey): Promise<void> => {
+  try {
+    await assertFirestoreReady()
+    const id = trainingWindowDocId(dateKey, windowKey)
+    await deleteDoc(doc(db, TRAINING_WINDOWS_COLLECTION, id))
+  } catch (e) {
+    const code = typeof e === 'object' && e && 'code' in e ? String((e as { code?: string }).code) : ''
+    if (code !== 'not-found') console.warn('deleteTrainingWindow:', e)
+  }
+}
+
+export const subscribeTrainingWindow = (
+  dateKey: string,
+  windowKey: WindowKey,
+  callback: (doc: TrainingWindowDoc | null) => void
+): (() => void) => {
+  let cancelled = false
+  let unsubscribe: (() => void) | null = null
+
+  const setup = async () => {
+    if (!isFirestoreSDKAvailable()) return
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const id = trainingWindowDocId(dateKey, windowKey)
+      const docRef = doc(db, TRAINING_WINDOWS_COLLECTION, id)
+      unsubscribe = onSnapshot(docRef, (snap) => {
+        if (!snap.exists()) {
+          callback(null)
+          return
+        }
+        callback(parseTrainingWindowDoc(snap.data() as Record<string, unknown>))
+      })
+    } catch (error) {
+      console.error('subscribeTrainingWindow:', error)
+      callback(null)
+    }
+  }
+
+  void setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
+  }
+}
+
+/**
+ * Range subscription for leaderboard aggregation. Emits a Set of `${dateKey}__${windowKey}`
+ * for every enabled training window between the two date keys (inclusive).
+ */
+export const subscribeTrainingWindowsInRange = (
+  fromDateKey: string,
+  toDateKey: string,
+  callback: (ids: Set<string>) => void
+): (() => void) => {
+  let cancelled = false
+  let unsubscribe: (() => void) | null = null
+
+  const setup = async () => {
+    if (!isFirestoreSDKAvailable()) return
+    try {
+      await assertFirestoreReady()
+      if (cancelled) return
+      const q = query(
+        collection(db, TRAINING_WINDOWS_COLLECTION),
+        where('dateKey', '>=', fromDateKey),
+        where('dateKey', '<=', toDateKey)
+      )
+      unsubscribe = onSnapshot(q, (snap) => {
+        const ids = new Set<string>()
+        snap.forEach((d) => {
+          const parsed = parseTrainingWindowDoc(d.data() as Record<string, unknown>)
+          if (parsed) ids.add(trainingWindowDocId(parsed.dateKey, parsed.windowKey))
+        })
+        callback(ids)
+      })
+    } catch (error) {
+      console.error('subscribeTrainingWindowsInRange:', error)
+      callback(new Set())
+    }
+  }
+
+  void setup()
+
+  return () => {
+    cancelled = true
+    if (unsubscribe) unsubscribe()
   }
 }

@@ -2,21 +2,29 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import './StockPage.css'
 import {
   subscribeToStockReports,
+  subscribeToStockReportLogs,
   createStockReport,
   setStockReportStatus,
   deleteStockReport,
-  subscribeToEmployees,
   type StockReport,
   type StockReportKind,
+  type StockReportLogEntry,
+  type StockReportLogAction,
   type StockReportStatus,
 } from '../../services/firestore'
+import { sendStockReportEmailNotification } from '../../services/stockEmail'
+
+import { useEmployeeRoster } from '../../hooks/useEmployeeRoster'
 
 export function StockPage() {
+  const { activeEmployees } = useEmployeeRoster()
   const [reports, setReports] = useState<StockReport[]>([])
-  const [employees, setEmployees] = useState<string[]>([])
   const [processing, setProcessing] = useState<string | null>(null)
   const [filterStatus, setFilterStatus] = useState<'all' | StockReportStatus>('all')
   const [filterKind, setFilterKind] = useState<'all' | StockReportKind>('all')
+  const [stockLogs, setStockLogs] = useState<StockReportLogEntry[]>([])
+  const [logFilterAction, setLogFilterAction] = useState<'all' | StockReportLogAction>('all')
+  const [showAllLogs, setShowAllLogs] = useState(false)
 
   // Form state
   const [showForm, setShowForm] = useState(false)
@@ -34,13 +42,17 @@ export function StockPage() {
     return () => unsub?.()
   }, [])
 
-  // Subscribe to employees for reporter dropdown
   useEffect(() => {
-    const unsub = subscribeToEmployees((list) => {
-      setEmployees(list)
-    })
+    const unsub = subscribeToStockReportLogs((logs) => setStockLogs(logs), 300)
     return () => unsub?.()
   }, [])
+
+  const filteredLogs = useMemo(() => {
+    if (logFilterAction === 'all') return stockLogs
+    return stockLogs.filter((l) => l.action === logFilterAction)
+  }, [stockLogs, logFilterAction])
+
+  const logsDisplayed = showAllLogs ? filteredLogs : filteredLogs.slice(0, 25)
 
   // Filter and sort reports
   const filteredReports = useMemo(() => {
@@ -101,7 +113,7 @@ export function StockPage() {
     if (!confirm('Delete this stock report?')) return
     setProcessing(report.id)
     try {
-      await deleteStockReport(report.id)
+      await deleteStockReport(report.id, { actor: 'Admin' })
     } catch (err) {
       console.error('Failed to delete stock report:', err)
       alert('Failed to delete report. Try again.')
@@ -126,6 +138,12 @@ export function StockPage() {
         kind: formKind,
         item,
         createdBy: formReporter || undefined,
+      })
+      void sendStockReportEmailNotification({
+        kind: formKind,
+        item,
+        by: formReporter || undefined,
+        reportedAtIso: new Date().toISOString(),
       })
       // Reset form
       setFormItem('')
@@ -274,7 +292,7 @@ export function StockPage() {
                   onChange={(e) => setFormReporter(e.target.value)}
                 >
                   <option value="">(Optional)</option>
-                  {employees.map((name) => (
+                  {activeEmployees.map((name) => (
                     <option key={name} value={name}>{name}</option>
                   ))}
                 </select>
@@ -397,6 +415,90 @@ export function StockPage() {
               )
             })}
           </div>
+        )}
+      </div>
+
+      {/* History — append-only log (entries exist from first deploy with this feature onward) */}
+      <div className="admin-card stock-history-card">
+        <h3 className="admin-card-title">
+          <span>📜</span> History
+          {stockLogs.length > 0 && <span className="logs-count">{stockLogs.length}</span>}
+        </h3>
+        <p className="stock-history-hint">
+          Logged when a report is created, marked finished or reopened, or deleted. Deleted rows stay visible here.
+        </p>
+        <div className="stock-filters stock-history-filters">
+          <div className="stock-filter-group">
+            <label className="stock-filter-label">Event:</label>
+            <select
+              className="stock-filter-select"
+              value={logFilterAction}
+              onChange={(e) => setLogFilterAction(e.target.value as 'all' | StockReportLogAction)}
+            >
+              <option value="all">All</option>
+              <option value="created">Created</option>
+              <option value="status_changed">Status changed</option>
+              <option value="deleted">Deleted</option>
+            </select>
+          </div>
+        </div>
+        {filteredLogs.length === 0 ? (
+          <div className="admin-empty admin-empty--compact">
+            <p>No history yet. Actions will appear here going forward.</p>
+          </div>
+        ) : (
+          <>
+            <div className="stock-history-list">
+              {logsDisplayed.map((log) => {
+                const t = log.tsMs
+                  ? new Date(log.tsMs).toLocaleString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    })
+                  : log.ts
+                const actionLabel =
+                  log.action === 'created'
+                    ? 'Created'
+                    : log.action === 'deleted'
+                      ? 'Deleted'
+                      : 'Status'
+                const detail =
+                  log.action === 'created'
+                    ? 'Report opened (pending)'
+                    : log.action === 'deleted'
+                      ? `Removed (was ${log.statusBefore === 'finished' ? 'finished' : 'pending'})`
+                      : `${log.statusBefore === 'pending' ? 'Pending' : 'Finished'} → ${log.statusAfter === 'pending' ? 'Pending' : 'Finished'}`
+                return (
+                  <div key={log.id} className={`stock-history-row stock-history-row--${log.action}`}>
+                    <div className="stock-history-row-main">
+                      <span className="stock-history-time">{t}</span>
+                      <span className={`stock-history-badge stock-history-badge--${log.action}`}>{actionLabel}</span>
+                      <span className={`stock-kind-chip stock-kind-chip-${log.kind}`}>
+                        {log.kind === 'out' ? 'Out' : 'Low'}
+                      </span>
+                    </div>
+                    <div className="stock-history-item">{log.item}</div>
+                    <div className="stock-history-detail">{detail}</div>
+                    {(log.actor || log.createdBy) && (
+                      <div className="stock-history-by">By: {log.actor || log.createdBy}</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            {filteredLogs.length > 25 && (
+              <button
+                type="button"
+                className="admin-btn logs-toggle-btn stock-history-toggle"
+                onClick={() => setShowAllLogs((v) => !v)}
+              >
+                {showAllLogs ? 'Show less' : `View all (${filteredLogs.length})`}
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>

@@ -254,6 +254,37 @@
   border-radius: 4px;
 }
 
+.tasks-more-points-row {
+  width: 100%;
+  flex-basis: 100%;
+  align-items: flex-start;
+}
+
+.tasks-more-points-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--admin-text, #111113);
+  font-weight: 500;
+}
+
+.tasks-more-points-label input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--admin-accent, #d11a2a);
+  cursor: pointer;
+}
+
+.tasks-more-points-hint {
+  width: 100%;
+  flex-basis: 100%;
+  margin: -4px 0 4px 0;
+  font-size: 12px;
+  color: var(--admin-muted, rgba(17, 17, 19, 0.64));
+  line-height: 1.35;
+}
+
 .task-card-actions {
   display: flex;
   gap: 8px;
@@ -475,4 +506,124 @@
     align-items: flex-end;
     padding: 0;
   }
+}
+
+/* ── Task Stage Badges & Editor ────────────────────── */
+
+.task-stage-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  margin-right: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  background: rgba(209, 26, 42, 0.08);
+  color: #b91c1c;
+}
+
+.tasks-stage-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.tasks-stage-radios {
+  display: flex;
+  gap: 14px;
+}
+
+/* ── Task order (v3 only) ─────────────────────────────── */
+
+.tasks-order-v3-card {
+  margin-bottom: 24px;
+}
+
+.tasks-order-v3-hint {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(17, 17, 19, 0.72);
+}
+
+.tasks-order-v3-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.tasks-order-v3-tab {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 17, 19, 0.15);
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.tasks-order-v3-tab.active {
+  border-color: #d11a2a;
+  background: rgba(209, 26, 42, 0.08);
+  font-weight: 600;
+}
+
+.tasks-order-v3-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(17, 17, 19, 0.1);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.tasks-order-v3-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(17, 17, 19, 0.08);
+  font-size: 14px;
+}
+
+.tasks-order-v3-row:last-child {
+  border-bottom: none;
+}
+
+.tasks-order-v3-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.tasks-order-v3-id {
+  font-size: 12px;
+  color: rgba(17, 17, 19, 0.45);
+  font-family: ui-monospace, monospace;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tasks-order-v3-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tasks-order-v3-move {
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid rgba(17, 17, 19, 0.2);
+  background: #fafafa;
+  cursor: pointer;
+}
+
+.tasks-order-v3-move:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tasks-order-v3-footer {
+  margin-top: 12px;
 }

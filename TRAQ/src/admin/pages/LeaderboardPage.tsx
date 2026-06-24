@@ -3,22 +3,30 @@ import './LeaderboardPage.css'
 import {
   subscribeToRecentTaskCompletions,
   subscribeToTaskCatalog,
-  subscribeToEmployees,
+  subscribeToEmployeeRoster,
   subscribeToTaskOverrides,
+  fetchFairSplitContract,
+  subscribeTrainingWindowsInRange,
   type TaskState,
   type TaskCatalog,
   type TaskOverrides,
   type TaskDef,
   type TaskOverride,
   type WindowKey,
+  type FairSplitContractDoc,
 } from '../../services/firestore'
 import {
   computeShiftLeadersForState,
   getWeightsForDateKey,
+  SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS,
   type LeaderRow,
 } from '../../utils/taskScoring'
 import { TASKS } from '../../constants/tasks'
 import type { Task } from '../../types/task'
+import {
+  filterEmployeesForLeaderboardMonth,
+  type EmployeeArchiveMap,
+} from '../../utils/employeeRoster'
 
 // Shift windows config (matches App.tsx)
 const SHIFT_WINDOWS: Record<'day' | 'night', WindowKey[]> = {
@@ -71,6 +79,20 @@ function formatDisplayDate(dateKey: string): string {
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
+/** YYYY-MM-DD strings from `from` through `to` inclusive (lexicographic range must match calendar order). */
+function enumerateDateKeysInclusive(fromKey: string, toKey: string): string[] {
+  const out: string[] = []
+  const [y1, m1, d1] = fromKey.split('-').map(Number)
+  const [y2, m2, d2] = toKey.split('-').map(Number)
+  const cur = new Date(y1, m1 - 1, d1)
+  const end = new Date(y2, m2 - 1, d2)
+  while (cur.getTime() <= end.getTime()) {
+    out.push(formatDateKey(cur))
+    cur.setDate(cur.getDate() + 1)
+  }
+  return out
+}
+
 // Get month date range
 function getMonthRange(month: Date): { from: string; to: string } {
   const year = month.getFullYear()
@@ -114,8 +136,11 @@ export function LeaderboardPage() {
   const [taskCatalog, setTaskCatalog] = useState<TaskCatalog>({ tasks: [] })
   const [taskOverrides, setTaskOverrides] = useState<TaskOverrides | null>(null)
   const [employees, setEmployees] = useState<string[]>([])
+  const [archivedAtMs, setArchivedAtMs] = useState<EmployeeArchiveMap>({})
   const [loading, setLoading] = useState(true)
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
+  const [fairSplitDocsById, setFairSplitDocsById] = useState<Record<string, FairSplitContractDoc | null>>({})
+  const [trainingDocsInRange, setTrainingDocsInRange] = useState<Set<string>>(() => new Set())
 
   const now = new Date()
   const monthRange = useMemo(() => getMonthRange(selectedMonth), [selectedMonth])
@@ -123,13 +148,19 @@ export function LeaderboardPage() {
   const isCurrentMonth = useMemo(() => isSameMonth(selectedMonth, now), [selectedMonth, now])
   const todayKey = useMemo(() => formatDateKey(now), [now])
 
-  // Subscribe to employees
+  // Subscribe to employee roster (includes archive map for month-aware leaderboard)
   useEffect(() => {
-    const unsub = subscribeToEmployees((list) => {
-      setEmployees(list)
+    const unsub = subscribeToEmployeeRoster((roster) => {
+      setEmployees(roster.list)
+      setArchivedAtMs(roster.archivedAtMs)
     })
     return () => unsub?.()
   }, [])
+
+  const leaderboardMonthRoster = useMemo(
+    () => filterEmployeesForLeaderboardMonth(employees, archivedAtMs, startOfMonth(selectedMonth)),
+    [employees, archivedAtMs, selectedMonth]
+  )
 
   // Subscribe to task catalog
   useEffect(() => {
@@ -199,6 +230,45 @@ export function LeaderboardPage() {
     return () => unsub?.()
   }, [monthRange])
 
+  useEffect(() => {
+    let cancelled = false
+    const { from, to } = monthRange
+    const dateKeys = enumerateDateKeysInclusive(from, to)
+    ;(async () => {
+      const pairs = await Promise.all(
+        dateKeys.flatMap((dk) => [
+          fetchFairSplitContract(dk, '17').then((doc) => [`${dk}__17`, doc] as const),
+          fetchFairSplitContract(dk, '21').then((doc) => [`${dk}__21`, doc] as const),
+        ]),
+      )
+      if (cancelled) return
+      const next: Record<string, FairSplitContractDoc | null> = {}
+      for (const [id, doc] of pairs) next[id] = doc
+      setFairSplitDocsById(next)
+    })().catch(() => {
+      if (!cancelled) setFairSplitDocsById({})
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [monthRange])
+
+  useEffect(() => {
+    const { from, to } = monthRange
+    return subscribeTrainingWindowsInRange(from, to, setTrainingDocsInRange)
+  }, [monthRange])
+
+  const trainingKeysForDate = useCallback(
+    (dateKey: string): WindowKey[] => {
+      const keys: WindowKey[] = []
+      ;(['11', '17', '21'] as WindowKey[]).forEach((wk) => {
+        if (trainingDocsInRange.has(`${dateKey}__${wk}`)) keys.push(wk)
+      })
+      return keys
+    },
+    [trainingDocsInRange]
+  )
+
   // Window timing functions (matches App.tsx)
   const windowStartMsForDateKey = useCallback((dateKey: string, windowKey: WindowKey): number => {
     const baseDate = new Date(`${dateKey}T00:00:00`)
@@ -266,6 +336,8 @@ export function LeaderboardPage() {
           if (!complete) return
         }
 
+        const fair =
+          shift === 'day' ? fairSplitDocsById[`${dateKey}__17`] ?? null : fairSplitDocsById[`${dateKey}__21`] ?? null
         // Compute shift leaders for this date+shift (exact same as main leaderboard)
         const shiftRows = computeShiftLeadersForState(
           taskState,
@@ -273,7 +345,10 @@ export function LeaderboardPage() {
           shift,
           SHIFT_WINDOWS,
           windowTaskWeights,
-          taskWeightByIdByWindow
+          taskWeightByIdByWindow,
+          false,
+          fair && fair.dateKey === dateKey ? fair : null,
+          trainingKeysForDate(dateKey)
         )
 
         // Track each shift (same logic as main leaderboard)
@@ -320,7 +395,7 @@ export function LeaderboardPage() {
     })
 
     return result
-  }, [taskState, monthRange, getWeightsForDateKeyFn, todayKey])
+  }, [taskState, monthRange, getWeightsForDateKeyFn, todayKey, fairSplitDocsById, trainingKeysForDate])
 
   // Compute leaderboard rankings
   const leaderboardRows = useMemo((): LeaderRow[] => {
@@ -335,7 +410,7 @@ export function LeaderboardPage() {
     })
 
     // Include all employees, even those with no shifts
-    const rows: LeaderRow[] = employees.map((name) => ({
+    const rows: LeaderRow[] = leaderboardMonthRoster.map((name) => ({
       name,
       score: byName[name]?.score ?? 0,
       shiftsPlayed: byName[name]?.shiftsPlayed ?? 0,
@@ -349,7 +424,7 @@ export function LeaderboardPage() {
     )
 
     return rows
-  }, [employees, shiftHistoryByEmployee])
+  }, [leaderboardMonthRoster, shiftHistoryByEmployee])
 
   // Compute ranks with tie handling
   // Players with the same score share the same rank
@@ -526,11 +601,19 @@ export function LeaderboardPage() {
 
                     {/* Shift List */}
                     <div className="leaderboard-shift-list">
-                      {selectedHistory.shifts.map((entry, idx) => (
+                      {selectedHistory.shifts.map((entry, idx) => {
+                        // After the May 13, 2026 cutover, "Day" score on the leaderboard reflects
+                        // 5PM-only completions; the subtitle clarifies that distinction so admins
+                        // don't confuse it with pre-cutover blended day scores.
+                        const dayUsesPmOnly =
+                          new Date(`${entry.dateKey}T00:00:00`).getTime() >=
+                          SEPARATE_DAY_AM_PM_LEADERBOARD_EFFECTIVE_MS
+                        const dayLabel = dayUsesPmOnly ? '☀️ Day (5PM)' : '☀️ Day'
+                        return (
                         <div key={`${entry.dateKey}-${entry.shift}-${idx}`} className="leaderboard-shift-entry">
                           <div className="leaderboard-shift-date">{entry.displayDate}</div>
                           <div className={`leaderboard-shift-type ${entry.shift}`}>
-                            {entry.shift === 'day' ? '☀️ Day' : '🌙 Night'}
+                            {entry.shift === 'day' ? dayLabel : '🌙 Night'}
                           </div>
                           <div className="leaderboard-shift-score-container">
                             <div 
@@ -540,7 +623,8 @@ export function LeaderboardPage() {
                             <span className="leaderboard-shift-score">{entry.score} pts</span>
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
 
                     {/* Calculation */}

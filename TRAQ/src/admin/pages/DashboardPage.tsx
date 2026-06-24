@@ -13,17 +13,41 @@ import {
   subscribeToTimeOffRequests,
   subscribeToManagementReports,
   subscribeToStockReports,
+  subscribeToStockReportLogs,
   subscribeToNotifications,
   subscribeToAdminLoginAttempts,
   subscribeToRecentTaskCompletions,
   retroactivelyFixDailyTaskCompletions,
+  triggerForceRefresh,
   type TimeOffRequest,
   type ManagementReport,
   type StockReport,
+  type StockReportLogEntry,
   type NotificationDoc,
   type AdminLoginAttempt,
   type TaskState,
 } from '../../services/firestore'
+import {
+  effectiveV3ReleaseForChannel,
+  subscribeToAppUiSettings,
+  setProductionShell,
+  setV3AdminPosEnabled,
+  setV3Release,
+  setV3ReleaseBeta,
+  type ProductionShell,
+  type V3Release,
+} from '../../services/appSettings.ts'
+import { AP } from '../adminPaths.ts'
+import { getTraqAppUrl } from '../traqAppUrl.ts'
+
+function stockReportTimestampMs(rep: StockReport): number {
+  if (typeof rep.createdAtMs === 'number' && Number.isFinite(rep.createdAtMs)) return rep.createdAtMs
+  if (rep.createdAt) {
+    const t = Date.parse(rep.createdAt)
+    if (Number.isFinite(t)) return t
+  }
+  return 0
+}
 
 export function DashboardPage() {
   const navigate = useNavigate()
@@ -33,6 +57,7 @@ export function DashboardPage() {
   const [timeOffRequests, setTimeOffRequests] = useState<TimeOffRequest[]>([])
   const [managementReports, setManagementReports] = useState<ManagementReport[]>([])
   const [stockReports, setStockReports] = useState<StockReport[]>([])
+  const [stockReportLogs, setStockReportLogs] = useState<StockReportLogEntry[]>([])
   const [notifications, setNotifications] = useState<NotificationDoc[]>([])
   const [loginAttempts, setLoginAttempts] = useState<AdminLoginAttempt[]>([])
   const [taskState, setTaskState] = useState<TaskState>({})
@@ -40,6 +65,19 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [retroactiveFixLoading, setRetroactiveFixLoading] = useState(false)
   const [retroactiveFixError, setRetroactiveFixError] = useState<string | null>(null)
+
+  const [productionShell, setProductionShellState] = useState<ProductionShell>('v2')
+  const [v3Release, setV3ReleaseState] = useState<V3Release>('3.0')
+  const [v3ReleaseBetaOverride, setV3ReleaseBetaOverride] = useState<V3Release | null>(null)
+  const [v3AdminPosEnabled, setV3AdminPosEnabledState] = useState(true)
+  const [shellToggleLoading, setShellToggleLoading] = useState(false)
+  const [shellToggleError, setShellToggleError] = useState<string | null>(null)
+  const [v3ReleaseMainToggleLoading, setV3ReleaseMainToggleLoading] = useState(false)
+  const [v3ReleaseMainToggleError, setV3ReleaseMainToggleError] = useState<string | null>(null)
+  const [v3ReleaseBetaToggleLoading, setV3ReleaseBetaToggleLoading] = useState(false)
+  const [v3ReleaseBetaToggleError, setV3ReleaseBetaToggleError] = useState<string | null>(null)
+  const [posToggleLoading, setPosToggleLoading] = useState(false)
+  const [posToggleError, setPosToggleError] = useState<string | null>(null)
 
   // Subscribe to all data sources
   useEffect(() => {
@@ -68,6 +106,12 @@ export function DashboardPage() {
       setStockReports(reports)
     })
     if (unsubStock) unsubscribes.push(unsubStock)
+
+    // Stock History (created / deleted events)
+    const unsubStockLogs = subscribeToStockReportLogs((logs) => {
+      setStockReportLogs(logs)
+    }, 120)
+    if (unsubStockLogs) unsubscribes.push(unsubStockLogs)
 
     // Notifications
     const unsubNotif = subscribeToNotifications((notifs) => {
@@ -111,6 +155,123 @@ export function DashboardPage() {
     }
   }, [])
 
+  useEffect(() => {
+    return subscribeToAppUiSettings((s) => {
+      setProductionShellState(s.productionShell)
+      setV3ReleaseState(s.v3Release)
+      setV3ReleaseBetaOverride(s.v3ReleaseBeta)
+      setV3AdminPosEnabledState(s.v3AdminPosEnabled)
+    })
+  }, [])
+
+  const handleSetProductionShell = async (next: ProductionShell) => {
+    if (next === productionShell) return
+    const label = next === 'v3' ? 'TRAQ 3.x shell' : 'TRAQ 2.x'
+    if (!confirm(`Switch the main TRAQ app to ${label}? Open kiosks will reload.`)) {
+      return
+    }
+    setShellToggleLoading(true)
+    setShellToggleError(null)
+    try {
+      await setProductionShell(next)
+      await triggerForceRefresh()
+    } catch (e) {
+      console.error('Production shell update failed:', e)
+      setShellToggleError('Could not update production shell. Check console.')
+    } finally {
+      setShellToggleLoading(false)
+    }
+  }
+
+  const v3ReleaseBetaEffective = useMemo(
+    () => effectiveV3ReleaseForChannel('beta', { v3Release, v3ReleaseBeta: v3ReleaseBetaOverride }),
+    [v3Release, v3ReleaseBetaOverride]
+  )
+
+  const handleSetV3ReleaseMain = async (next: V3Release) => {
+    if (next === v3Release) return
+    const title =
+      next === '3.1'
+        ? 'Activate TRAQ 3.1 on the main site'
+        : 'Roll back the main site to TRAQ 3.0'
+    if (
+      !confirm(
+        `${title}? Devices on the main site that use the 3.x shell will pick this up from Firestore (footer and 3.1 features).`
+      )
+    ) {
+      return
+    }
+    setV3ReleaseMainToggleLoading(true)
+    setV3ReleaseMainToggleError(null)
+    try {
+      await setV3Release(next)
+      await triggerForceRefresh()
+    } catch (e) {
+      console.error('v3 release (main) update failed:', e)
+      setV3ReleaseMainToggleError('Could not update live 3.x release. Check console.')
+    } finally {
+      setV3ReleaseMainToggleLoading(false)
+    }
+  }
+
+  const handlePreview31OnBeta = async () => {
+    if (v3ReleaseBetaEffective === '3.1') return
+    if (
+      !confirm(
+        'Turn on 3.1 for the beta Hosting URL only? The main site keeps its current live release until you use Activate 3.1 there.'
+      )
+    ) {
+      return
+    }
+    setV3ReleaseBetaToggleLoading(true)
+    setV3ReleaseBetaToggleError(null)
+    try {
+      await setV3ReleaseBeta('3.1')
+      await triggerForceRefresh()
+    } catch (e) {
+      console.error('v3 release beta update failed:', e)
+      setV3ReleaseBetaToggleError('Could not update beta preview. Check console.')
+    } finally {
+      setV3ReleaseBetaToggleLoading(false)
+    }
+  }
+
+  const handleBetaMatchLive = async () => {
+    if (v3ReleaseBetaOverride === null) return
+    if (
+      !confirm(
+        'Remove the beta-only setting so the beta site uses the same 3.x release as the main site?'
+      )
+    ) {
+      return
+    }
+    setV3ReleaseBetaToggleLoading(true)
+    setV3ReleaseBetaToggleError(null)
+    try {
+      await setV3ReleaseBeta(null)
+      await triggerForceRefresh()
+    } catch (e) {
+      console.error('v3 release beta clear failed:', e)
+      setV3ReleaseBetaToggleError('Could not clear beta override. Check console.')
+    } finally {
+      setV3ReleaseBetaToggleLoading(false)
+    }
+  }
+
+  const handleSetV3AdminPosEnabled = async (next: boolean) => {
+    if (next === v3AdminPosEnabled) return
+    setPosToggleLoading(true)
+    setPosToggleError(null)
+    try {
+      await setV3AdminPosEnabled(next)
+    } catch (e) {
+      console.error('v3 POS toggle failed:', e)
+      setPosToggleError('Could not update POS visibility. Check console.')
+    } finally {
+      setPosToggleLoading(false)
+    }
+  }
+
   // Transform data into NotificationItems
   const notificationItems: NotificationItem[] = useMemo(() => {
     const items: NotificationItem[] = []
@@ -126,7 +287,7 @@ export function DashboardPage() {
           subtitle: `Applied for position - ${app.email}`,
           timestamp: new Date(app.createdAt),
           priority: 'high',
-          actionPath: '/admin/hiring',
+          actionPath: AP.hiring,
         })
       })
 
@@ -146,7 +307,7 @@ export function DashboardPage() {
           subtitle: dateInfo,
           timestamp: new Date(req.createdAt),
           priority: 'medium',
-          actionPath: '/admin/time-off',
+          actionPath: AP.timeOff,
         })
       })
 
@@ -161,7 +322,7 @@ export function DashboardPage() {
           subtitle: `From ${rep.createdBy} - ${rep.kind}`,
           timestamp: new Date(rep.createdAt),
           priority: 'medium',
-          actionPath: '/admin/reports',
+          actionPath: AP.reports,
         })
       })
 
@@ -174,9 +335,30 @@ export function DashboardPage() {
           type: 'stock',
           title: `Stock Alert: ${rep.item || 'Item'}`,
           subtitle: `${rep.kind === 'low' ? 'Low stock' : 'Out of stock'} reported`,
-          timestamp: new Date(rep.createdAt),
+          timestamp: new Date(stockReportTimestampMs(rep) || Date.now()),
           priority: rep.kind === 'out' ? 'high' : 'medium',
-          actionPath: '/admin/reports',
+          actionPath: AP.stock,
+        })
+      })
+
+    // Stock add/delete events (from history logs)
+    stockReportLogs
+      .filter((l) => l.action === 'created' || l.action === 'deleted')
+      .slice(0, 40)
+      .forEach((l) => {
+        const by = l.actor || l.createdBy
+        const kindLabel = l.kind === 'low' ? 'Low stock' : 'Out of stock'
+        items.push({
+          id: `stocklog-${l.id}`,
+          type: 'stock',
+          title: l.action === 'created' ? `Stock added: ${l.item || 'Item'}` : `Stock deleted: ${l.item || 'Item'}`,
+          subtitle:
+            l.action === 'created'
+              ? `${kindLabel}${by ? ` · by ${by}` : ''}`
+              : `Removed${by ? ` · by ${by}` : ''}`,
+          timestamp: new Date((l.tsMs || 0) > 0 ? l.tsMs : Date.now()),
+          priority: l.kind === 'out' ? 'high' : 'medium',
+          actionPath: AP.stock,
         })
       })
 
@@ -191,7 +373,7 @@ export function DashboardPage() {
           subtitle: notif.message || '',
           timestamp: new Date(notif.createdAt),
           priority: 'low',
-          actionPath: '/admin/notify',
+          actionPath: AP.notify,
         })
       })
 
@@ -207,12 +389,12 @@ export function DashboardPage() {
           subtitle: `User agent: ${attempt.userAgent?.slice(0, 40) || 'Unknown'}...`,
           timestamp: new Date(attempt.ts),
           priority: 'high',
-          actionPath: '/admin/logs',
+          actionPath: AP.logs,
         })
       })
 
     return items
-  }, [applications, timeOffRequests, managementReports, stockReports, notifications, loginAttempts])
+  }, [applications, timeOffRequests, managementReports, stockReports, stockReportLogs, notifications, loginAttempts])
 
   // Calculate stats from TaskState
   const stats = useMemo(() => {
@@ -279,13 +461,13 @@ export function DashboardPage() {
   }
 
   // Quick action items
-  const quickActions = [
-    { icon: '👥', label: 'Manage Team', path: '/admin/team' },
-    { icon: '✅', label: 'Edit Tasks', path: '/admin/tasks' },
-    { icon: '📋', label: 'Daily Tasks', path: '/admin/daily-tasks' },
-    { icon: '🏖️', label: 'Time Off', path: '/admin/time-off' },
-    { icon: '🎵', label: 'Music', path: '/admin/music' },
-    { icon: '📜', label: 'View Logs', path: '/admin/logs' },
+  const quickActions: { icon: string; label: string; path: string; hash?: string }[] = [
+    { icon: '👥', label: 'Manage Team', path: AP.team },
+    { icon: '✅', label: 'Edit Tasks', path: AP.tasks },
+    { icon: '📋', label: 'Daily Tasks', path: AP.dailyTasks, hash: 'recent-daily-runs' },
+    { icon: '🏖️', label: 'Time Off', path: AP.timeOff },
+    { icon: '🎵', label: 'Music', path: AP.music },
+    { icon: '📜', label: 'View Logs', path: AP.logs },
   ]
 
   return (
@@ -303,7 +485,9 @@ export function DashboardPage() {
           value={stats.todayCompleted}
           subtitle={`${stats.completionRate}% complete`}
           color="success"
-          onClick={() => navigate('/')}
+          onClick={() => {
+            window.location.href = `${getTraqAppUrl()}/`
+          }}
         />
         <StatCard
           icon="💼"
@@ -311,7 +495,7 @@ export function DashboardPage() {
           value={stats.pendingApplications}
           subtitle="Awaiting review"
           color={stats.pendingApplications > 0 ? 'accent' : 'default'}
-          onClick={() => navigate('/admin/hiring')}
+          onClick={() => navigate(AP.hiring)}
         />
         <StatCard
           icon="🏖️"
@@ -319,7 +503,7 @@ export function DashboardPage() {
           value={stats.pendingTimeOff}
           subtitle="Pending requests"
           color={stats.pendingTimeOff > 0 ? 'warning' : 'default'}
-          onClick={() => navigate('/admin/time-off')}
+          onClick={() => navigate(AP.timeOff)}
         />
         <StatCard
           icon="📝"
@@ -327,7 +511,7 @@ export function DashboardPage() {
           value={stats.pendingReports}
           subtitle="Need attention"
           color={stats.pendingReports > 0 ? 'info' : 'default'}
-          onClick={() => navigate('/admin/reports')}
+          onClick={() => navigate(AP.reports)}
         />
       </section>
 
@@ -339,7 +523,7 @@ export function DashboardPage() {
             items={notificationItems}
             maxItems={8}
             loading={loading}
-            onViewAll={() => navigate('/admin/logs')}
+            onViewAll={() => navigate(AP.logs)}
           />
         </section>
 
@@ -353,9 +537,11 @@ export function DashboardPage() {
             <div className="quick-actions-grid">
               {quickActions.map((action) => (
                 <button
-                  key={action.path}
+                  key={action.path + (action.hash || '')}
                   className="quick-action-btn"
-                  onClick={() => navigate(action.path)}
+                  onClick={() =>
+                    navigate(action.hash ? { pathname: action.path, hash: action.hash } : action.path)
+                  }
                 >
                   <span className="quick-action-icon">{action.icon}</span>
                   <span className="quick-action-label">{action.label}</span>
@@ -404,12 +590,154 @@ export function DashboardPage() {
               </p>
               <button 
                 className="admin-btn admin-btn-secondary"
-                onClick={() => navigate('/admin/notify')}
+                onClick={() => navigate(AP.notify)}
               >
                 Manage Notifications
               </button>
             </div>
           )}
+
+          {/* Production UI (main Hosting site) */}
+          <div className="admin-card dashboard-production-shell">
+            <h3 className="admin-card-title">
+              <span>🖥️</span> Main app UI
+            </h3>
+            <p className="dashboard-production-shell-desc">
+              Controls which shell loads on the main TRAQ site (<code className="dashboard-inline-code">traq-caab9</code>
+              ). Use <strong>beta Hosting</strong> to preview 3.1 before you activate it on the main site.
+            </p>
+            <div className="dashboard-shell-status">
+              <span className="dashboard-shell-label">Production shell</span>
+              <strong className="dashboard-shell-value">
+                {productionShell === 'v3' ? '3.x' : '2.x'}
+              </strong>
+            </div>
+            {shellToggleError && (
+              <div className="dashboard-shell-error" role="alert">
+                {shellToggleError}
+              </div>
+            )}
+            <div className="dashboard-shell-actions">
+              <button
+                type="button"
+                className="admin-btn admin-btn-secondary"
+                disabled={shellToggleLoading || productionShell === 'v2'}
+                onClick={() => void handleSetProductionShell('v2')}
+              >
+                {shellToggleLoading ? 'Saving…' : 'Use 2.x'}
+              </button>
+              <button
+                type="button"
+                className="admin-btn admin-btn-primary"
+                disabled={shellToggleLoading || productionShell === 'v3'}
+                onClick={() => void handleSetProductionShell('v3')}
+              >
+                {shellToggleLoading ? 'Saving…' : 'Use 3.x shell'}
+              </button>
+            </div>
+            <div className="dashboard-v3-release-row">
+              <div className="dashboard-v3-pos-label">
+                <span className="dashboard-shell-label">Main site — 3.x release (live)</span>
+                <span className="dashboard-v3-pos-hint">
+                  Applies on the main URL when the 3.x shell is on. Footer shows this version for staff.
+                </span>
+              </div>
+              <div className="dashboard-shell-status dashboard-shell-status--inline">
+                <span className="dashboard-shell-label">Live</span>
+                <strong className="dashboard-shell-value">{v3Release}</strong>
+              </div>
+              {v3ReleaseMainToggleError && (
+                <div className="dashboard-shell-error" role="alert">
+                  {v3ReleaseMainToggleError}
+                </div>
+              )}
+              <div className="dashboard-shell-actions dashboard-v3-pos-actions">
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-primary"
+                  disabled={v3ReleaseMainToggleLoading || v3Release === '3.1'}
+                  onClick={() => void handleSetV3ReleaseMain('3.1')}
+                >
+                  {v3ReleaseMainToggleLoading ? 'Saving…' : 'Activate 3.1'}
+                </button>
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-secondary"
+                  disabled={v3ReleaseMainToggleLoading || v3Release === '3.0'}
+                  onClick={() => void handleSetV3ReleaseMain('3.0')}
+                >
+                  {v3ReleaseMainToggleLoading ? 'Saving…' : 'Rollback main to 3.0'}
+                </button>
+              </div>
+            </div>
+            <div className="dashboard-v3-release-row">
+              <div className="dashboard-v3-pos-label">
+                <span className="dashboard-shell-label">Beta Hosting — 3.x release</span>
+                <span className="dashboard-v3-pos-hint">
+                  Preview 3.1 here before activating on main. “Match live” clears a beta-only override.
+                </span>
+              </div>
+              <div className="dashboard-shell-status dashboard-shell-status--inline">
+                <span className="dashboard-shell-label">Beta effective</span>
+                <strong className="dashboard-shell-value">
+                  {v3ReleaseBetaEffective}
+                  {v3Release === '3.0' && v3ReleaseBetaEffective === '3.1' ? ' · preview' : ''}
+                </strong>
+              </div>
+              {v3ReleaseBetaToggleError && (
+                <div className="dashboard-shell-error" role="alert">
+                  {v3ReleaseBetaToggleError}
+                </div>
+              )}
+              <div className="dashboard-shell-actions dashboard-v3-pos-actions">
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-primary"
+                  disabled={v3ReleaseBetaToggleLoading || v3ReleaseBetaEffective === '3.1'}
+                  onClick={() => void handlePreview31OnBeta()}
+                >
+                  {v3ReleaseBetaToggleLoading ? 'Saving…' : 'Preview 3.1 on beta'}
+                </button>
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-secondary"
+                  disabled={v3ReleaseBetaToggleLoading || v3ReleaseBetaOverride === null}
+                  onClick={() => void handleBetaMatchLive()}
+                >
+                  {v3ReleaseBetaToggleLoading ? 'Saving…' : 'Match live'}
+                </button>
+              </div>
+            </div>
+            <div className="dashboard-v3-pos-row">
+              <div className="dashboard-v3-pos-label">
+                <span className="dashboard-shell-label">3.0 Home — Cash Only POS</span>
+                <span className="dashboard-v3-pos-hint">Hidden from staff when off (v2 More menu unchanged).</span>
+              </div>
+              <div className="dashboard-shell-actions dashboard-v3-pos-actions">
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-secondary"
+                  disabled={posToggleLoading || !v3AdminPosEnabled}
+                  onClick={() => void handleSetV3AdminPosEnabled(false)}
+                >
+                  {posToggleLoading ? 'Saving…' : 'Hide'}
+                </button>
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-primary"
+                  disabled={posToggleLoading || v3AdminPosEnabled}
+                  onClick={() => void handleSetV3AdminPosEnabled(true)}
+                >
+                  {posToggleLoading ? 'Saving…' : 'Show'}
+                </button>
+              </div>
+            </div>
+            {posToggleError && (
+              <div className="dashboard-shell-error" role="alert">
+                {posToggleError}
+              </div>
+            )}
+          </div>
 
           {/* Retroactive Fix Tool */}
           <div className="admin-card dashboard-retroactive-fix">

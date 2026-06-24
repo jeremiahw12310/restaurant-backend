@@ -1,0 +1,261 @@
+/*
+ * Setup modal for the dice (fair task split) generator.
+ * Reuses the global .modal-backdrop / .modal-sheet so it matches the rest of the app.
+ */
+
+.task-split-setup-backdrop {
+  /* lifts above the FAB cluster (.tasks-section-fabs is z:40 in App.css) */
+  z-index: 60;
+}
+
+.task-split-setup-sheet {
+  width: min(560px, 100%);
+  padding: 20px 20px 16px;
+  gap: 0;
+}
+
+.task-split-setup__header {
+  margin-bottom: 14px;
+}
+
+.task-split-setup__title {
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.task-split-setup__sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.task-split-setup__error {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-md, 14px);
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.task-split-setup__section {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, rgba(17, 17, 19, 0.12));
+}
+
+.task-split-setup__section--ice {
+  text-align: center;
+}
+
+.task-split-setup__section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.task-split-setup__label {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.task-split-setup__ice-heading {
+  font-size: clamp(20px, 4vw, 24px);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+/* Two side-by-side employee slots */
+.task-split-setup__pick-row {
+  display: flex;
+  gap: 10px;
+}
+
+.task-split-setup__pick-slot {
+  flex: 1 1 0;
+  min-height: 70px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  color: var(--text);
+  text-align: left;
+  padding: 10px 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+}
+
+.task-split-setup__pick-slot.is-active {
+  border-color: rgba(209, 26, 42, 0.55);
+  box-shadow:
+    0 0 0 3px rgba(209, 26, 42, 0.15),
+    var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.08));
+}
+
+.task-split-setup__pick-tag {
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.task-split-setup__pick-name {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.task-split-setup__picker {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--r-md, 14px);
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+
+.task-split-setup__picker-title {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+.task-split-setup__picker-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.task-split-setup__picker-option {
+  text-align: left;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.task-split-setup__picker-option:hover:not(.is-disabled) {
+  background: #f6f7fa;
+  border-color: rgba(17, 17, 19, 0.2);
+}
+
+.task-split-setup__picker-option.is-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.task-split-setup__picker-cancel {
+  margin-top: 10px;
+  width: 100%;
+  padding: 9px;
+  border-radius: 10px;
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* Split ice binary choice — large card-style buttons */
+.task-split-setup__choice-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.task-split-setup__choice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 112px;
+  text-align: center;
+  padding: 16px 12px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease,
+    transform 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.task-split-setup__choice:active {
+  transform: scale(0.98);
+}
+
+.task-split-setup__choice.is-active {
+  border-color: rgba(209, 26, 42, 0.55);
+  box-shadow:
+    0 0 0 3px rgba(209, 26, 42, 0.15),
+    var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.08));
+}
+
+.task-split-setup__choice-title {
+  font-size: clamp(16px, 2.8vw, 18px);
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.task-split-setup__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.task-split-setup__btn {
+  padding: 10px 18px;
+  border-radius: var(--r-md, 14px);
+  border: 2px solid var(--border, rgba(17, 17, 19, 0.12));
+  background: var(--surface-2, rgba(255, 255, 255, 0.92));
+  color: var(--text);
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.06));
+  -webkit-tap-highlight-color: transparent;
+}
+
+.task-split-setup__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.task-split-setup__btn--primary {
+  background: var(--gradient-accent, linear-gradient(135deg, #d11a2a, #a0121f));
+  color: #fff;
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 14px rgba(209, 26, 42, 0.18);
+}

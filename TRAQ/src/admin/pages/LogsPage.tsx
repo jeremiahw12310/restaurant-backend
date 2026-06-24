@@ -2,14 +2,25 @@ import { useState, useEffect } from 'react'
 import './LogsPage.css'
 import {
   subscribeToAdminLoginAttempts,
+  subscribeToReloadLogs,
   subscribeToSelectionLogs,
   type AdminLoginAttempt,
+  type AppReloadLogEntry,
   type SelectionLogEntry,
 } from '../../services/firestore'
 import {
   subscribeToMusicControlLogs,
   type MusicControlLogEntry,
 } from '../../services/music'
+import {
+  incrementGoodMorningForceEpoch,
+  subscribeToGoodMorningLogs,
+  subscribeToGoodMorningSessions,
+  type GoodMorningLogEntry,
+  type GoodMorningSession,
+} from '../../services/goodMorning'
+
+const GOOD_MORNING_STALE_MS = 30_000
 
 export function LogsPage() {
   // Selection logs from Firestore (synced across all devices)
@@ -23,6 +34,21 @@ export function LogsPage() {
   // Admin login attempts
   const [loginAttempts, setLoginAttempts] = useState<AdminLoginAttempt[]>([])
   const [showAllLogin, setShowAllLogin] = useState(false)
+
+  const [reloadLogs, setReloadLogs] = useState<AppReloadLogEntry[]>([])
+  const [showAllReloads, setShowAllReloads] = useState(false)
+
+  const [goodMorningLogs, setGoodMorningLogs] = useState<GoodMorningLogEntry[]>([])
+  const [goodMorningSessions, setGoodMorningSessions] = useState<GoodMorningSession[]>([])
+  const [showAllGmLogs, setShowAllGmLogs] = useState(false)
+  const [gmForceBusy, setGmForceBusy] = useState(false)
+  const [gmForceError, setGmForceError] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 5000)
+    return () => window.clearInterval(id)
+  }, [])
 
   // Subscribe to selection logs from Firestore
   useEffect(() => {
@@ -48,17 +74,159 @@ export function LogsPage() {
     return () => unsub?.()
   }, [])
 
+  useEffect(() => {
+    const unsub = subscribeToReloadLogs((logs) => {
+      setReloadLogs(logs)
+    })
+    return () => unsub?.()
+  }, [])
+
+  useEffect(() => {
+    const unsub = subscribeToGoodMorningLogs((logs) => setGoodMorningLogs(logs), 100)
+    return () => unsub?.()
+  }, [])
+
+  useEffect(() => {
+    const unsub = subscribeToGoodMorningSessions((sessions) => setGoodMorningSessions(sessions))
+    return () => unsub?.()
+  }, [])
+
   // Display limits
   const selectionDisplayed = showAllSelection ? selectionLogs : selectionLogs.slice(0, 5)
   const musicDisplayed = showAllMusic ? musicLogs : musicLogs.slice(0, 5)
   const loginDisplayed = showAllLogin ? loginAttempts : loginAttempts.slice(0, 5)
+  const reloadDisplayed = showAllReloads ? reloadLogs : reloadLogs.slice(0, 5)
+  const gmLogsDisplayed = showAllGmLogs ? goodMorningLogs : goodMorningLogs.slice(0, 8)
+
+  const reloadKindLabel = (kind: string) => {
+    if (kind === 'unexpected') return 'Unexpected'
+    if (kind === 'nightly-update') return 'Nightly update'
+    if (kind === 'force-refresh') return 'Force refresh'
+    if (kind === 'manual-refresh') return 'Manual refresh'
+    if (kind === 'error-boundary-manual') return 'Error recovery'
+    return kind
+  }
 
   return (
     <div className="logs-page">
       <header className="admin-page-header">
         <h1>Activity Logs</h1>
-        <p>Track task selections, music controls, and admin login attempts.</p>
+        <p>Track task selections, music controls, admin login attempts, app reloads, and Good Morning screen activity.</p>
       </header>
+
+      {/* Good Morning */}
+      <div className="admin-card">
+        <h3 className="admin-card-title">
+          <span>☀️</span> Good Morning
+          {goodMorningLogs.length > 0 && <span className="logs-count">{goodMorningLogs.length}</span>}
+        </h3>
+        <p className="logs-page-subtle">
+          Devices on the Good Morning screen heartbeat while the overlay is open. Stale means no heartbeat for 30s.
+        </p>
+        <div className="good-morning-force-row">
+          <button
+            type="button"
+            className="admin-btn admin-btn-primary"
+            disabled={gmForceBusy}
+            onClick={async () => {
+              setGmForceError(null)
+              setGmForceBusy(true)
+              try {
+                await incrementGoodMorningForceEpoch()
+              } catch (e) {
+                setGmForceError(e instanceof Error ? e.message : 'Failed to update')
+              } finally {
+                setGmForceBusy(false)
+              }
+            }}
+          >
+            {gmForceBusy ? 'Updating…' : 'Show Good Morning again today (all devices)'}
+          </button>
+          {gmForceError && <span className="logs-inline-error">{gmForceError}</span>}
+        </div>
+
+        <h4 className="logs-subheading">Active on Good Morning</h4>
+        {goodMorningSessions.length === 0 ? (
+          <div className="admin-empty admin-empty--compact">
+            <p>No sessions reporting — no kiosk is on the Good Morning screen right now.</p>
+          </div>
+        ) : (
+          <div className="logs-list">
+            {goodMorningSessions.map((s) => {
+              const stale = nowMs - s.lastSeenAtMs > GOOD_MORNING_STALE_MS
+              return (
+                <div
+                  key={s.sessionId}
+                  className={`log-entry log-entry-good-morning ${stale ? 'log-entry-good-morning--stale' : ''}`}
+                >
+                  <div className="log-entry-header">
+                    <span className="log-action-badge">{stale ? 'Stale' : 'Live'}</span>
+                    <span className="log-timestamp">
+                      {s.lastSeenAtMs
+                        ? new Date(s.lastSeenAtMs).toLocaleString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            second: '2-digit',
+                          })
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="log-detail-row">
+                    <span>📅 {s.dateKey || '—'}</span>
+                    <span>{s.deviceInfo}</span>
+                  </div>
+                  <div className="log-session-id" title={s.sessionId}>
+                    {s.sessionId}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        <h4 className="logs-subheading">Dismiss taps (recent)</h4>
+        {goodMorningLogs.length === 0 ? (
+          <div className="admin-empty admin-empty--compact">
+            <p>No taps logged yet.</p>
+          </div>
+        ) : (
+          <>
+            <div className="logs-list">
+              {gmLogsDisplayed.map((log) => (
+                <div key={log.id} className="log-entry log-entry-good-morning-tap">
+                  <div className="log-entry-header">
+                    <span className="log-action-badge log-action-selected">Tap</span>
+                    <span className="log-timestamp">
+                      {new Date(log.ts).toLocaleString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      })}
+                    </span>
+                  </div>
+                  <div className="log-detail-row">
+                    <span>📅 {log.dateKey}</span>
+                    <span>{log.deviceInfo || '—'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {goodMorningLogs.length > 8 && (
+              <button
+                className="admin-btn logs-toggle-btn"
+                type="button"
+                onClick={() => setShowAllGmLogs((v) => !v)}
+              >
+                {showAllGmLogs ? 'Show less' : `View all (${goodMorningLogs.length})`}
+              </button>
+            )}
+          </>
+        )}
+      </div>
 
       {/* Selection Logs */}
       <div className="admin-card">
@@ -168,6 +336,76 @@ export function LogsPage() {
                 onClick={() => setShowAllMusic((v) => !v)}
               >
                 {showAllMusic ? 'Show less' : `View all (${musicLogs.length})`}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* App Reloads */}
+      <div className="admin-card">
+        <h3 className="admin-card-title">
+          <span>🔄</span> App Reloads
+          {reloadLogs.length > 0 && (
+            <span className="logs-count">{reloadLogs.length}</span>
+          )}
+        </h3>
+        <p className="logs-page-subtle">
+          Full page reloads on kiosk devices. Unexpected reloads often mean WebKit killed the tab (e.g. main-thread hang).
+        </p>
+
+        {reloadLogs.length === 0 ? (
+          <div className="admin-empty">
+            <span className="admin-empty-icon">🔄</span>
+            <h3>No reloads logged</h3>
+            <p>App reload events will appear here after devices restart the page</p>
+          </div>
+        ) : (
+          <>
+            <div className="logs-list">
+              {reloadDisplayed.map((log) => {
+                const isUnexpected = log.kind === 'unexpected'
+                return (
+                  <div
+                    key={log.id}
+                    className={`log-entry log-entry-login ${isUnexpected ? 'log-login-failed' : 'log-login-success'}`}
+                  >
+                    <div className="log-entry-header">
+                      <span className={`log-action-badge ${isUnexpected ? 'log-action-failed' : 'log-action-success'}`}>
+                        {reloadKindLabel(log.kind)}
+                      </span>
+                      <span className="log-timestamp">
+                        {new Date(log.ts).toLocaleString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                          second: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                    {log.lastAction && (
+                      <div className="log-detail-row">
+                        <span>Last action: {log.lastAction}</span>
+                        {typeof log.lastActionSecAgo === 'number' && (
+                          <span>{log.lastActionSecAgo}s before reload</span>
+                        )}
+                      </div>
+                    )}
+                    {log.userAgent && (
+                      <div className="log-user-agent">{log.userAgent}</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            {reloadLogs.length > 5 && (
+              <button
+                className="admin-btn logs-toggle-btn"
+                type="button"
+                onClick={() => setShowAllReloads((v) => !v)}
+              >
+                {showAllReloads ? 'Show less' : `View all (${reloadLogs.length})`}
               </button>
             )}
           </>

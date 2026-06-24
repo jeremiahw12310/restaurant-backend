@@ -1,7 +1,9 @@
 import React, { useEffect, useRef } from 'react'
+import { CinematicReveal } from './CinematicReveal'
 import { GoldenCurtainReveal } from './GoldenCurtainReveal'
 
 export type DailyTaskModalProps = {
+  uiVariant?: 'v2' | 'v3'
   open: boolean
   onClose: () => void
 
@@ -18,7 +20,7 @@ export type DailyTaskModalProps = {
   step: number
   setStep: (n: number) => void
 
-  /** True while the slot machine reveal animation is playing */
+  /** True while the reveal animation is playing */
   isRevealing: boolean
 
   revealedAtMs?: number
@@ -42,6 +44,7 @@ export type DailyTaskModalProps = {
 
 export function DailyTaskModal(props: DailyTaskModalProps) {
   const {
+    uiVariant = 'v2',
     open,
     onClose,
     shouldIgnoreClick,
@@ -172,14 +175,25 @@ export function DailyTaskModal(props: DailyTaskModalProps) {
 
           {/* Golden Curtain Wipe Reveal */}
           {isRevealing && taskName ? (
-            <GoldenCurtainReveal
-              text={taskName}
-              onContinue={onSlotRevealComplete}
-              beginTap={beginTap}
-              moveTap={moveTap}
-              endTap={endTap}
-              shouldIgnoreClick={shouldIgnoreClick}
-            />
+            uiVariant === 'v3' ? (
+              <CinematicReveal
+                text={taskName}
+                onContinue={onSlotRevealComplete}
+                beginTap={beginTap}
+                moveTap={moveTap}
+                endTap={endTap}
+                shouldIgnoreClick={shouldIgnoreClick}
+              />
+            ) : (
+              <GoldenCurtainReveal
+                text={taskName}
+                onContinue={onSlotRevealComplete}
+                beginTap={beginTap}
+                moveTap={moveTap}
+                endTap={endTap}
+                shouldIgnoreClick={shouldIgnoreClick}
+              />
+            )
           ) : null}
 
           {/* Step 1: Materials (now the first step after reveal) */}

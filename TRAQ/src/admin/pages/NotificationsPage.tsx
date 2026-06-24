@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import './NotificationsPage.css'
 import {
-  subscribeToEmployees,
   subscribeToNotifications,
   createNotification,
   setNotificationActive,
@@ -9,8 +8,10 @@ import {
   type NotificationDoc,
 } from '../../services/firestore'
 
+import { useEmployeeRoster } from '../../hooks/useEmployeeRoster'
+
 export function NotificationsPage() {
-  const [employees, setEmployees] = useState<string[]>([])
+  const { activeEmployees } = useEmployeeRoster()
   const [notifications, setNotifications] = useState<NotificationDoc[]>([])
   
   // Form state
@@ -18,14 +19,6 @@ export function NotificationsPage() {
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
-
-  // Subscribe to employees
-  useEffect(() => {
-    const unsub = subscribeToEmployees((list) => {
-      setEmployees(list)
-    })
-    return () => unsub?.()
-  }, [])
 
   // Subscribe to notifications
   useEffect(() => {
@@ -113,7 +106,7 @@ export function NotificationsPage() {
               disabled={sending}
             >
               <option value="all">All Employees</option>
-              {employees.map((emp) => (
+              {activeEmployees.map((emp) => (
                 <option key={emp} value={emp}>
                   {emp}
                 </option>

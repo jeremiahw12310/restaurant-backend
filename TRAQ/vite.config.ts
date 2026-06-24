@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
@@ -8,13 +9,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // https://vite.dev/config/
 // Multi-page build:
-// - `index.html` → main TRAQ app (Time Off, tasks, admin, etc.)
+// - `index.html` → main TRAQ app (v2/v3 shell from Firestore; `/admin/*` redirects to admin portal URL)
+// - `beta.html` → always TRAQ 3.0 shell (beta Hosting site)
 // - `apply.html` → Bonfire applicant-only shell
+// - `admin.html` → Admin portal (PIN gate + admin routes at `/`, `/team`, …)
 //
 // Firebase Hosting (see `.firebaserc`):
-// - Deploy with `npm run deploy:hosting:main` → Hosting site **traq-caab9** (serves `index.html`).
-// - `npm run deploy:hosting:apply` → site **traq-apply** only (does not ship `index.html`; not the main TRAQ UI).
+// - `deploy:hosting:main` → site **traq-caab9** (`index.html`).
+// - `deploy:hosting:beta` → **traq-beta** (`beta.html`).
+// - `deploy:hosting:apply` → **traq-apply** (`apply.html` only).
+// - `deploy:hosting:admin` → **traq-admin** (`admin.html` only).
 export default defineConfig({
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
   plugins: [
     react(),
     legacy({
@@ -72,13 +81,19 @@ export default defineConfig({
     })
   ],
   build: {
-    // Target ES5 for maximum compatibility with legacy browsers
-    target: 'es5',
-    cssTarget: 'safari9',
+    // Modern bundle target. The iPad (Safari 17) and other current browsers get
+    // lean ES2017+/native CSS here; older browsers still get a transpiled,
+    // polyfilled fallback chunk via @vitejs/plugin-legacy below. Shipping ES5 to
+    // Safari 17 wasted CPU (regenerator runtime, bulkier output) on the A-series
+    // chip, so the modern path is raised to a current baseline.
+    target: ['es2020', 'safari14'],
+    cssTarget: 'safari14',
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, 'index.html'),
+        beta: path.resolve(__dirname, 'beta.html'),
         apply: path.resolve(__dirname, 'apply.html'),
+        admin: path.resolve(__dirname, 'admin.html'),
       },
     },
   },

@@ -5,6 +5,7 @@ import { ref as storageRef, uploadBytesResumable, getDownloadURL } from 'firebas
 import {
   subscribeToDailyTaskCatalog,
   saveDailyTaskCatalog,
+  getDailyTaskRun,
   getDailyTaskWeek,
   upsertDailyTaskWeek,
   upsertDailyTaskRun,
@@ -12,11 +13,51 @@ import {
   listDailyTaskRunsInRange,
   subscribeToDailyTaskRun,
   adminRecloseDailyTaskRun,
+  adminPatchDailyTaskRunHistory,
   type DailyTaskCatalog,
   type DailyTaskDef,
   type DailyTaskRun,
   type DailyTaskWeek,
+  approvePendingDailyTaskDays,
+  setDailyTaskDayApproval,
 } from '../../services/firestore'
+import {
+  approvalStatusLabel,
+  createOverrideDayEntry,
+  getDayApprovalStatus,
+  parseWeekDayEntry,
+} from '../../utils/dailyTaskApproval'
+import { createNewDailyTaskId, resolveDailyTaskDefFromCatalog } from '../../utils/dailyTaskCatalog'
+import {
+  formatDailyTaskRunCompletedBy,
+  getDailyTaskRunHistoryTitle,
+  NO_TASK_DAILY_RUN_LABEL,
+} from '../../utils/dailyTaskRunDisplay'
+import {
+  archiveDailyTaskInCatalog,
+  getActiveDailyTasks,
+  getArchivedDailyTasks,
+  getSchedulableDailyTasks,
+  isDailyTaskSchedulable,
+  restoreDailyTaskInCatalog,
+} from '../../utils/dailyTaskArchive'
+import {
+  addDaysToDateKey,
+  buildMergedRecencyMap,
+  DAILY_TASK_WEEK_GENERATOR_VERSION,
+  DAILY_TASK_WEEK_GENERATOR_VERSION_AI,
+  enumerateWeekStartDateKeysInclusive,
+  generateDailyTaskWeek,
+  getWeekStartDateKeySunday,
+} from '../../utils/dailyTaskWeekGenerator'
+import { fetchValidatedWeeklyPlacements } from '../../services/dailyTaskScheduleAi'
+import {
+  clearDailyTaskScheduleAiSystemPrompt,
+  DEFAULT_DAILY_TASK_SCHEDULE_SYSTEM_PROMPT,
+  resolveDailyTaskScheduleSystemPrompt,
+  saveDailyTaskScheduleAiSettings,
+  subscribeToDailyTaskScheduleAiSettings,
+} from '../../services/dailyTaskScheduleAiSettings'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper functions (ported from App.tsx)
@@ -34,111 +75,13 @@ const parseDateKey = (dateKey: string): Date => {
   return new Date(year, month - 1, day)
 }
 
-const startOfDay = (date: Date): Date => {
-  const d = new Date(date)
-  d.setHours(0, 0, 0, 0)
-  return d
-}
-
-const addDays = (date: Date, days: number): Date => {
-  const d = new Date(date)
-  d.setDate(d.getDate() + days)
-  return d
-}
-
-const getWeekStartDateKeySunday = (dateKey: string): string => {
-  const d = startOfDay(parseDateKey(dateKey))
-  const dow = d.getDay() // 0 = Sun
-  const weekStart = addDays(d, -dow)
-  return formatDateKey(weekStart)
-}
-
-const addDaysToDateKey = (dateKey: string, delta: number): string => {
-  return formatDateKey(addDays(parseDateKey(dateKey), delta))
-}
-
-const isDailyTaskEnabled = (t: DailyTaskDef): boolean => {
-  return !(typeof t.disabledAtMs === 'number' && Number.isFinite(t.disabledAtMs))
-}
-
-const DAILY_TASK_WEEK_GENERATOR_VERSION = 'v1'
-
-// Deterministic RNG for stable schedules
-const hashStringToUint32 = (s: string): number => {
-  let h = 2166136261
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return h >>> 0
-}
-
-const seededShuffle = <T,>(arr: T[], seed: number): T[] => {
-  const copy = [...arr]
-  let s = seed
-  for (let i = copy.length - 1; i > 0; i--) {
-    s = ((s * 1103515245 + 12345) >>> 0) % 2147483648
-    const j = s % (i + 1)
-    ;[copy[i], copy[j]] = [copy[j], copy[i]]
-  }
-  return copy
-}
-
-/**
- * Find optimal day indices for a weekly task to maximize spacing between occurrences.
- * @param quota - The number of times per week this task should occur
- * @param usedDayIndices - Day indices (0-6) where this task is already scheduled (past/overrides)
- * @param availableDayIndices - Day indices (0-6) that are free to fill
- * @param seed - Optional seed for tie-breaking (deterministic)
- * @returns Array of day indices where the task should be scheduled
- */
-const findOptimalDaysForWeeklyTask = (
-  quota: number,
-  usedDayIndices: number[],
-  availableDayIndices: number[],
-  seed: number = 0
-): number[] => {
-  const toPlace = quota - usedDayIndices.length
-  if (toPlace <= 0) return []
-
-  const allUsed = [...usedDayIndices]
-  const result: number[] = []
-
-  for (let i = 0; i < toPlace; i++) {
-    // Find the available day with maximum minimum distance from all used days
-    let bestDays: number[] = []
-    let bestScore = -1
-
-    for (const day of availableDayIndices) {
-      if (result.includes(day)) continue // Already picked this round
-
-      // Calculate minimum distance to any already-placed occurrence
-      let minDist: number
-      if (allUsed.length === 0) {
-        // No existing placements - prefer middle of available days for better future spacing
-        minDist = 7 // Max possible score when nothing is placed yet
-      } else {
-        minDist = Math.min(...allUsed.map((used) => Math.abs(day - used)))
-      }
-
-      if (minDist > bestScore) {
-        bestScore = minDist
-        bestDays = [day]
-      } else if (minDist === bestScore) {
-        bestDays.push(day)
-      }
-    }
-
-    if (bestDays.length > 0) {
-      // Use seeded selection for deterministic tie-breaking
-      const shuffled = seededShuffle(bestDays, seed + i * 1000)
-      const bestDay = shuffled[0]
-      result.push(bestDay)
-      allUsed.push(bestDay)
-    }
-  }
-
-  return result
+async function loadScheduleWeeksOverlappingDateRange(
+  fromDateKey: string,
+  toDateKey: string
+): Promise<DailyTaskWeek[]> {
+  const keys = enumerateWeekStartDateKeysInclusive(fromDateKey, toDateKey)
+  const loaded = await Promise.all(keys.map((ws) => getDailyTaskWeek(ws)))
+  return loaded.filter((w): w is DailyTaskWeek => !!w && !!(w as DailyTaskWeek).days)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,15 +112,39 @@ export function DailyTasksPage() {
   // Schedule override state
   const [overridePickByDateKey, setOverridePickByDateKey] = useState<Record<string, string>>({})
   const [overrideSaving, setOverrideSaving] = useState<string | null>(null)
+  const [approvalSaving, setApprovalSaving] = useState<string | null>(null)
+  const [bulkApproving, setBulkApproving] = useState(false)
+  const [regenPendingNotice, setRegenPendingNotice] = useState<number | null>(null)
   const [regenerating, setRegenerating] = useState(false)
   const [reclosingToday, setReclosingToday] = useState(false)
   const [debugInfo, setDebugInfo] = useState<string[] | null>(null)
+
+  const [advancedSettingsExpanded, setAdvancedSettingsExpanded] = useState(false)
+  const [promptDraft, setPromptDraft] = useState(DEFAULT_DAILY_TASK_SCHEDULE_SYSTEM_PROMPT)
+  const [savedPromptOverride, setSavedPromptOverride] = useState<string | undefined>(undefined)
+  const [promptDirty, setPromptDirty] = useState(false)
+  const [promptSaving, setPromptSaving] = useState(false)
+  const [promptSaveError, setPromptSaveError] = useState<string | null>(null)
+
+  const [runHistoryEdit, setRunHistoryEdit] = useState<DailyTaskRun | null>(null)
+  const [runHistoryTitle, setRunHistoryTitle] = useState('')
+  const [runHistoryEmp1, setRunHistoryEmp1] = useState('')
+  const [runHistoryEmp2, setRunHistoryEmp2] = useState('')
+  const [runHistoryCreditTaskId, setRunHistoryCreditTaskId] = useState('')
+  const [runHistorySaving, setRunHistorySaving] = useState(false)
+  const [runHistoryError, setRunHistoryError] = useState<string | null>(null)
 
   // Quota warning popup state
   const [quotaWarningPopup, setQuotaWarningPopup] = useState<{
     show: boolean
     warnings: string[]
   }>({ show: false, warnings: [] })
+
+  const [showAllRecentRuns, setShowAllRecentRuns] = useState(false)
+  const [catalogExpanded, setCatalogExpanded] = useState(false)
+  const [catalogSearch, setCatalogSearch] = useState('')
+  const [showAllCatalogTasks, setShowAllCatalogTasks] = useState(false)
+  const [showArchivedCatalogSection, setShowArchivedCatalogSection] = useState(false)
 
   const todayDateKey = formatDateKey(new Date())
 
@@ -188,6 +155,18 @@ export function DailyTasksPage() {
     })
     return () => unsub?.()
   }, [])
+
+  useEffect(() => {
+    const unsub = subscribeToDailyTaskScheduleAiSettings((settings) => {
+      setSavedPromptOverride(settings.systemPrompt)
+      if (!promptDirty) {
+        setPromptDraft(
+          settings.systemPrompt?.trim() || DEFAULT_DAILY_TASK_SCHEDULE_SYSTEM_PROMPT
+        )
+      }
+    })
+    return () => unsub?.()
+  }, [promptDirty])
 
   // Subscribe to today's run
   useEffect(() => {
@@ -213,28 +192,81 @@ export function DailyTasksPage() {
     return () => unsubs.forEach((u) => u())
   }, [todayDateKey])
 
-  // Load recent runs
-  useEffect(() => {
-    const loadRuns = async () => {
-      setRunsLoading(true)
-      try {
-        const from = addDaysToDateKey(todayDateKey, -30)
-        const to = todayDateKey
-        const runs = await listDailyTaskRunsInRange(from, to)
-        setRecentRuns(runs)
-      } catch (err) {
-        console.error('Failed to load runs:', err)
-      } finally {
-        setRunsLoading(false)
-      }
+  const reloadRecentRuns = useCallback(async () => {
+    setRunsLoading(true)
+    try {
+      const from = addDaysToDateKey(todayDateKey, -30)
+      const to = todayDateKey
+      const runs = await listDailyTaskRunsInRange(from, to)
+      setRecentRuns(runs)
+    } catch (err) {
+      console.error('Failed to load runs:', err)
+    } finally {
+      setRunsLoading(false)
     }
-    loadRuns()
   }, [todayDateKey])
 
-  // Enabled tasks
-  const enabledTasks = useMemo(() => {
-    return (dailyTaskCatalog.tasks || []).filter(isDailyTaskEnabled)
-  }, [dailyTaskCatalog.tasks])
+  useEffect(() => {
+    void reloadRecentRuns()
+  }, [reloadRecentRuns])
+
+  const schedulableTasks = useMemo(
+    () => getSchedulableDailyTasks(dailyTaskCatalog.tasks),
+    [dailyTaskCatalog.tasks]
+  )
+
+  const effectiveSavedPrompt = useMemo(
+    () =>
+      savedPromptOverride?.trim()
+        ? savedPromptOverride.trim()
+        : DEFAULT_DAILY_TASK_SCHEDULE_SYSTEM_PROMPT,
+    [savedPromptOverride]
+  )
+
+  const hasUnsavedPromptChanges = promptDraft.trim() !== effectiveSavedPrompt
+
+  const savePromptDraft = useCallback(async () => {
+    setPromptSaving(true)
+    setPromptSaveError(null)
+    try {
+      await saveDailyTaskScheduleAiSettings({ systemPrompt: promptDraft, updatedBy: 'admin' })
+      setPromptDirty(false)
+    } catch (err) {
+      console.error('Failed to save AI schedule prompt:', err)
+      setPromptSaveError(
+        err instanceof Error && err.message === 'daily-task-schedule-prompt-too-long'
+          ? 'Prompt is too long. Shorten it and try again.'
+          : 'Failed to save prompt. Please try again.'
+      )
+    } finally {
+      setPromptSaving(false)
+    }
+  }, [promptDraft])
+
+  const resetPromptToDefault = useCallback(async () => {
+    setPromptSaving(true)
+    setPromptSaveError(null)
+    try {
+      await clearDailyTaskScheduleAiSystemPrompt({ updatedBy: 'admin' })
+      setPromptDraft(DEFAULT_DAILY_TASK_SCHEDULE_SYSTEM_PROMPT)
+      setPromptDirty(false)
+    } catch (err) {
+      console.error('Failed to reset AI schedule prompt:', err)
+      setPromptSaveError('Failed to reset prompt. Please try again.')
+    } finally {
+      setPromptSaving(false)
+    }
+  }, [])
+
+  const activeTasks = useMemo(
+    () => getActiveDailyTasks(dailyTaskCatalog.tasks),
+    [dailyTaskCatalog.tasks]
+  )
+
+  const archivedTasks = useMemo(
+    () => getArchivedDailyTasks(dailyTaskCatalog.tasks),
+    [dailyTaskCatalog.tasks]
+  )
 
   // Upload image to Firebase Storage
   const uploadImage = useCallback(
@@ -278,6 +310,7 @@ export function DailyTasksPage() {
 
   // Start editing a task
   const startEdit = useCallback((task: DailyTaskDef) => {
+    setCatalogExpanded(true)
     setEditingId(task.id)
     setName(task.name || '')
     const freqType = task.frequency?.type
@@ -303,15 +336,9 @@ export function DailyTasksPage() {
     }
 
     const isEditing = !!editingId
-    const existing = isEditing ? dailyTaskCatalog.tasks.find((t) => t.id === editingId) || null : null
+    const existing = isEditing ? resolveDailyTaskDefFromCatalog(dailyTaskCatalog.tasks, editingId) : null
 
-    // Generate ID for new tasks
-    const id = isEditing
-      ? editingId
-      : trimmedName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, '')
+    const id = isEditing ? editingId : createNewDailyTaskId()
 
     setSaving(true)
     setUploadPct({})
@@ -349,11 +376,13 @@ export function DailyTasksPage() {
         },
         createdAtMs: existing?.createdAtMs || now,
         updatedAtMs: now,
+        ...(existing?.disabledAtMs ? { disabledAtMs: existing.disabledAtMs } : {}),
+        ...(existing?.archivedAtMs ? { archivedAtMs: existing.archivedAtMs } : {}),
       }
 
       const updated: DailyTaskCatalog = {
         tasks: isEditing
-          ? dailyTaskCatalog.tasks.map((t) => (t.id === id ? newTask : t))
+          ? [...dailyTaskCatalog.tasks.filter((t) => t.id !== id), newTask]
           : [...dailyTaskCatalog.tasks, newTask],
       }
 
@@ -380,7 +409,7 @@ export function DailyTasksPage() {
     resetForm,
   ])
 
-  // Delete task (soft delete)
+  // Delete task (remove from catalog — matches App admin; avoids slug/id collisions on re-add)
   const deleteTask = useCallback(
     async (id: string) => {
       const task = dailyTaskCatalog.tasks.find((t) => t.id === id)
@@ -389,9 +418,7 @@ export function DailyTasksPage() {
 
       try {
         const updated: DailyTaskCatalog = {
-          tasks: dailyTaskCatalog.tasks.map((t) =>
-            t.id === id ? { ...t, disabledAtMs: Date.now() } : t
-          ),
+          tasks: dailyTaskCatalog.tasks.filter((t) => t.id !== id),
         }
         await saveDailyTaskCatalog(updated)
         if (editingId === id) resetForm()
@@ -402,11 +429,65 @@ export function DailyTasksPage() {
     [dailyTaskCatalog.tasks, editingId, resetForm]
   )
 
+  const archiveTask = useCallback(
+    async (id: string) => {
+      const task = dailyTaskCatalog.tasks.find((t) => t.id === id)
+      if (!task) return
+      if (
+        !confirm(
+          `Archive "${task.name}"?\n\nIt will not be auto-scheduled on new weeks. Existing schedule slots and run history are unchanged.`
+        )
+      ) {
+        return
+      }
+      try {
+        const updated: DailyTaskCatalog = {
+          tasks: archiveDailyTaskInCatalog(dailyTaskCatalog.tasks, id),
+        }
+        await saveDailyTaskCatalog(updated)
+        if (editingId === id) resetForm()
+        setShowArchivedCatalogSection(true)
+      } catch (err) {
+        console.error('Failed to archive daily task:', err)
+        alert('Failed to archive daily task')
+      }
+    },
+    [dailyTaskCatalog.tasks, editingId, resetForm]
+  )
+
+  const restoreTask = useCallback(
+    async (id: string) => {
+      try {
+        const updated: DailyTaskCatalog = {
+          tasks: restoreDailyTaskInCatalog(dailyTaskCatalog.tasks, id),
+        }
+        await saveDailyTaskCatalog(updated)
+      } catch (err) {
+        console.error('Failed to restore daily task:', err)
+        alert('Failed to restore daily task')
+      }
+    },
+    [dailyTaskCatalog.tasks]
+  )
+
+  const catalogSearchNorm = catalogSearch.trim().toLowerCase()
+  const filterCatalogBySearch = useCallback(
+    (tasks: DailyTaskDef[]) => {
+      if (!catalogSearchNorm) return tasks
+      return tasks.filter(
+        (t) =>
+          (t.name || '').toLowerCase().includes(catalogSearchNorm) ||
+          (t.id || '').toLowerCase().includes(catalogSearchNorm)
+      )
+    },
+    [catalogSearchNorm]
+  )
+
   // Compute quota warnings for a week (weekly tasks)
   const computeQuotaWarnings = useCallback(
     (week: DailyTaskWeek | null): string[] => {
       if (!week) return []
-      const weekly = enabledTasks.filter((t) => t.frequency?.type === 'weekly') as DailyTaskDef[]
+      const weekly = schedulableTasks.filter((t) => t.frequency?.type === 'weekly') as DailyTaskDef[]
       if (!weekly.length) return []
 
       const counts: Record<string, number> = {}
@@ -426,7 +507,7 @@ export function DailyTasksPage() {
       })
       return warnings
     },
-    [enabledTasks]
+    [schedulableTasks]
   )
 
   // Compute EXCEEDED quota warnings (weekly > quota, monthly > 1)
@@ -435,8 +516,8 @@ export function DailyTasksPage() {
       const warnings: string[] = []
 
       // Weekly quota exceeded warnings
-      const weekly = enabledTasks.filter((t) => t.frequency?.type === 'weekly') as DailyTaskDef[]
-      const monthly = enabledTasks.filter((t) => t.frequency?.type === 'monthly') as DailyTaskDef[]
+      const weekly = schedulableTasks.filter((t) => t.frequency?.type === 'weekly') as DailyTaskDef[]
+      const monthly = schedulableTasks.filter((t) => t.frequency?.type === 'monthly') as DailyTaskDef[]
 
       Object.values(updatedWeeks).forEach((week) => {
         if (!week) return
@@ -471,16 +552,19 @@ export function DailyTasksPage() {
         })
       })
 
-      // Also include completions from recentRuns for monthly quota checking
       recentRuns.forEach((run) => {
         if (!run.completedAtMs) return
         const d = parseDateKey(run.dateKey)
         const monthKey = `${d.getFullYear()}-${d.getMonth()}`
-        const tid = run.taskId
-        if (!tid || tid === '__none__') return
         if (!monthCounts[monthKey]) monthCounts[monthKey] = {}
-        // Only add if not already in the schedule (avoid double counting)
-        // This is a simplification - in reality we'd need to track both
+        const raw = String(run.taskId || '').trim()
+        const credit = typeof run.schedulingCreditTaskId === 'string' ? run.schedulingCreditTaskId.trim() : ''
+        const tids: string[] = []
+        if (raw && raw !== '__none__') tids.push(raw)
+        if (credit && !tids.includes(credit)) tids.push(credit)
+        tids.forEach((tid) => {
+          monthCounts[monthKey][tid] = (monthCounts[monthKey][tid] || 0) + 1
+        })
       })
 
       Object.keys(monthCounts).forEach((monthKey) => {
@@ -496,7 +580,7 @@ export function DailyTasksPage() {
 
       return warnings
     },
-    [enabledTasks, recentRuns]
+    [schedulableTasks, recentRuns]
   )
 
   // Set override for a day
@@ -521,375 +605,170 @@ export function DailyTasksPage() {
           ...week,
           days: {
             ...week.days,
-            [dateKey]: {
-              taskId,
-              source: 'override',
-            },
+            [dateKey]: createOverrideDayEntry(taskId),
           },
         }
 
         await upsertDailyTaskWeek(weekStart, nextWeek)
         setWeeksByStart((prev) => ({ ...prev, [weekStart]: nextWeek }))
 
-        // If overriding today, force the shared run to match (so the golden card updates immediately).
-        // We do NOT override if already completed.
-        if (dateKey === todayDateKey && !todayRun?.completedAtMs) {
+        // Keep `dailyTaskRuns/{dateKey}` in sync with the override (including past/future days and `__none__`)
+        // so Recent Runs can list the day and admins can use Edit history. Never clobber a completed run.
+        const existingRun = await getDailyTaskRun(dateKey)
+        if (!existingRun?.completedAtMs) {
           await upsertDailyTaskRun(dateKey, {
             taskId,
-            selectedAtMs: Date.now(),
+            selectedAtMs:
+              typeof existingRun?.selectedAtMs === 'number' && Number.isFinite(existingRun.selectedAtMs)
+                ? existingRun.selectedAtMs
+                : Date.now(),
             override: { taskId, atMs: Date.now(), by: 'admin' },
           })
         }
+        await reloadRecentRuns()
       } catch (err) {
         console.error('Failed to set override:', err)
       } finally {
         setOverrideSaving(null)
       }
     },
-    [weeksByStart, todayDateKey, todayRun?.completedAtMs]
-  )
-
-  // Helper: get completions from recentRuns for a specific week (Sunday-Saturday)
-  const getCompletionsForWeek = useCallback(
-    (weekStartDateKey: string): Record<string, number> => {
-      const weekEndDateKey = addDaysToDateKey(weekStartDateKey, 6)
-      const counts: Record<string, number> = {}
-      recentRuns.forEach((run) => {
-        // Only count runs that were actually completed (not just selected/revealed)
-        if (!run.completedAtMs) return
-        // Check if run is within this week (Sunday-Saturday)
-        if (run.dateKey >= weekStartDateKey && run.dateKey <= weekEndDateKey) {
-          const taskId = run.taskId
-          if (taskId && taskId !== '__none__') {
-            counts[taskId] = (counts[taskId] || 0) + 1
-          }
-        }
-      })
-      return counts
-    },
-    [recentRuns]
-  )
-
-  // Helper: get completions from recentRuns for a specific calendar month
-  const getCompletionsForMonth = useCallback(
-    (year: number, month: number): Record<string, number> => {
-      // month is 0-indexed (0 = January)
-      const monthStartDateKey = formatDateKey(new Date(year, month, 1))
-      const monthEndDateKey = formatDateKey(new Date(year, month + 1, 0)) // Last day of month
-      const counts: Record<string, number> = {}
-      recentRuns.forEach((run) => {
-        // Only count runs that were actually completed (not just selected/revealed)
-        if (!run.completedAtMs) return
-        // Check if run is within this month
-        if (run.dateKey >= monthStartDateKey && run.dateKey <= monthEndDateKey) {
-          const taskId = run.taskId
-          if (taskId && taskId !== '__none__') {
-            counts[taskId] = (counts[taskId] || 0) + 1
-          }
-        }
-      })
-      return counts
-    },
-    [recentRuns]
-  )
-
-  // Helper: check if a monthly task is already scheduled in the current month
-  const getMonthlyScheduledInMonth = useCallback(
-    (year: number, month: number, weeksByStartMap: Record<string, DailyTaskWeek | null>): Record<string, number> => {
-      const monthStartDateKey = formatDateKey(new Date(year, month, 1))
-      const monthEndDateKey = formatDateKey(new Date(year, month + 1, 0))
-      const counts: Record<string, number> = {}
-
-      // Check all weeks that might overlap with this month
-      Object.values(weeksByStartMap).forEach((week) => {
-        if (!week?.days) return
-        Object.keys(week.days).forEach((dk) => {
-          if (dk >= monthStartDateKey && dk <= monthEndDateKey) {
-            const taskId = week.days[dk]?.taskId
-            if (taskId && taskId !== '__none__') {
-              counts[taskId] = (counts[taskId] || 0) + 1
-            }
-          }
-        })
-      })
-      return counts
-    },
-    []
+    [reloadRecentRuns, weeksByStart, todayDateKey]
   )
 
   // Regenerate schedule for next 7 days
   const regenerateSchedule = useCallback(async () => {
-    if (!enabledTasks.length) return
+    if (!schedulableTasks.length) return
     setRegenerating(true)
 
     try {
-      const next7 = Array.from({ length: 7 }).map((_, i) => addDaysToDateKey(todayDateKey, i))
-      const weekStarts = Array.from(new Set(next7.map((dk) => getWeekStartDateKeySunday(dk))))
+      const tasks = schedulableTasks
+      const today = todayDateKey
+      const historyFrom = addDaysToDateKey(today, -120)
+      let recentRuns120: DailyTaskRun[] = []
+      try {
+        recentRuns120 = await listDailyTaskRunsInRange(historyFrom, today)
+      } catch (e) {
+        console.warn('Failed to load recent runs for schedule regeneration:', e)
+      }
+
+      let scheduleWeeks: DailyTaskWeek[] = []
+      try {
+        scheduleWeeks = await loadScheduleWeeksOverlappingDateRange(historyFrom, today)
+      } catch (e) {
+        console.warn('Failed to load daily task weeks for recency merge:', e)
+      }
+
+      const next7 = Array.from({ length: 7 }).map((_, i) => addDaysToDateKey(today, i))
+      const weekStarts = Array.from(new Set(next7.map((dk) => getWeekStartDateKeySunday(dk)))).sort()
+
+      let aiByWeek: Record<string, Record<string, string>> = {}
+      let scheduleUsedAi = false
+      try {
+        const weeksPayload = await Promise.all(
+          weekStarts.map(async (weekStart) => ({
+            weekStartDateKey: weekStart,
+            existingWeek: weeksByStart[weekStart] || (await getDailyTaskWeek(weekStart)) || null,
+            todayDateKey: today,
+          }))
+        )
+        const aiResult = await fetchValidatedWeeklyPlacements({
+          tasks,
+          recentRunsForHistory: recentRuns120,
+          weeks: weeksPayload,
+          systemPrompt: resolveDailyTaskScheduleSystemPrompt(promptDraft),
+        })
+        aiByWeek = aiResult.byWeek
+        scheduleUsedAi = aiResult.usedAi
+      } catch (e) {
+        console.warn('AI daily schedule batch skipped:', e)
+      }
+
       const updatedWeeks: Record<string, DailyTaskWeek> = {}
+      const allWarnings: string[] = []
+      const weeksForRecency = [...scheduleWeeks]
 
       for (const ws of weekStarts) {
         const existing = weeksByStart[ws] || (await getDailyTaskWeek(ws)) || null
-        const seed = hashStringToUint32(ws)
+        const picked = aiByWeek[ws]
+        const weeklyPlacementOverrides =
+          scheduleUsedAi && picked && Object.keys(picked).length > 0 ? picked : undefined
+        const generatorVersion = weeklyPlacementOverrides
+          ? DAILY_TASK_WEEK_GENERATOR_VERSION_AI
+          : undefined
 
-        // Get 7 days of this week
-        const weekDays = Array.from({ length: 7 }).map((_, i) => addDaysToDateKey(ws, i))
-
-        // Build schedule respecting overrides AND past days
-        const days: Record<string, { taskId: string; source: 'auto' | 'override' }> = {}
-        const usedCounts: Record<string, number> = {}
-
-        // Get completions from recentRuns for this week - these count toward quotas
-        const completionCounts = getCompletionsForWeek(ws)
-        Object.keys(completionCounts).forEach((taskId) => {
-          usedCounts[taskId] = (usedCounts[taskId] || 0) + completionCounts[taskId]
-        })
-
-        // First pass: preserve past days (before today) and overrides
-        weekDays.forEach((dk) => {
-          const existingEntry = existing?.days?.[dk]
-          const isPastDay = dk < todayDateKey
-
-          if (isPastDay && existingEntry?.taskId) {
-            // Preserve past days as-is (whether override or auto)
-            days[dk] = existingEntry
-            // Only count toward quota if not already counted via completions
-            // (completions take precedence as they represent actual work done)
-            const taskId = existingEntry.taskId
-            if (taskId && taskId !== '__none__' && !completionCounts[taskId]) {
-              // Count scheduled but not-completed past days toward quota
-              usedCounts[taskId] = (usedCounts[taskId] || 0) + 1
-            }
-          } else if (existingEntry?.source === 'override') {
-            // Keep overrides for today and future
-            days[dk] = existingEntry
-            if (existingEntry.taskId && existingEntry.taskId !== '__none__') {
-              usedCounts[existingEntry.taskId] = (usedCounts[existingEntry.taskId] || 0) + 1
-            }
-          }
-        })
-
-        // Second pass: auto-fill remaining days with OPTIMAL SPACING for weekly tasks
-        const normalTasks = enabledTasks.filter((t) => t.frequency?.type === 'normal')
-        const weeklyTasks = enabledTasks.filter((t) => t.frequency?.type === 'weekly')
-        const monthlyTasks = enabledTasks.filter((t) => t.frequency?.type === 'monthly')
-
-        // ─────────────────────────────────────────────────────────────────────
-        // RECENCY: Build map of when each task was last completed/selected
-        // ─────────────────────────────────────────────────────────────────────
-        const recencyMap: Record<string, number> = {}
-        recentRuns.forEach((run) => {
-          const ts = run.completedAtMs || run.selectedAtMs || 0
-          if (ts > 0 && run.taskId) {
-            if (!recencyMap[run.taskId] || ts > recencyMap[run.taskId]) {
-              recencyMap[run.taskId] = ts
-            }
-          }
-        })
-
-        // Track monthly task usage for each month covered by this week
-        const monthlyUsedCounts: Record<string, number> = {}
-
-        // Check completions for months that this week spans
-        const weekStartDate = parseDateKey(ws)
-        const weekEndDate = addDays(weekStartDate, 6)
-
-        // Get unique months this week covers
-        const coveredMonths = new Set<string>()
-        for (let d = new Date(weekStartDate); d <= weekEndDate; d.setDate(d.getDate() + 1)) {
-          coveredMonths.add(`${d.getFullYear()}-${d.getMonth()}`)
-        }
-
-        // Count monthly completions and scheduled tasks for each covered month
-        coveredMonths.forEach((monthKey) => {
-          const [year, month] = monthKey.split('-').map(Number)
-          const monthCompletions = getCompletionsForMonth(year, month)
-          const monthScheduled = getMonthlyScheduledInMonth(year, month, weeksByStart)
-
-          Object.keys(monthCompletions).forEach((taskId) => {
-            monthlyUsedCounts[`${monthKey}:${taskId}`] = (monthlyUsedCounts[`${monthKey}:${taskId}`] || 0) + monthCompletions[taskId]
-          })
-          Object.keys(monthScheduled).forEach((taskId) => {
-            // Only count if not already counted via completions
-            if (!monthCompletions[taskId]) {
-              monthlyUsedCounts[`${monthKey}:${taskId}`] = (monthlyUsedCounts[`${monthKey}:${taskId}`] || 0) + monthScheduled[taskId]
-            }
-          })
-        })
-
-        // ─────────────────────────────────────────────────────────────────────
-        // OPTIMAL SPACING: Schedule weekly tasks with maximum spacing first
-        // ─────────────────────────────────────────────────────────────────────
-
-        // Build a map of which day indices each weekly task is already scheduled on
-        const weeklyTaskDayIndices: Record<string, number[]> = {}
-        weekDays.forEach((dk, dayIdx) => {
-          const entry = days[dk]
-          if (entry?.taskId && entry.taskId !== '__none__') {
-            const task = weeklyTasks.find((t) => t.id === entry.taskId)
-            if (task) {
-              if (!weeklyTaskDayIndices[task.id]) weeklyTaskDayIndices[task.id] = []
-              weeklyTaskDayIndices[task.id].push(dayIdx)
-            }
-          }
-        })
-
-        // Get available day indices (not past, not override, not already filled)
-        const availableDayIndices: number[] = []
-        weekDays.forEach((dk, dayIdx) => {
-          if (!days[dk] && dk >= todayDateKey) {
-            availableDayIndices.push(dayIdx)
-          }
-        })
-
-        // For each weekly task, find optimal placements using spacing algorithm
-        // Process tasks with higher quotas first for better feasibility
-        const sortedWeeklyTasks = [...weeklyTasks].sort((a, b) => {
-          const quotaA = a.frequency.type === 'weekly' ? a.frequency.quotaPerWeek : 0
-          const quotaB = b.frequency.type === 'weekly' ? b.frequency.quotaPerWeek : 0
-          return quotaB - quotaA || a.id.localeCompare(b.id)
-        })
-
-        const usedDayIndices = new Set<number>()
-
-        for (const wt of sortedWeeklyTasks) {
-          const quota = wt.frequency.type === 'weekly' ? wt.frequency.quotaPerWeek : 0
-          const alreadyScheduledIndices = weeklyTaskDayIndices[wt.id] || []
-          const stillAvailable = availableDayIndices.filter((idx) => !usedDayIndices.has(idx))
-
-          // Find optimal days to place this task
-          const optimalDays = findOptimalDaysForWeeklyTask(
-            quota,
-            alreadyScheduledIndices,
-            stillAvailable,
-            seed + hashStringToUint32(wt.id)
-          )
-
-          // Assign task to optimal days
-          for (const dayIdx of optimalDays) {
-            const dk = weekDays[dayIdx]
-            days[dk] = { taskId: wt.id, source: 'auto' }
-            usedDayIndices.add(dayIdx)
-            usedCounts[wt.id] = (usedCounts[wt.id] || 0) + 1
-          }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Fill remaining days with monthly tasks, then normal tasks (by recency)
-        // ─────────────────────────────────────────────────────────────────────
-
-        // Create a VIRTUAL recency map that we update as we schedule tasks
-        // This ensures each scheduled task is seen as "recently done" for subsequent days
-        const virtualRecencyMap = { ...recencyMap }
-        
-        // Also mark tasks already scheduled in this week (from past days/overrides) as recently used
-        weekDays.forEach((dk) => {
-          if (days[dk]?.taskId) {
-            const taskId = days[dk].taskId
-            const dayTimestamp = parseDateKey(dk).getTime()
-            if (!virtualRecencyMap[taskId] || dayTimestamp > virtualRecencyMap[taskId]) {
-              virtualRecencyMap[taskId] = dayTimestamp
-            }
-          }
-        })
-        
-        // Dynamic recency score using virtual map
-        const virtualRecencyScore = (taskId: string): number => {
-          const last = virtualRecencyMap[taskId]
-          return typeof last === 'number' && Number.isFinite(last) ? (Date.now() - last) : 1e15
-        }
-
-        weekDays.forEach((dk, dayIdx) => {
-          if (days[dk]) {
-            return // Already filled
-          }
-          if (dk < todayDateKey) return // Skip past days
-
-          const dayDate = parseDateKey(dk)
-          const dayMonthKey = `${dayDate.getFullYear()}-${dayDate.getMonth()}`
-
-          let picked: string | null = null
-
-          // Try monthly tasks (if not already scheduled/completed this month)
-          for (const mt of seededShuffle(monthlyTasks, seed + dayIdx * 10)) {
-            const monthlyKey = `${dayMonthKey}:${mt.id}`
-            const monthlyUsed = monthlyUsedCounts[monthlyKey] || 0
-            if (monthlyUsed < 1) {
-              picked = mt.id
-              monthlyUsedCounts[monthlyKey] = monthlyUsed + 1
-              break
-            }
-          }
-
-          // Fallback to normal tasks - use VIRTUAL RECENCY (oldest first)
-          if (!picked && normalTasks.length) {
-            // Sort by virtual recency each time (accounts for tasks scheduled earlier in this run)
-            const sortedByVirtualRecency = [...normalTasks].sort((a, b) => {
-              const sa = virtualRecencyScore(a.id)
-              const sb = virtualRecencyScore(b.id)
-              if (sb !== sa) return sb - sa
-              return a.id.localeCompare(b.id)
-            })
-
-            // Pick the oldest (highest score) with small jitter for ties
-            const best = sortedByVirtualRecency.reduce<{ id: string; score: number } | null>((acc, t) => {
-              const score = virtualRecencyScore(t.id) + (hashStringToUint32(`${seed}:${dk}:${t.id}`) % 100) * 0.0001
-              if (!acc || score > acc.score) return { id: t.id, score }
-              return acc
-            }, null)
-
-            if (best) {
-              picked = best.id
-              // UPDATE virtual recency so next day sees this task as "just scheduled"
-              virtualRecencyMap[picked] = parseDateKey(dk).getTime()
-            }
-          }
-
-          if (picked) {
-            days[dk] = { taskId: picked, source: 'auto' }
-          }
-        })
-
-        updatedWeeks[ws] = {
+        const result = generateDailyTaskWeek({
           weekStartDateKey: ws,
-          days,
-          generatedAtMs: Date.now(),
-          generatorVersion: DAILY_TASK_WEEK_GENERATOR_VERSION,
+          tasks,
+          recentRuns: recentRuns120,
+          scheduleWeeksForRecency: weeksForRecency,
+          existingWeek: existing,
+          todayDateKey: today,
+          weeklyPlacementOverrides,
+          generatorVersion,
+        })
+
+        if (result.warnings.length) {
+          allWarnings.push(...result.warnings)
         }
 
-        await upsertDailyTaskWeek(ws, updatedWeeks[ws])
+        if (result.week) {
+          await upsertDailyTaskWeek(ws, result.week)
+          updatedWeeks[ws] = result.week
+          const idx = weeksForRecency.findIndex((w) => w.weekStartDateKey === ws)
+          const merged: DailyTaskWeek = { ...result.week, weekStartDateKey: ws }
+          if (idx >= 0) weeksForRecency[idx] = merged
+          else weeksForRecency.push(merged)
+        }
       }
 
       setWeeksByStart((prev) => ({ ...prev, ...updatedWeeks }))
 
+      let pendingAfterRegen = 0
+      next7.forEach((dk) => {
+        const ws = getWeekStartDateKeySunday(dk)
+        const week = updatedWeeks[ws] || weeksByStart[ws]
+        const entry = parseWeekDayEntry(week?.days?.[dk])
+        if (entry && getDayApprovalStatus(entry) === 'pending') pendingAfterRegen += 1
+      })
+      setRegenPendingNotice(pendingAfterRegen > 0 ? pendingAfterRegen : null)
+
       // Build debug info to show on screen
       const debugLines: string[] = []
-      debugLines.push(`Loaded ${recentRuns.length} task runs from history`)
+      debugLines.push(`Loaded ${recentRuns120.length} task runs from history (last 120 days)`)
+      debugLines.push(
+        scheduleUsedAi
+          ? 'Weekly quota day picks: AI-assisted (validated); monthly/normal fill uses algorithm + run history.'
+          : 'Weekly quota day picks: algorithm only (AI unavailable, timed out, or invalid response).'
+      )
       debugLines.push('')
-      
-      // Build recency map for display
-      const recencyMapForDebug: Record<string, number> = {}
-      recentRuns.forEach((run) => {
-        const ts = run.completedAtMs || run.selectedAtMs || 0
-        if (ts > 0 && run.taskId) {
-          if (!recencyMapForDebug[run.taskId] || ts > recencyMapForDebug[run.taskId]) {
-            recencyMapForDebug[run.taskId] = ts
-          }
+
+      const lastByTask = buildMergedRecencyMap(recentRuns120, scheduleWeeks)
+      const freqLabel = (t: DailyTaskDef): string => {
+        switch (t.frequency.type) {
+          case 'normal':
+            return 'normal'
+          case 'monthly':
+            return 'monthly'
+          case 'weekly':
+            return `weekly×${t.frequency.quotaPerWeek}`
         }
-      })
-      
-      const normalTasksForDebug = enabledTasks.filter(t => t.frequency?.type === 'normal')
-      debugLines.push('NORMAL TASK RECENCY (higher score = older = picked first):')
-      normalTasksForDebug
-        .map(t => {
-          const last = recencyMapForDebug[t.id]
-          const score = last ? (Date.now() - last) : 1e15
+      }
+
+      debugLines.push(
+        'TASK RECENCY (runs + scheduled weeks; higher score = older; normal-slot ties favor oldest):'
+      )
+      schedulableTasks
+        .map((t) => {
+          const last = lastByTask[t.id]
+          const score = last ? Date.now() - last : 1e15
           const lastDate = last ? new Date(last).toLocaleDateString() : 'NEVER'
-          return { name: t.name || t.id, last, score, lastDate }
+          return { name: t.name || t.id, freq: freqLabel(t), last, score, lastDate }
         })
         .sort((a, b) => b.score - a.score)
-        .forEach(({ name, score, lastDate }) => {
-          const scoreStr = score === 1e15 ? 'MAX (never done)' : Math.round(score / (1000 * 60 * 60 * 24)) + ' days ago'
-          debugLines.push(`  • ${name}: ${lastDate} (${scoreStr})`)
+        .forEach(({ name, freq, score, lastDate }) => {
+          const scoreStr =
+            score === 1e15 ? 'MAX (never done)' : Math.round(score / (1000 * 60 * 60 * 24)) + ' days ago'
+          debugLines.push(`  • [${freq}] ${name}: ${lastDate} (${scoreStr})`)
         })
       
       debugLines.push('')
@@ -897,12 +776,18 @@ export function DailyTasksPage() {
       Object.entries(updatedWeeks).forEach(([ws, week]) => {
         debugLines.push(`Week ${ws}:`)
         Object.entries(week.days || {}).sort().forEach(([dk, entry]) => {
-          const task = enabledTasks.find(t => t.id === entry.taskId)
+          const task = schedulableTasks.find(t => t.id === entry.taskId)
           const isPast = dk < todayDateKey ? '(past)' : dk === todayDateKey ? '(TODAY)' : ''
           debugLines.push(`  ${dk}: ${task?.name || entry.taskId} [${entry.source}] ${isPast}`)
         })
       })
-      
+
+      if (allWarnings.length) {
+        debugLines.push('')
+        debugLines.push('WARNINGS:')
+        allWarnings.forEach((w) => debugLines.push(`  ⚠️ ${w}`))
+      }
+
       setDebugInfo(debugLines)
 
       // Check for exceeded quotas and show popup if any
@@ -922,7 +807,7 @@ export function DailyTasksPage() {
     } finally {
       setRegenerating(false)
     }
-  }, [enabledTasks, todayDateKey, weeksByStart, getCompletionsForWeek, getCompletionsForMonth, getMonthlyScheduledInMonth, computeExceededQuotaWarnings, recentRuns])
+  }, [schedulableTasks, todayDateKey, weeksByStart, computeExceededQuotaWarnings, promptDraft])
 
   // Re-close today's task
   const recloseToday = useCallback(async () => {
@@ -937,6 +822,77 @@ export function DailyTasksPage() {
     }
   }, [todayDateKey, todayRun])
 
+  const openRunHistoryEdit = useCallback(
+    (run: DailyTaskRun) => {
+      const isNoTask = run.taskId === '__none__'
+      const isCompleted = typeof run.completedAtMs === 'number' && Number.isFinite(run.completedAtMs)
+      if (!isNoTask && !isCompleted) return
+      setRunHistoryError(null)
+      setRunHistoryEdit(run)
+      setRunHistoryTitle(getDailyTaskRunHistoryTitle(run, dailyTaskCatalog.tasks))
+      const list = (run.completedByList || []).map((s) => (s || '').trim()).filter(Boolean)
+      const splitLegacy = (run.completedBy || '').split(/\s*\+\s*/)
+      const e1 = list[0] || splitLegacy[0]?.trim() || ''
+      const e2 = list[1] || splitLegacy[1]?.trim() || ''
+      setRunHistoryEmp1(e1)
+      setRunHistoryEmp2(e2)
+      setRunHistoryCreditTaskId(run.taskId === '__none__' ? (run.schedulingCreditTaskId || '').trim() : '')
+    },
+    [dailyTaskCatalog.tasks]
+  )
+
+  const saveRunHistoryEdit = useCallback(async () => {
+    if (!runHistoryEdit) return
+    const defaultTitle =
+      runHistoryEdit.taskId === '__none__'
+        ? NO_TASK_DAILY_RUN_LABEL
+        : resolveDailyTaskDefFromCatalog(dailyTaskCatalog.tasks, runHistoryEdit.taskId)?.name || runHistoryEdit.taskId
+    const titleTrim = runHistoryTitle.trim()
+    const titleForApi = titleTrim === defaultTitle.trim() ? '' : titleTrim
+    setRunHistorySaving(true)
+    setRunHistoryError(null)
+    try {
+      const creditTrim = runHistoryCreditTaskId.trim()
+      if (runHistoryEdit.taskId === '__none__' && creditTrim) {
+        const found = resolveDailyTaskDefFromCatalog(dailyTaskCatalog.tasks, creditTrim)
+        if (!found) {
+          setRunHistoryError('Scheduling credit: choose a valid task from the list.')
+          setRunHistorySaving(false)
+          return
+        }
+      }
+      await adminPatchDailyTaskRunHistory(runHistoryEdit.dateKey, {
+        historyDisplayName: titleForApi,
+        completedBy1: runHistoryEmp1,
+        completedBy2: runHistoryEmp2,
+        ...(runHistoryEdit.taskId === '__none__' ? { schedulingCreditTaskId: creditTrim } : {}),
+      })
+      setRunHistoryEdit(null)
+      await reloadRecentRuns()
+    } catch (e) {
+      const code = e instanceof Error ? e.message : ''
+      const msg =
+        code === 'daily-task-run-missing'
+          ? 'No run document for that day.'
+          : code === 'daily-task-run-not-completed'
+            ? 'That day is not marked completed yet.'
+            : code === 'daily-task-run-completers-required'
+              ? 'Enter at least one completer name.'
+              : 'Save failed. Check connection and try again.'
+      setRunHistoryError(msg)
+    } finally {
+      setRunHistorySaving(false)
+    }
+  }, [
+    dailyTaskCatalog.tasks,
+    reloadRecentRuns,
+    runHistoryEdit,
+    runHistoryEmp1,
+    runHistoryEmp2,
+    runHistoryCreditTaskId,
+    runHistoryTitle,
+  ])
+
   // Next 7 days data
   const next7Days = useMemo(() => {
     return Array.from({ length: 7 }).map((_, i) => {
@@ -948,11 +904,102 @@ export function DailyTasksPage() {
     })
   }, [todayDateKey, weeksByStart])
 
+  const pendingNext7Count = useMemo(() => {
+    let n = 0
+    next7Days.forEach(({ dateKey, weekStart }) => {
+      const entry = parseWeekDayEntry(weeksByStart[weekStart]?.days?.[dateKey])
+      if (entry && getDayApprovalStatus(entry) === 'pending') n += 1
+    })
+    return n
+  }, [next7Days, weeksByStart])
+
+  const setDayApproval = useCallback(
+    async (dateKey: string, status: 'approved' | 'denied') => {
+      setApprovalSaving(dateKey)
+      try {
+        const weekStart = getWeekStartDateKeySunday(dateKey)
+        await setDailyTaskDayApproval(weekStart, dateKey, status)
+        const week = weeksByStart[weekStart] || (await getDailyTaskWeek(weekStart))
+        if (week) {
+          const entry = parseWeekDayEntry(week.days?.[dateKey])
+          if (entry) {
+            const nextWeek: DailyTaskWeek = {
+              ...week,
+              days: {
+                ...week.days,
+                [dateKey]: {
+                  ...entry,
+                  approvalStatus: status,
+                  approvalAtMs: Date.now(),
+                  approvalBy: 'admin',
+                },
+              },
+            }
+            setWeeksByStart((prev) => ({ ...prev, [weekStart]: nextWeek }))
+          }
+        }
+      } catch (err) {
+        console.error('Failed to update day approval:', err)
+      } finally {
+        setApprovalSaving(null)
+      }
+    },
+    [weeksByStart]
+  )
+
+  const approveAllPendingNext7 = useCallback(async () => {
+    if (pendingNext7Count === 0) return
+    setBulkApproving(true)
+    try {
+      const dateKeys = next7Days.map((d) => d.dateKey)
+      await approvePendingDailyTaskDays(dateKeys)
+      setRegenPendingNotice(null)
+    } catch (err) {
+      console.error('Failed to bulk approve:', err)
+    } finally {
+      setBulkApproving(false)
+    }
+  }, [next7Days, pendingNext7Count])
+
   // All warnings for displayed weeks
   const allWarnings = useMemo(() => {
     const weekStarts = Array.from(new Set(next7Days.map((d) => d.weekStart)))
     return Array.from(new Set(weekStarts.flatMap((ws) => computeQuotaWarnings(weeksByStart[ws] || null))))
   }, [next7Days, weeksByStart, computeQuotaWarnings])
+
+  const RECENT_RUNS_PREVIEW = 6
+  const CATALOG_TASKS_PREVIEW = 5
+
+  const displayedRuns = useMemo(
+    () => (showAllRecentRuns ? recentRuns : recentRuns.slice(0, RECENT_RUNS_PREVIEW)),
+    [recentRuns, showAllRecentRuns]
+  )
+
+  const filteredCatalogTasks = useMemo(() => {
+    const sorted = activeTasks
+      .slice()
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    return filterCatalogBySearch(sorted)
+  }, [activeTasks, filterCatalogBySearch])
+
+  const filteredArchivedCatalogTasks = useMemo(() => {
+    const sorted = archivedTasks
+      .slice()
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    return filterCatalogBySearch(sorted)
+  }, [archivedTasks, filterCatalogBySearch])
+
+  const displayedCatalogTasks = useMemo(
+    () =>
+      showAllCatalogTasks
+        ? filteredCatalogTasks
+        : filteredCatalogTasks.slice(0, CATALOG_TASKS_PREVIEW),
+    [filteredCatalogTasks, showAllCatalogTasks]
+  )
+
+  useEffect(() => {
+    if (editingId) setCatalogExpanded(true)
+  }, [editingId])
 
   return (
     <div className="daily-tasks-page">
@@ -989,15 +1036,403 @@ export function DailyTasksPage() {
         </div>
       )}
 
-      {/* Task Form */}
-      <div className="admin-card daily-form-card">
+      {runHistoryEdit && (
+        <div
+          className="daily-quota-popup-overlay"
+          onClick={() => {
+            if (!runHistorySaving) setRunHistoryEdit(null)
+          }}
+        >
+          <div className="daily-quota-popup" onClick={(e) => e.stopPropagation()}>
+            <h3 className="daily-quota-popup-title">Edit run — {runHistoryEdit.dateKey}</h3>
+            <div className="daily-quota-popup-content">
+              <p className="daily-quota-popup-note">
+                This only updates the saved run record. It does not rename the task in the catalog or change the
+                scheduled <code>taskId</code>. Leave the title empty or match the catalog name to clear a custom title.
+                For <strong>— No task —</strong> days, completer fields can be left blank.
+              </p>
+              {runHistoryError ? <div className="daily-error">{runHistoryError}</div> : null}
+              <div className="daily-form-field">
+                <label className="admin-label">Title in history</label>
+                <input
+                  type="text"
+                  className="admin-input"
+                  value={runHistoryTitle}
+                  onChange={(e) => setRunHistoryTitle(e.target.value)}
+                  disabled={runHistorySaving}
+                />
+              </div>
+              <div className="daily-form-field">
+                <label className="admin-label">Completed by (1st)</label>
+                <input
+                  type="text"
+                  className="admin-input"
+                  value={runHistoryEmp1}
+                  onChange={(e) => setRunHistoryEmp1(e.target.value)}
+                  disabled={runHistorySaving}
+                />
+              </div>
+              <div className="daily-form-field">
+                <label className="admin-label">Completed by (2nd, optional)</label>
+                <input
+                  type="text"
+                  className="admin-input"
+                  value={runHistoryEmp2}
+                  onChange={(e) => setRunHistoryEmp2(e.target.value)}
+                  disabled={runHistorySaving}
+                />
+              </div>
+              {runHistoryEdit.taskId === '__none__' ? (
+                <div className="daily-form-field">
+                  <label className="admin-label">Count work toward task (scheduling)</label>
+                  <p className="daily-quota-popup-note" style={{ marginTop: 0 }}>
+                    Optional. Credits this day toward recency and monthly/weekly-from-runs for a catalog task.
+                  </p>
+                  <select
+                    className="admin-input"
+                    value={runHistoryCreditTaskId}
+                    onChange={(e) => setRunHistoryCreditTaskId(e.target.value)}
+                    disabled={runHistorySaving}
+                  >
+                    <option value="">(none)</option>
+                    {(dailyTaskCatalog.tasks || [])
+                      .filter(isDailyTaskSchedulable)
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name || t.id}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              ) : null}
+            </div>
+            <div className="daily-quota-popup-actions">
+              <button
+                type="button"
+                className="admin-btn admin-btn-secondary"
+                disabled={runHistorySaving}
+                onClick={() => setRunHistoryEdit(null)}
+              >
+                Cancel
+              </button>
+              <button type="button" className="admin-btn admin-btn-primary" disabled={runHistorySaving} onClick={() => void saveRunHistoryEdit()}>
+                {runHistorySaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Next 7 Days */}
+      <div className="admin-card">
+        <div className="admin-card-header">
+          <h3 className="admin-card-title">
+            <span>📅</span> Next 7 Days
+          </h3>
+          <div className="daily-schedule-header-actions">
+            <button
+              type="button"
+              className="admin-btn admin-btn-secondary"
+              disabled={bulkApproving || pendingNext7Count === 0}
+              onClick={() => void approveAllPendingNext7()}
+            >
+              {bulkApproving ? 'Approving…' : `Approve all pending (${pendingNext7Count})`}
+            </button>
+            <button
+              className="admin-btn admin-btn-secondary"
+              onClick={() => {
+                setDebugInfo(['Starting regeneration...'])
+                regenerateSchedule()
+              }}
+              disabled={regenerating}
+            >
+              {regenerating ? 'Regenerating...' : '🔄 Regenerate'}
+            </button>
+          </div>
+        </div>
+
+        {regenPendingNotice != null && regenPendingNotice > 0 ? (
+          <p className="daily-approval-regen-notice" role="status">
+            {regenPendingNotice} day(s) pending approval — players won&apos;t see them until approved.
+          </p>
+        ) : null}
+
+        {debugInfo && (
+          <div style={{
+            background: '#1a1a2e',
+            border: '1px solid #444',
+            borderRadius: 8,
+            padding: 12,
+            marginBottom: 12,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            maxHeight: 300,
+            overflowY: 'auto',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <strong>Regeneration Debug Info</strong>
+              <button
+                type="button"
+                onClick={() => setDebugInfo(null)}
+                style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer' }}
+              >
+                ✕ Close
+              </button>
+            </div>
+            {debugInfo.map((line, i) => (
+              <div key={i}>{line || '\u00A0'}</div>
+            ))}
+          </div>
+        )}
+
+        {allWarnings.length > 0 && (
+          <div className="daily-warnings">
+            <strong>Warnings:</strong>
+            {allWarnings.map((w) => (
+              <div key={w}>{w}</div>
+            ))}
+          </div>
+        )}
+
+        <div className="daily-schedule-list">
+          {next7Days.map(({ dateKey, entry }) => {
+            const currentId = entry?.taskId || ''
+            const currentName =
+              currentId === '__none__'
+                ? '— No task —'
+                : currentId
+                ? schedulableTasks.find((t) => t.id === currentId)?.name || currentId
+                : '(unassigned)'
+            const pick = overridePickByDateKey[dateKey] ?? currentId
+            const label = parseDateKey(dateKey).toLocaleDateString('en-US', {
+              weekday: 'short',
+              month: 'short',
+              day: 'numeric',
+            })
+            const isToday = dateKey === todayDateKey
+            const parsedEntry = parseWeekDayEntry(entry)
+            const approvalStatus = getDayApprovalStatus(parsedEntry)
+
+            return (
+              <div key={dateKey} className={`daily-schedule-item ${isToday ? 'daily-schedule-today' : ''}`}>
+                <div className="daily-schedule-header">
+                  <span className="daily-schedule-date">
+                    {label}
+                    {isToday && <span className="daily-today-badge">Today</span>}
+                  </span>
+                  <span className="daily-schedule-badges">
+                    <span
+                      className={`admin-badge daily-approval-badge daily-approval-badge--${approvalStatus}`}
+                    >
+                      {approvalStatusLabel(approvalStatus)}
+                    </span>
+                    <span
+                      className={`admin-badge ${
+                        entry?.source === 'override' ? 'admin-badge-accent' : 'admin-badge-info'
+                      }`}
+                    >
+                      {entry?.source === 'override' ? 'Override' : 'Auto'}
+                    </span>
+                  </span>
+                </div>
+                <div className="daily-schedule-task">
+                  <strong>Task:</strong> {currentName}
+                </div>
+                <div className="daily-schedule-actions">
+                  <select
+                    className="admin-input daily-schedule-select"
+                    value={pick}
+                    onChange={(e) =>
+                      setOverridePickByDateKey((prev) => ({ ...prev, [dateKey]: e.target.value }))
+                    }
+                  >
+                    <option value="">Select task...</option>
+                    <option value="__none__">— No task —</option>
+                    {schedulableTasks
+                      .slice()
+                      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    className="admin-btn admin-btn-primary"
+                    disabled={!pick || overrideSaving === dateKey}
+                    onClick={() => {
+                      const nextId = overridePickByDateKey[dateKey] ?? currentId
+                      if (!nextId) return
+                      const displayName =
+                        nextId === '__none__'
+                          ? 'No task'
+                          : schedulableTasks.find((t) => t.id === nextId)?.name || nextId
+                      if (confirm(`Override ${label} to "${displayName}"?`)) {
+                        setOverride(dateKey, nextId)
+                      }
+                    }}
+                  >
+                    {overrideSaving === dateKey ? '...' : 'Set'}
+                  </button>
+                  {parsedEntry && approvalStatus === 'pending' ? (
+                    <>
+                      <button
+                        type="button"
+                        className="admin-btn admin-btn-primary"
+                        disabled={approvalSaving === dateKey}
+                        onClick={() => void setDayApproval(dateKey, 'approved')}
+                      >
+                        {approvalSaving === dateKey ? '...' : 'Approve'}
+                      </button>
+                      <button
+                        type="button"
+                        className="admin-btn admin-btn-secondary"
+                        disabled={approvalSaving === dateKey}
+                        onClick={() => {
+                          if (confirm(`Deny the daily task for ${label}? Players will not see a task that day.`)) {
+                            void setDayApproval(dateKey, 'denied')
+                          }
+                        }}
+                      >
+                        Deny
+                      </button>
+                    </>
+                  ) : null}
+                  {parsedEntry && approvalStatus === 'denied' ? (
+                    <button
+                      type="button"
+                      className="admin-btn admin-btn-secondary"
+                      disabled={approvalSaving === dateKey}
+                      onClick={() => void setDayApproval(dateKey, 'approved')}
+                    >
+                      {approvalSaving === dateKey ? '...' : 'Approve'}
+                    </button>
+                  ) : null}
+                  {isToday && (todayRun?.revealedAtMs || todayRun?.completedAtMs) && (
+                    <button
+                      className="admin-btn daily-btn-warning"
+                      disabled={reclosingToday}
+                      onClick={() => {
+                        if (
+                          confirm(
+                            "Re-close today's task?\n\nThis will:\n• Make it 'Tap to reveal' again\n• Clear completion (if completed)"
+                          )
+                        ) {
+                          recloseToday()
+                        }
+                      }}
+                    >
+                      {reclosingToday ? '...' : 'Re-close'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Recent Runs */}
+      <div id="recent-daily-runs" className="admin-card">
         <h3 className="admin-card-title">
-          <span>{editingId ? '✏️' : '➕'}</span> {editingId ? 'Edit Daily Task' : 'Add Daily Task'}
+          <span>📜</span> Recent Runs (Last 30 Days)
         </h3>
+        <p className="admin-help" style={{ marginTop: 0 }}>
+          Rows with status <strong>Completed by …</strong> include <strong>Edit history</strong> (does not rename the
+          catalog task).
+        </p>
 
-        {saveError && <div className="daily-error">{saveError}</div>}
+        {runsLoading ? (
+          <div className="admin-empty">Loading...</div>
+        ) : recentRuns.length === 0 ? (
+          <div className="admin-empty">
+            <span className="admin-empty-icon">📜</span>
+            <h3>No runs found</h3>
+            <p>Daily task runs will appear here</p>
+          </div>
+        ) : (
+          <>
+            <div className="daily-runs-list">
+              {displayedRuns.map((run) => {
+                const taskName = getDailyTaskRunHistoryTitle(run, dailyTaskCatalog.tasks)
+                const completedBy = formatDailyTaskRunCompletedBy(run)
+                const status = run.completedAtMs
+                  ? `Completed by ${completedBy || 'unknown'}`
+                  : run.revealedAtMs
+                  ? 'Revealed'
+                  : 'Selected'
+                const canEditHistory =
+                  run.taskId === '__none__' ||
+                  (typeof run.completedAtMs === 'number' && Number.isFinite(run.completedAtMs))
 
-        <div className="daily-form">
+                return (
+                  <div key={run.dateKey} className="daily-run-item">
+                    <div className="daily-run-header">
+                      <span className="daily-run-date">{run.dateKey}</span>
+                      <span className="admin-badge admin-badge-success">{status}</span>
+                    </div>
+                    <div className="daily-run-task">
+                      <strong>Task:</strong> {taskName}
+                    </div>
+                    {canEditHistory ? (
+                      <div className="daily-run-actions">
+                        <button type="button" className="admin-btn admin-btn-primary" onClick={() => openRunHistoryEdit(run)}>
+                          Edit history
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+            {recentRuns.length > RECENT_RUNS_PREVIEW && (
+              <button
+                type="button"
+                className="admin-btn daily-toggle-btn"
+                onClick={() => setShowAllRecentRuns((v) => !v)}
+              >
+                {showAllRecentRuns ? 'Show less' : `View all (${recentRuns.length})`}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Daily task catalog (add / edit / list) */}
+      <div className="admin-card daily-catalog-card">
+        <div className="daily-catalog-header">
+          <div className="daily-catalog-header-main">
+            <h3 className="admin-card-title">
+              <span>📋</span> Daily task catalog
+              {activeTasks.length > 0 && (
+                <span className="admin-badge admin-badge-info daily-catalog-count">{activeTasks.length}</span>
+              )}
+            </h3>
+            <p className="admin-help daily-catalog-help">
+              Add and edit tasks, materials, and weekly quotas. Archive retired tasks so they are not auto-scheduled.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="admin-btn admin-btn-secondary daily-catalog-expand-btn"
+            aria-expanded={catalogExpanded}
+            onClick={() => setCatalogExpanded((v) => !v)}
+          >
+            {catalogExpanded ? 'Collapse' : 'Expand'}
+          </button>
+        </div>
+
+        {catalogExpanded && (
+          <div className="daily-catalog-body">
+            <div className="daily-form-card daily-form-card--nested">
+              <h3 className="admin-card-title">
+                <span>{editingId ? '✏️' : '➕'}</span> {editingId ? 'Edit Daily Task' : 'Add Daily Task'}
+              </h3>
+
+              {saveError && <div className="daily-error">{saveError}</div>}
+
+              <div className="daily-form">
           <div className="daily-form-field">
             <label className="admin-label">Name</label>
             <input
@@ -1112,256 +1547,234 @@ export function DailyTasksPage() {
             )}
           </div>
         </div>
-      </div>
+            </div>
 
-      {/* Task List */}
-      <div className="admin-card">
-        <h3 className="admin-card-title">
-          <span>📋</span> Daily Tasks
-        </h3>
+            <div className="daily-catalog-search">
+              <label className="admin-label" htmlFor="daily-catalog-search-input">
+                Search tasks
+              </label>
+              <input
+                id="daily-catalog-search-input"
+                type="search"
+                className="admin-input"
+                placeholder="Search by name or ID…"
+                value={catalogSearch}
+                onChange={(e) => {
+                  setCatalogSearch(e.target.value)
+                  setShowAllCatalogTasks(false)
+                }}
+              />
+            </div>
 
-        {enabledTasks.length === 0 ? (
-          <div className="admin-empty">
-            <span className="admin-empty-icon">📋</span>
-            <h3>No daily tasks yet</h3>
-            <p>Add your first daily task above</p>
-          </div>
-        ) : (
-          <div className="daily-task-list">
-            {enabledTasks
-              .slice()
-              .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-              .map((task) => {
-                const freqLabel =
-                  task.frequency?.type === 'weekly'
-                    ? `Weekly: ${task.frequency.quotaPerWeek}/week`
-                    : task.frequency?.type === 'monthly'
-                    ? 'Rare: 1/month'
-                    : 'Normal'
-                return (
-                  <div key={task.id} className="daily-task-item">
-                    <div className="daily-task-header">
-                      <span className="daily-task-name">{task.name}</span>
-                      <span className="admin-badge admin-badge-info">{freqLabel}</span>
-                    </div>
-                    <div className="daily-task-id">ID: {task.id}</div>
-                    <div className="daily-task-actions">
-                      <button
-                        className="admin-btn admin-btn-secondary"
-                        onClick={() => startEdit(task)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="admin-btn daily-btn-danger"
-                        onClick={() => deleteTask(task.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
+            {activeTasks.length === 0 && archivedTasks.length === 0 ? (
+              <div className="admin-empty">
+                <span className="admin-empty-icon">📋</span>
+                <h3>No daily tasks yet</h3>
+                <p>Add your first daily task using the form above</p>
+              </div>
+            ) : activeTasks.length === 0 && !catalogSearchNorm ? (
+              <div className="admin-empty admin-empty--compact">
+                <p>No active tasks. Expand archived below or restore a task.</p>
+              </div>
+            ) : filteredCatalogTasks.length === 0 && catalogSearchNorm ? (
+              <div className="admin-empty admin-empty--compact">
+                <p>No active tasks match &ldquo;{catalogSearch.trim()}&rdquo;</p>
+              </div>
+            ) : filteredCatalogTasks.length > 0 ? (
+              <>
+                <div className="daily-task-list">
+                  {displayedCatalogTasks.map((task) => {
+                    const freqLabel =
+                      task.frequency?.type === 'weekly'
+                        ? `Weekly: ${task.frequency.quotaPerWeek}/week`
+                        : task.frequency?.type === 'monthly'
+                        ? 'Rare: 1/month'
+                        : 'Normal'
+                    return (
+                      <div key={task.id} className="daily-task-item">
+                        <div className="daily-task-header">
+                          <span className="daily-task-name">{task.name}</span>
+                          <span className="admin-badge admin-badge-info">{freqLabel}</span>
+                        </div>
+                        <div className="daily-task-id">ID: {task.id}</div>
+                        <div className="daily-task-actions">
+                          <button
+                            type="button"
+                            className="admin-btn admin-btn-secondary"
+                            onClick={() => startEdit(task)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="admin-btn daily-btn-archive"
+                            onClick={() => void archiveTask(task.id)}
+                          >
+                            Archive
+                          </button>
+                          <button
+                            type="button"
+                            className="admin-btn daily-btn-danger"
+                            onClick={() => void deleteTask(task.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {filteredCatalogTasks.length > CATALOG_TASKS_PREVIEW && (
+                  <button
+                    type="button"
+                    className="admin-btn daily-toggle-btn"
+                    onClick={() => setShowAllCatalogTasks((v) => !v)}
+                  >
+                    {showAllCatalogTasks
+                      ? 'Show less'
+                      : `View all (${filteredCatalogTasks.length})`}
+                  </button>
+                )}
+              </>
+            ) : null}
+
+            {archivedTasks.length > 0 && (
+              <div className="daily-archived-catalog">
+                <button
+                  type="button"
+                  className="daily-archived-catalog-header"
+                  aria-expanded={showArchivedCatalogSection}
+                  onClick={() => setShowArchivedCatalogSection((v) => !v)}
+                >
+                  <h4 className="daily-archived-catalog-title">
+                    <span>📦</span> Archived ({archivedTasks.length})
+                  </h4>
+                  <span className="daily-archived-catalog-toggle">
+                    {showArchivedCatalogSection ? 'Collapse' : 'Expand'}
+                  </span>
+                </button>
+                {showArchivedCatalogSection && (
+                  <div className="daily-task-list">
+                    {filteredArchivedCatalogTasks.length === 0 ? (
+                      <div className="admin-empty admin-empty--compact">
+                        <p>No archived tasks match this search.</p>
+                      </div>
+                    ) : (
+                      filteredArchivedCatalogTasks.map((task) => {
+                        const freqLabel =
+                          task.frequency?.type === 'weekly'
+                            ? `Weekly: ${task.frequency.quotaPerWeek}/week`
+                            : task.frequency?.type === 'monthly'
+                            ? 'Rare: 1/month'
+                            : 'Normal'
+                        return (
+                          <div key={task.id} className="daily-task-item daily-task-item--archived">
+                            <div className="daily-task-header">
+                              <span className="daily-task-name">{task.name}</span>
+                              <span className="admin-badge admin-badge-info">{freqLabel}</span>
+                              <span className="daily-archived-badge">Archived</span>
+                            </div>
+                            <div className="daily-task-id">ID: {task.id}</div>
+                            <div className="daily-task-actions">
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn-secondary"
+                                onClick={() => startEdit(task)}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-btn daily-btn-restore"
+                                onClick={() => void restoreTask(task.id)}
+                              >
+                                Restore
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-btn daily-btn-danger"
+                                onClick={() => void deleteTask(task.id)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
                   </div>
-                )
-              })}
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Schedule Preview */}
-      <div className="admin-card">
-        <div className="admin-card-header">
-          <h3 className="admin-card-title">
-            <span>📅</span> Next 7 Days
+      <div className="admin-card daily-advanced-settings">
+        <button
+          type="button"
+          className="daily-advanced-settings-header"
+          aria-expanded={advancedSettingsExpanded}
+          onClick={() => setAdvancedSettingsExpanded((v) => !v)}
+        >
+          <h3 className="admin-card-title daily-advanced-settings-title">
+            <span>⚙️</span> Advanced settings
           </h3>
-          <button
-            className="admin-btn admin-btn-secondary"
-            onClick={() => {
-              setDebugInfo(['Starting regeneration...'])
-              regenerateSchedule()
-            }}
-            disabled={regenerating}
-          >
-            {regenerating ? 'Regenerating...' : '🔄 Regenerate'}
-          </button>
-        </div>
+          <span className="daily-advanced-settings-toggle">
+            {advancedSettingsExpanded ? 'Collapse' : 'Expand'}
+          </span>
+        </button>
 
-        {debugInfo && (
-          <div style={{
-            background: '#1a1a2e',
-            border: '1px solid #444',
-            borderRadius: 8,
-            padding: 12,
-            marginBottom: 12,
-            fontFamily: 'monospace',
-            fontSize: 12,
-            whiteSpace: 'pre-wrap',
-            maxHeight: 300,
-            overflowY: 'auto',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <strong>Regeneration Debug Info</strong>
+        {advancedSettingsExpanded ? (
+          <div className="daily-advanced-settings-body">
+            <p className="daily-advanced-settings-help">
+              Used for AI weekly-quota day picks when you click Regenerate. Monthly and normal slots
+              still use the built-in algorithm.
+            </p>
+            <div className="daily-form-field">
+              <label className="admin-label" htmlFor="daily-ai-system-prompt">
+                AI schedule system prompt
+              </label>
+              <textarea
+                id="daily-ai-system-prompt"
+                className="admin-input daily-ai-prompt-textarea"
+                rows={20}
+                value={promptDraft}
+                onChange={(e) => {
+                  setPromptDraft(e.target.value)
+                  setPromptDirty(true)
+                  setPromptSaveError(null)
+                }}
+                disabled={promptSaving}
+                spellCheck={false}
+              />
+            </div>
+            {promptSaveError ? <div className="daily-error">{promptSaveError}</div> : null}
+            {hasUnsavedPromptChanges ? (
+              <p className="daily-advanced-settings-unsaved" role="status">
+                Unsaved changes — Regenerate uses this draft; Save prompt updates the team default.
+              </p>
+            ) : null}
+            <div className="daily-advanced-settings-actions">
               <button
                 type="button"
-                onClick={() => setDebugInfo(null)}
-                style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer' }}
+                className="admin-btn admin-btn-primary"
+                disabled={promptSaving || !hasUnsavedPromptChanges}
+                onClick={() => void savePromptDraft()}
               >
-                ✕ Close
+                {promptSaving ? 'Saving…' : 'Save prompt'}
+              </button>
+              <button
+                type="button"
+                className="admin-btn admin-btn-secondary"
+                disabled={promptSaving}
+                onClick={() => void resetPromptToDefault()}
+              >
+                Reset to default
               </button>
             </div>
-            {debugInfo.map((line, i) => (
-              <div key={i}>{line || '\u00A0'}</div>
-            ))}
           </div>
-        )}
-
-        {allWarnings.length > 0 && (
-          <div className="daily-warnings">
-            <strong>Warnings:</strong>
-            {allWarnings.map((w) => (
-              <div key={w}>{w}</div>
-            ))}
-          </div>
-        )}
-
-        <div className="daily-schedule-list">
-          {next7Days.map(({ dateKey, entry }) => {
-            const currentId = entry?.taskId || ''
-            const currentName =
-              currentId === '__none__'
-                ? '— No task —'
-                : currentId
-                ? enabledTasks.find((t) => t.id === currentId)?.name || currentId
-                : '(unassigned)'
-            const pick = overridePickByDateKey[dateKey] ?? currentId
-            const label = parseDateKey(dateKey).toLocaleDateString('en-US', {
-              weekday: 'short',
-              month: 'short',
-              day: 'numeric',
-            })
-            const isToday = dateKey === todayDateKey
-
-            return (
-              <div key={dateKey} className={`daily-schedule-item ${isToday ? 'daily-schedule-today' : ''}`}>
-                <div className="daily-schedule-header">
-                  <span className="daily-schedule-date">
-                    {label}
-                    {isToday && <span className="daily-today-badge">Today</span>}
-                  </span>
-                  <span
-                    className={`admin-badge ${
-                      entry?.source === 'override' ? 'admin-badge-accent' : 'admin-badge-info'
-                    }`}
-                  >
-                    {entry?.source === 'override' ? 'Override' : 'Auto'}
-                  </span>
-                </div>
-                <div className="daily-schedule-task">
-                  <strong>Task:</strong> {currentName}
-                </div>
-                <div className="daily-schedule-actions">
-                  <select
-                    className="admin-input daily-schedule-select"
-                    value={pick}
-                    onChange={(e) =>
-                      setOverridePickByDateKey((prev) => ({ ...prev, [dateKey]: e.target.value }))
-                    }
-                  >
-                    <option value="">Select task...</option>
-                    <option value="__none__">— No task —</option>
-                    {enabledTasks
-                      .slice()
-                      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-                      .map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}
-                        </option>
-                      ))}
-                  </select>
-                  <button
-                    className="admin-btn admin-btn-primary"
-                    disabled={!pick || overrideSaving === dateKey}
-                    onClick={() => {
-                      const nextId = overridePickByDateKey[dateKey] ?? currentId
-                      if (!nextId) return
-                      const displayName =
-                        nextId === '__none__'
-                          ? 'No task'
-                          : enabledTasks.find((t) => t.id === nextId)?.name || nextId
-                      if (confirm(`Override ${label} to "${displayName}"?`)) {
-                        setOverride(dateKey, nextId)
-                      }
-                    }}
-                  >
-                    {overrideSaving === dateKey ? '...' : 'Set'}
-                  </button>
-                  {isToday && (todayRun?.revealedAtMs || todayRun?.completedAtMs) && (
-                    <button
-                      className="admin-btn daily-btn-warning"
-                      disabled={reclosingToday}
-                      onClick={() => {
-                        if (
-                          confirm(
-                            "Re-close today's task?\n\nThis will:\n• Make it 'Tap to reveal' again\n• Clear completion (if completed)"
-                          )
-                        ) {
-                          recloseToday()
-                        }
-                      }}
-                    >
-                      {reclosingToday ? '...' : 'Re-close'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Recent Runs */}
-      <div className="admin-card">
-        <h3 className="admin-card-title">
-          <span>📜</span> Recent Runs (Last 30 Days)
-        </h3>
-
-        {runsLoading ? (
-          <div className="admin-empty">Loading...</div>
-        ) : recentRuns.length === 0 ? (
-          <div className="admin-empty">
-            <span className="admin-empty-icon">📜</span>
-            <h3>No runs found</h3>
-            <p>Daily task runs will appear here</p>
-          </div>
-        ) : (
-          <div className="daily-runs-list">
-            {recentRuns.slice(0, 30).map((run) => {
-              const task = enabledTasks.find((t) => t.id === run.taskId) || null
-              const taskName = task?.name || run.taskId
-              const completedBy =
-                (run.completedByList && run.completedByList.length
-                  ? run.completedByList.join(' + ')
-                  : '') ||
-                run.completedBy ||
-                ''
-              const status = run.completedAtMs
-                ? `Completed by ${completedBy || 'unknown'}`
-                : run.revealedAtMs
-                ? 'Revealed'
-                : 'Selected'
-
-              return (
-                <div key={run.dateKey} className="daily-run-item">
-                  <div className="daily-run-header">
-                    <span className="daily-run-date">{run.dateKey}</span>
-                    <span className="admin-badge admin-badge-success">{status}</span>
-                  </div>
-                  <div className="daily-run-task">
-                    <strong>Task:</strong> {taskName}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   )

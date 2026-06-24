@@ -19,7 +19,9 @@
       "ignore": [
         "firebase.json",
         "**/.*",
-        "**/node_modules/**"
+        "**/node_modules/**",
+        "admin.html",
+        "beta.html"
       ],
       "headers": [
         {
@@ -48,13 +50,106 @@
       ]
     },
     {
+      "target": "beta",
+      "public": "dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**",
+        "index.html",
+        "admin.html"
+      ],
+      "headers": [
+        {
+          "source": "/",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        },
+        {
+          "source": "/beta.html",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        },
+        {
+          "source": "/apply.html",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        }
+      ],
+      "rewrites": [
+        { "source": "/bonfire", "destination": "/apply.html" },
+        { "source": "/bonfire/**", "destination": "/apply.html" },
+        { "source": "**", "destination": "/beta.html" }
+      ]
+    },
+    {
+      "target": "admin",
+      "public": "dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**",
+        "index.html",
+        "apply.html"
+      ],
+      "headers": [
+        {
+          "source": "/",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        },
+        {
+          "source": "/admin.html",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        }
+      ],
+      "rewrites": [
+        { "source": "**", "destination": "/admin.html" }
+      ]
+    },
+    {
       "target": "apply",
       "public": "dist",
       "ignore": [
         "firebase.json",
         "**/.*",
         "**/node_modules/**",
-        "index.html"
+        "index.html",
+        "admin.html"
+      ],
+      "headers": [
+        {
+          "source": "/",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        },
+        {
+          "source": "/apply.html",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-store" }
+          ]
+        }
+      ],
+      "rewrites": [
+        { "source": "**", "destination": "/apply.html" }
+      ]
+    },
+    {
+      "target": "bonfireapplications",
+      "public": "dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**",
+        "index.html",
+        "admin.html"
       ],
       "headers": [
         {
